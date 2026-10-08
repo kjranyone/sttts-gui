@@ -876,26 +876,8 @@ impl Render for StttsApp {
             });
         }
 
-        // 入力レベルメータ(-60..0dB を 0..1 へマップ)
-        let level_frac = ((self.mic_level_db + 60.0) / 60.0).clamp(0.0, 1.0);
-        let level_color = if !self.mic_running {
-            rgb(0x3a3f46)
-        } else if level_frac < 0.5 {
-            rgb(0x3fb950)
-        } else if level_frac < 0.8 {
-            rgb(0xd29922)
-        } else {
-            rgb(0xf85149)
-        };
-        let level_db_text = if self.mic_running {
-            format!("{:+.0} dB", self.mic_level_db.max(-99.0))
-        } else {
-            "—".to_string()
-        };
-
-        // マイク開始/停止の遷移中は画面全体をモーダルに差し替える。
-        // (absolute + z 順序での重ねは gpui のレイアウト解釈に依存して表示されない
-        // ことがあったため、確実に見える方式にする。遷移は数百ms〜1.5s で一時的)
+        // マイク開始/停止の遷移中は画面全体をモーダルに差し替える
+        // (absolute 重ねは gpui のスタッキング解釈に依存するため、確実に見える方式)。
         if self.mic_transition != MicTransition::None {
             let (title, sub) = match self.mic_transition {
                 MicTransition::Stopping => (
@@ -908,39 +890,45 @@ impl Render for StttsApp {
                 ),
             };
             return div()
+                .id("mic-transition")
                 .size_full()
-                .bg(rgb(0x1e1f22))
+                .bg(linear_gradient(160., linear_color_stop(rgba(0x2b1e4fff), 0.), linear_color_stop(rgba(0x0f1633ff), 1.)))
                 .flex()
                 .items_center()
                 .justify_center()
+                .with_animation(
+                    "mic-transition-fade",
+                    Animation::new(std::time::Duration::from_millis(260)).with_easing(ease_in_out),
+                    |el, delta| el.opacity(0.4 + 0.6 * delta),
+                )
                 .child(
                     v_flex()
-                        .id("mic-transition-modal")
-                        .gap_1()
-                        .px_8()
-                        .py_6()
+                        .id("mic-transition-card")
+                        .gap_2()
+                        .px_10()
+                        .py_8()
                         .rounded_lg()
-                        .bg(rgb(0x2b2d31))
+                        .bg(rgba(0xffffff12))
                         .border_1()
+                        .border_color(rgba(0xffffff2b))
+                        .shadow_lg()
                         .items_center()
                         .child(
                             div()
-                                .text_base()
+                                .text_xl()
                                 .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(0xe8eaed))
+                                .text_color(rgb(0xfff2fa))
                                 .child(title),
                         )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(0x9aa0a6))
-                                .child(sub),
-                        ),
-                );
+                        .child(div().text_sm().text_color(rgb(0xb9b1d6)).child(sub)),
+                )
+                .into_any_element();
         }
 
-        // 発話パイプラインの状態(合成 → 再生キュー → 再生)を1行に集約する。
-        // バラバラな情報(ボタンラベル/下部バー)に分散すると「今どの段階か」が読めない。
+        // 入力レベルメータ(-60..0dB を 0..1 へマップ)
+        let level_frac = ((self.mic_level_db + 60.0) / 60.0).clamp(0.0, 1.0);
+
+        // 発話パイプラインの状態(合成 → 再生キュー → 再生)を1行に集約する
         let play_queue = self.audio.as_ref().map(|a| a.pending_chunks()).unwrap_or(0);
         let (pipeline_status, pipeline_color) = if self.speaking {
             let synth = if self.synth_started > 0 {
@@ -949,131 +937,111 @@ impl Render for StttsApp {
                 "合成待ち…".to_string()
             };
             if play_queue > 0 {
-                (format!("▶ 再生中(キュー {play_queue})・{synth}"), rgb(0x8ab4f8))
+                (format!("♪ 再生中(キュー {play_queue})・{synth}"), rgb(0xffb1cf))
             } else if self.synth_done < self.synth_started || self.synth_started == 0 {
-                (format!("{synth}"), rgb(0xd29922))
+                (format!("◈ {synth}"), rgb(0xf0c987))
             } else {
-                ("合成完了・再生待ち".to_string(), rgb(0x3fb950))
+                ("✓ 合成完了・再生待ち".to_string(), rgb(0x8ef0c0))
             }
         } else if play_queue > 0 {
-            (format!("▶ 再生中(キュー {play_queue})"), rgb(0x8ab4f8))
+            (format!("♪ 再生中(キュー {play_queue})"), rgb(0xffb1cf))
         } else {
-            ("待機中".to_string(), rgb(0x6b7075))
+            ("― 待機中".to_string(), rgb(0x8d86ad))
         };
 
-        let mock_label = if self.mock { " [mock]" } else { "" };
-
-        let header = h_flex()
-            .gap_2()
-            .items_center()
-            .px_3()
-            .py_2()
-            .border_b_1()
-            .child(
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .child(format!("sttts-gui{mock_label}")),
-            )
-            .child(div().text_sm().text_color(rgb(0x9aa0a6)).child(format!(
-                "TTS: {} / ASR: {}",
-                Self::phase_label(&self.tts_state),
-                Self::phase_label(&self.asr_state)
-            )))
-            .child(div().flex_1())
-            .child(
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(0x8ab4f8))
-                    .child(self.latency_label()),
-            )
-            .child(div().text_xs().text_color(rgb(0x9aa0a6)).child(self.latency_detail()))
-            .child(
-                Button::new("mic")
-                    .label(match self.mic_transition {
-                        MicTransition::Starting => "マイク開始中…",
-                        MicTransition::Stopping => "マイク停止中…",
-                        MicTransition::None if self.mic_running => "マイク停止",
-                        MicTransition::None => "マイク開始",
-                    })
-                    .disabled(self.mic_transition != MicTransition::None)
-                    .on_click(cx.listener(Self::toggle_mic)),
-            )
-            .child(
-                Button::new("cancel")
-                    .label("発話を中止")
-                    .on_click(cx.listener(Self::cancel_speak)),
-            )
-            .child(Button::new("quit").label("終了").on_click(cx.listener(Self::quit)));
-
-        // 左: 会話ビュー(あなたの発話=ASR と 音声の発話=TTS を時系列で1本に)
+        // ---- 会話ビュー(チャット泡)
         let conversation_items: Vec<_> = self
             .conversation
             .iter()
             .enumerate()
             .map(|(i, e)| {
-                let (label, label_color) = match e.kind {
-                    ConversationKind::User => ("あなた", rgb(0x9aa0a6)),
-                    ConversationKind::Assistant => ("音声", rgb(0x8ab4f8)),
-                };
-                let text_color = if e.partial {
-                    rgb(0x9aa0a6)
+                let is_user = e.kind == ConversationKind::User;
+                let bubble = if is_user {
+                    // あなた: 桜の泡(右)
+                    v_flex()
+                        .max_w(px(420.))
+                        .px_3()
+                        .py_2()
+                        .rounded_lg()
+                        .bg(linear_gradient(120., linear_color_stop(rgba(0xffd6e7ff), 0.), linear_color_stop(rgba(0xffb1cfff), 1.)))
+                        .shadow_sm()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(0x9c5f80))
+                                .child(if e.partial { "あなた …" } else { "あなた" }),
+                        )
+                        .child(div().text_sm().text_color(rgb(0x53324a)).child(e.text.clone()))
                 } else {
-                    match e.kind {
-                        ConversationKind::User => rgb(0xe8eaed),
-                        ConversationKind::Assistant => rgb(0xd7e3fb),
-                    }
-                };
-                let row = h_flex().gap_2().items_start().py_1().child(
-                    div()
-                        .flex_1()
+                    // 音声: 藤の泡(左)+ 再生
+                    h_flex()
+                        .max_w(px(460.))
+                        .items_end()
+                        .gap_2()
                         .child(
                             v_flex()
-                                .gap_0p5()
+                                .px_3()
+                                .py_2()
+                                .rounded_lg()
+                                .bg(linear_gradient(120., linear_color_stop(rgba(0x6d5bd0ff), 0.), linear_color_stop(rgba(0x8d6fe8ff), 1.)))
+                                .shadow_sm()
                                 .child(
                                     div()
                                         .text_xs()
                                         .font_weight(FontWeight::BOLD)
-                                        .text_color(label_color)
-                                        .child(if e.partial {
-                                            format!("{label}(認識中…)")
-                                        } else {
-                                            label.to_string()
-                                        }),
+                                        .text_color(rgb(0xd9d0ff))
+                                        .child("♪ 音声"),
                                 )
-                                .child(div().text_sm().text_color(text_color).child(e.text.clone())),
-                        ),
-                );
-                let row = match e.kind {
-                    ConversationKind::Assistant => row
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(0x6b7075))
-                                .child(e.gen_ms.map(|ms| format!("{ms}ms")).unwrap_or_default()),
+                                .child(
+                                    div().text_sm().text_color(rgb(0xf4f1ff)).child(e.text.clone()),
+                                ),
                         )
-                        .child(if e.path.is_some() {
-                            Button::new(SharedString::from(format!("replay-{i}")))
-                                .label("再生")
-                                .compact()
-                                .on_click(cx.listener(move |this, ev, w, cx| {
-                                    this.replay_conversation(i, ev, w, cx)
-                                }))
-                        } else {
-                            Button::new(SharedString::from(format!("replay-{i}"))).label("再生").compact()
-                        }),
-                    ConversationKind::User => row,
+                        .child(
+                            v_flex().gap_1().child(
+                                div().text_xs().text_color(rgb(0x8d86ad)).child(
+                                    e.gen_ms.map(|ms| format!("{ms}ms")).unwrap_or_default(),
+                                ),
+                            ),
+                        )
+                        .when(e.path.is_some(), |row| {
+                            row.child(
+                                Button::new(SharedString::from(format!("replay-{i}")))
+                                    .label("▶")
+                                    .compact()
+                                    .on_click(cx.listener(move |this, ev, w, cx| {
+                                        this.replay_conversation(i, ev, w, cx)
+                                    })),
+                            )
+                        })
+                };
+                let row = h_flex().w_full().py_1();
+                let row = if is_user {
+                    row.flex_row_reverse().child(bubble)
+                } else {
+                    row.child(bubble)
                 };
                 row.into_any_element()
             })
             .collect();
         let empty_hint = self.conversation.is_empty().then(|| {
-            div()
-                .text_color(rgb(0x6b7075))
-                .child("「マイク開始」で話しかけると文字起こしと音声の応答がここに並びます。")
+            v_flex()
+                .h_full()
+                .w_full()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .child(div().text_xl().text_color(rgb(0xffb1cf)).child("♪"))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(0x8d86ad))
+                        .child("「マイク開始」で話しかけると、ここに会話が並びます"),
+                )
                 .into_any_element()
         });
 
-        // 右: 発話パネル
+        // ---- 右パネル: モデルボタン
         let model_buttons: Vec<_> = self
             .models
             .iter()
@@ -1093,12 +1061,122 @@ impl Render for StttsApp {
         let weak_auto_speak = cx.weak_entity();
         let weak_random_seed = cx.weak_entity();
 
+        // ---- ヘッダ
+        let (mic_dot, mic_label) = if self.mic_running {
+            (rgb(0x8ef0c0), "listening")
+        } else {
+            (rgb(0x8d86ad), "idle")
+        };
+        let header = h_flex()
+            .gap_3()
+            .items_center()
+            .px_4()
+            .py_2()
+            .child(
+                div()
+                    .text_base()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(0xfff2fa))
+                    .child("sttts"),
+            )
+            .child(div().text_sm().text_color(rgb(0xc9a8dd)).child("音声対話"))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .px_2()
+                    .py_1()
+                    .rounded_full()
+                    .bg(rgba(0xffffff10))
+                    .child(
+                        div().text_xs().text_color(rgb(0xb9b1d6)).child(format!(
+                            "TTS {} / ASR {}",
+                            Self::phase_label(&self.tts_state),
+                            Self::phase_label(&self.asr_state)
+                        )),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .px_2()
+                    .py_1()
+                    .rounded_full()
+                    .bg(rgba(0xffffff10))
+                    .child(div().size(px(8.)).rounded_full().bg(mic_dot))
+                    .child(div().text_xs().text_color(rgb(0xb9b1d6)).child(mic_label)),
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(0xffb1cf))
+                    .child(self.latency_label()),
+            )
+            .child(div().text_xs().text_color(rgb(0x8d86ad)).child(self.latency_detail()))
+            .child(
+                Button::new("mic")
+                    .label(match self.mic_transition {
+                        MicTransition::Starting => "マイク開始中…",
+                        MicTransition::Stopping => "マイク停止中…",
+                        MicTransition::None if self.mic_running => "マイク停止",
+                        MicTransition::None => "マイク開始",
+                    })
+                    .disabled(self.mic_transition != MicTransition::None)
+                    .on_click(cx.listener(Self::toggle_mic)),
+            )
+            .child(
+                Button::new("cancel")
+                    .label("発話を中止")
+                    .on_click(cx.listener(Self::cancel_speak)),
+            )
+            .child(Button::new("quit").label("終了").on_click(cx.listener(Self::quit)));
 
+        // ---- レベルメーター(緑→桜グラデ)
+        let level_meter = h_flex()
+            .gap_2()
+            .items_center()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x8d86ad))
+                    .w(px(28.))
+                    .child("音量"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .h(px(12.))
+                    .rounded_full()
+                    .bg(rgba(0x00000055))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .h_full()
+                            .w(relative(level_frac))
+                            .rounded_full()
+                            .bg(linear_gradient(90., linear_color_stop(rgba(0x7ef0b2ff), 0.), linear_color_stop(rgba(0xff8fb8ff), 1.))),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .font_family("Consolas")
+                    .text_color(rgb(0xb9b1d6))
+                    .child(if self.mic_running {
+                        format!("{:+.0} dB", self.mic_level_db.max(-99.0))
+                    } else {
+                        "—".to_string()
+                    }),
+            );
+
+        // ---- レイアウト
         div()
             .size_full()
-            .relative()
-            .bg(rgb(0x1e1f22))
-            .text_color(rgb(0xe8eaed))
+            .bg(linear_gradient(160., linear_color_stop(rgba(0x2b1e4fff), 0.), linear_color_stop(rgba(0x0f1633ff), 1.)))
+            .text_color(rgb(0xf4f1ff))
             .child(
                 v_flex()
                     .size_full()
@@ -1106,40 +1184,47 @@ impl Render for StttsApp {
                     .child(
                         h_flex()
                             .flex_1()
-                            .gap_2()
-                            .p_2()
+                            .gap_3()
+                            .p_3()
                             .overflow_hidden()
+                            // 左: 会話(ガラス風カード)
                             .child(
                                 v_flex()
                                     .id("conversation")
                                     .flex_1()
                                     .h_full()
-                                    .p_2()
-                                    .rounded_md()
-                                    .bg(rgb(0x26282c))
+                                    .p_4()
+                                    .rounded_lg()
+                                    .bg(rgba(0xffffff08))
+                                    .border_1()
+                                    .border_color(rgba(0xffffff1c))
+                                    .shadow_sm()
                                     .overflow_y_scroll()
                                     .text_sm()
                                     .children(empty_hint.into_iter().chain(conversation_items)),
                             )
+                            // 右: 発話パネル(ガラス風カード)
                             .child(
                                 v_flex()
                                     .id("speak-panel")
                                     .w(px(430.))
                                     .h_full()
-                                    .p_2()
-                                    .rounded_md()
-                                    .bg(rgb(0x26282c))
+                                    .p_4()
+                                    .rounded_lg()
+                                    .bg(rgba(0xffffff08))
+                                    .border_1()
+                                    .border_color(rgba(0xffffff1c))
+                                    .shadow_sm()
                                     .overflow_y_scroll()
                                     .gap_2()
                                     .child(
                                         div()
                                             .font_weight(FontWeight::BOLD)
-                                            .text_sm()
+                                            .text_color(rgb(0xfff2fa))
                                             .child("テキストから発話"),
                                     )
                                     .child(Textarea::new(&self.speak_input).text_sm())
                                     .child(
-                                        // 入出力デバイス + レベルメータ
                                         v_flex()
                                             .gap_1()
                                             .child(
@@ -1149,7 +1234,7 @@ impl Render for StttsApp {
                                                     .child(
                                                         div()
                                                             .text_xs()
-                                                            .text_color(rgb(0x9aa0a6))
+                                                            .text_color(rgb(0x8d86ad))
                                                             .w(px(28.))
                                                             .child("入力"),
                                                     )
@@ -1168,7 +1253,7 @@ impl Render for StttsApp {
                                                     .child(
                                                         div()
                                                             .text_xs()
-                                                            .text_color(rgb(0x9aa0a6))
+                                                            .text_color(rgb(0x8d86ad))
                                                             .w(px(28.))
                                                             .child("出力"),
                                                     )
@@ -1188,7 +1273,7 @@ impl Render for StttsApp {
                                                     .child(
                                                         div()
                                                             .text_xs()
-                                                            .text_color(rgb(0x9aa0a6))
+                                                            .text_color(rgb(0x8d86ad))
                                                             .w(px(28.))
                                                             .child("声"),
                                                     )
@@ -1206,35 +1291,7 @@ impl Render for StttsApp {
                                                             .on_click(cx.listener(Self::open_voice_folder)),
                                                     ),
                                             )
-                                            .child(
-                                                // レベルメータ(ASR 入力レベル)
-                                                h_flex()
-                                                    .gap_2()
-                                                    .items_center()
-                                                    .child(
-                                                        div().w(px(28.)).child(""),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .h(px(10.))
-                                                            .rounded_sm()
-                                                            .bg(rgb(0x30343a))
-                                                            .overflow_hidden()
-                                                            .child(
-                                                                div()
-                                                                    .h_full()
-                                                                    .w(relative(level_frac))
-                                                                    .bg(level_color),
-                                                            ),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .text_xs()
-                                                            .text_color(rgb(0x9aa0a6))
-                                                            .child(level_db_text),
-                                                    ),
-                                            ),
+                                            .child(level_meter),
                                     )
                                     .child(
                                         div().text_sm().child(Input::new(&self.caption_input).text_sm()),
@@ -1274,69 +1331,78 @@ impl Render for StttsApp {
                                                 }
                                             })
                                     })
+                                    // 発話ボタン: 桜→藤グラデ
                                     .child(
-                                        h_flex()
-                                            .gap_2()
-                                            .items_center()
-                                            .child(
-                                                Button::new("speak")
-                                                    .primary()
-                                                    .label("発話")
-                                                    .on_click(cx.listener(Self::speak_from_input)),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .font_family("Consolas")
-                                                    .text_color(pipeline_color)
-                                                    .child(pipeline_status),
-                                            ),
+                                        div()
+                                            .id("speak-button")
+                                            .rounded_md()
+                                            .py_2()
+                                            .w_full()
+                                            .flex()
+                                            .justify_center()
+                                            .text_sm()
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(rgb(0xffffff))
+                                            .bg(linear_gradient(120., linear_color_stop(rgba(0xff8fb8ff), 0.), linear_color_stop(rgba(0x8d6fe8ff), 1.)))
+                                            .shadow_md()
+                                            .child("発話")
+                                            .on_click(cx.listener(Self::speak_from_input)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_family("Consolas")
+                                            .text_color(pipeline_color)
+                                            .child(pipeline_status),
                                     )
                                     .child(
                                         div()
                                             .text_xs()
-                                            .text_color(rgb(0x6b7075))
+                                            .text_color(rgb(0x8d86ad))
                                             .child(if models_loaded {
                                                 "モデル".to_string()
                                             } else {
                                                 "モデル(バックエンド接続後に表示)".to_string()
                                             }),
                                     )
-                                    .child(
-                                        h_flex().flex_wrap().gap_1().children(model_buttons),
-                                    )
+                                    .child(h_flex().flex_wrap().gap_1().children(model_buttons))
                                     .child(div().flex_1()),
                             ),
                     )
+                    // ログ(黒ガラス)
                     .child(
                         v_flex()
                             .id("log")
-                            .h(px(130.))
-                            .m_2()
+                            .h(px(120.))
+                            .mx_3()
+                            .mb_1()
                             .p_2()
-                            .rounded_md()
-                            .bg(rgb(0x16171a))
+                            .rounded_lg()
+                            .bg(rgba(0x00000055))
+                            .border_1()
+                            .border_color(rgba(0xffffff14))
                             .overflow_y_scroll()
                             .text_xs()
                             .font_family("Consolas")
-                            .text_color(rgb(0x8a9199))
+                            .text_color(rgb(0x9d96bd))
                             .children(self.logs.iter().rev().take(12).rev().cloned()),
                     )
                     .child(
                         h_flex()
-                            .px_3()
-                            .py_1()
-                            .border_t_1()
+                            .px_4()
+                            .py_2()
                             .text_xs()
-                            .text_color(rgb(0x9aa0a6))
+                            .text_color(rgb(0x8d86ad))
                             .gap_3()
                             .child(self.status_hint.clone())
                             .child(div().flex_1())
                             .child(format!("会話: {} 件", self.conversation.len())),
                     ),
             )
+            .into_any_element()
     }
 }
+
 
 /// data/voices の wav を声バンクとして読み込む(ファイル名=話者名)。
 fn scan_voice_bank(root: &std::path::Path) -> Vec<(String, PathBuf)> {
