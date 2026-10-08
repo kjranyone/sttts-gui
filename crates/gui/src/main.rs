@@ -890,14 +890,15 @@ impl Render for StttsApp {
             return div()
                 .id("mic-transition")
                 .size_full()
-                .bg(linear_gradient(160., linear_color_stop(rgba(0x2b1e4fff), 0.), linear_color_stop(rgba(0x0f1633ff), 1.)))
+                // 半透明の暗幕(下のUIが透けて見える)。フェードの対象は暗幕のみ。
+                .bg(rgba(0x0f0a1eaa))
                 .flex()
                 .items_center()
                 .justify_center()
                 .with_animation(
                     "mic-transition-fade",
-                    Animation::new(std::time::Duration::from_millis(260)).with_easing(ease_in_out),
-                    |el, delta| el.opacity(0.4 + 0.6 * delta),
+                    Animation::new(std::time::Duration::from_millis(200)).with_easing(ease_in_out),
+                    |el, delta| el.opacity(0.25 + 0.75 * delta),
                 )
                 .child(
                     v_flex()
