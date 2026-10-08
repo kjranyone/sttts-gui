@@ -538,10 +538,10 @@ class BackendApp:
     def on_mic_level(self, rms: float, db: float) -> None:
         self.send({"type": "mic_level", "rms": rms, "db": db})
 
-    def on_asr_partial(self, utterance: int, text: str) -> None:
+    def on_asr_partial(self, utterance: int, text: str, asr_ms: int | None = None) -> None:
         self.send({"type": "asr_partial", "utterance": utterance, "text": text})
 
-    def on_asr_final(self, utterance: int, text: str) -> None:
+    def on_asr_final(self, utterance: int, text: str, timing: dict | None = None) -> None:
         self.send({"type": "asr_final", "utterance": utterance, "text": text})
         if self.config["pipeline"]["auto_speak"] and text.strip():
             self.speak({"text": text, "origin": "auto"})
