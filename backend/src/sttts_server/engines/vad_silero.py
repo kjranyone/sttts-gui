@@ -20,7 +20,9 @@ class SileroVad:
         )
 
     def reset(self) -> None:
-        self._iter.reset()
+        # silero-vad の VADIterator は reset_states()(reset() は存在しない)。
+        # 以前は reset() を呼んでいたため、最初の発話終了で VAD スレッドが例外終了していた。
+        self._iter.reset_states()
 
     def process(self, chunk: np.ndarray) -> dict | None:
         """512サンプルを与えると発話開始/終了イベント({'start':n} / {'end':n})を返す。"""

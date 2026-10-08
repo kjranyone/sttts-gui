@@ -256,3 +256,21 @@ def test_vad_min_silence_default_is_280ms():
     vad = SileroVad()
     assert vad._iter.min_silence_samples == 16000 * 280 / 1000
     assert SileroVad(min_silence_ms=400)._iter.min_silence_samples == 6400
+
+
+def test_real_silero_reset_and_multiple_utterances():
+    """実 silero で reset が例外にならず、複数発話を検出できること(以前は reset() で落ちていた)。"""
+    import pytest
+
+    pytest.importorskip("scipy")
+    from sttts_server.engines.vad_silero import SileroVad
+    from sttts_server.testsignal import speechlike
+
+    worker = RecordingWorker()
+    seg = VadSegmenter(SileroVad(), worker, partial_interval=0.0)
+    seg.feed(np.zeros(8000, dtype=np.float32), arrival=0.0)
+    for k, sec in enumerate((1.2, 1.5, 1.8)):
+        seg.feed(speechlike(sec, seed=k))
+        seg.feed(np.zeros(32000, dtype=np.float32))
+    assert len(worker.finals) >= 3
+    assert [j.utterance for j in worker.finals] == list(range(1, len(worker.finals) + 1))

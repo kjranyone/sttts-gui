@@ -325,7 +325,12 @@ class LiveSession:
             if item is None:
                 break
             arrival, block = item
-            seg.feed(block, arrival)
+            try:
+                seg.feed(block, arrival)
+            except Exception as e:  # VAD スレッドを黙って死なせない
+                log.exception("vad feed failed")
+                self.app.on_asr_error(f"VAD 処理で例外: {e}")
+                break
 
         if self._source is not None:
             self._source.stop()
