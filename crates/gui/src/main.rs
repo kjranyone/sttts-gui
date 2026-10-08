@@ -27,6 +27,14 @@ const DEFAULT_INPUT_LABEL: &str = "既定の入力デバイス";
 const DEFAULT_OUTPUT_LABEL: &str = "既定のデバイス";
 const DEFAULT_VOICE_LABEL: &str = "既定の声(自動)";
 
+/// マイク開始/停止の遷移中状態(楽観的UI)。連打によるデバイスの短時間反復 open/close を防ぐ。
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum MicTransition {
+    None,
+    Starting,
+    Stopping,
+}
+
 /// 会話の1発話(あなた=ASR確定文 / 音声=TTS生成)。時系列で1本のビューに並べる。
 #[derive(Debug, Clone)]
 struct ConversationEntry {
@@ -56,9 +64,9 @@ pub struct StttsApp {
     tts_state: EngineState,
     asr_state: EngineState,
     mic_running: bool,
-    /// マイク開始要求を送ってから State(mic_running=true) が戻るまでの楽観的状態。
-    /// 押下即時にフィードバック(ボタン無効化+モーダル)を出すためのもの。
-    mic_starting: bool,
+    /// マイク開始/停止要求を送ってから State が戻るまでの楽観的状態。
+    /// 押下即時にフィードバック(ボタン無効化+モーダル)を出し、遷移中の再操作を防ぐ。
+    mic_transition: MicTransition,
 
     speak_input: Entity<TextareaState>,
     caption_input: Entity<InputState>,
@@ -187,7 +195,7 @@ impl StttsApp {
                 model: None,
             },
             mic_running: false,
-            mic_starting: false,
+            mic_transition: MicTransition::None,
             speak_input,
             caption_input,
             seed_input,
@@ -320,7 +328,7 @@ impl StttsApp {
                 app.push_log("バックエンドとの接続が切れました".into());
                 app.status_hint = "バックエンド停止".into();
                 app.mic_running = false;
-                app.mic_starting = false;
+                app.mic_transition = MicTransition::None;
                 app.speaking = false;
                 cx.notify();
             });
@@ -462,8 +470,8 @@ impl StttsApp {
                 self.tts_state = tts;
                 self.asr_state = asr;
                 self.mic_running = mic_running;
-                // 開始/停止いずれかの応答が届いたら「準備中」を解除する
-                self.mic_starting = false;
+                // 開始/停止いずれかの応答が届いたら遷移中状態を解除する
+                self.mic_transition = MicTransition::None;
             }
             BackendMessage::Log { level, message } => {
                 self.push_log(format!("[{level}] {message}"));
@@ -541,8 +549,8 @@ impl StttsApp {
             }
             BackendMessage::Error { scope, message, .. } => {
                 if scope == "asr" {
-                    // マイク/ASR 起動失敗: 「準備中」のまま固めない
-                    self.mic_starting = false;
+                    // マイク/ASR 起動・停止失敗: 遷移中のまま固めない
+                    self.mic_transition = MicTransition::None;
                 }
                 self.push_log(format!("[error:{scope}] {message}"));
             }
@@ -721,27 +729,32 @@ impl StttsApp {
     }
 
     fn toggle_mic(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.mic_running || self.mic_starting {
-            self.mic_starting = false;
-            self.send(GuiMessage::StopSession);
-        } else {
-            // 押下から State 応答までの間、即座に「準備中」を表示する(楽観的遷移)。
-            // backend は通常数百ms で応答するが、モデル同時ロード等で遅れることがある。
-            self.mic_starting = true;
-            self.send(GuiMessage::StartSession);
-            let started_at = std::time::Instant::now();
-            cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(std::time::Duration::from_secs(15)).await;
-                let _ = this.update(cx, |app, cx| {
-                    if app.mic_starting && started_at.elapsed() >= std::time::Duration::from_secs(15) {
-                        app.mic_starting = false;
-                        app.push_log("マイク開始がタイムアウトしました(もう一度お試しください)".into());
-                        cx.notify();
-                    }
-                });
-            })
-            .detach();
+        // 遷移中(開始中/停止中)の再操作は無視: マイクの短時間反復 open/close は
+        // USB オーディオドライバを落とすことがある(2026-10-09 に BugCheck 0xD1 を2度発生)。
+        if self.mic_transition != MicTransition::None {
+            return;
         }
+        let (transition, msg, timeout_log) = if self.mic_running {
+            (MicTransition::Stopping, GuiMessage::StopSession, "マイク停止がタイムアウトしました")
+        } else {
+            (MicTransition::Starting, GuiMessage::StartSession, "マイク開始がタイムアウトしました(もう一度お試しください)")
+        };
+        self.mic_transition = transition;
+        self.send(msg);
+        let started_at = std::time::Instant::now();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_secs(15)).await;
+            let _ = this.update(cx, |app, cx| {
+                if app.mic_transition != MicTransition::None
+                    && started_at.elapsed() >= std::time::Duration::from_secs(15)
+                {
+                    app.mic_transition = MicTransition::None;
+                    app.push_log(timeout_log.into());
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     /// 入力デバイス選択の適用。マイク実行中はセッションを張り直す。
@@ -924,16 +937,13 @@ impl Render for StttsApp {
             .child(div().text_xs().text_color(rgb(0x9aa0a6)).child(self.latency_detail()))
             .child(
                 Button::new("mic")
-                    .label(
-                        if self.mic_starting {
-                            "マイク開始中…"
-                        } else if self.mic_running {
-                            "マイク停止"
-                        } else {
-                            "マイク開始"
-                        }
-                    )
-                    .disabled(self.mic_starting)
+                    .label(match self.mic_transition {
+                        MicTransition::Starting => "マイク開始中…",
+                        MicTransition::Stopping => "マイク停止中…",
+                        MicTransition::None if self.mic_running => "マイク停止",
+                        MicTransition::None => "マイク開始",
+                    })
+                    .disabled(self.mic_transition != MicTransition::None)
                     .on_click(cx.listener(Self::toggle_mic)),
             )
             .child(
@@ -1032,7 +1042,7 @@ impl Render for StttsApp {
         let weak_random_seed = cx.weak_entity();
 
         // マイク開始中のモーダル風オーバーレイ(半透明で全画面を覆い、中央に状況カード)
-        let mic_modal = self.mic_starting.then(|| {
+        let mic_modal = (self.mic_transition != MicTransition::None).then(|| {
             div()
                 .id("mic-starting-overlay")
                 .absolute()
@@ -1057,13 +1067,21 @@ impl Render for StttsApp {
                             div()
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(rgb(0xe8eaed))
-                                .child("マイクを準備中…"),
+                                .child(if self.mic_transition == MicTransition::Stopping {
+                                    "マイクを停止中…"
+                                } else {
+                                    "マイクを準備中…"
+                                }),
                         )
                         .child(
                             div()
                                 .text_sm()
                                 .text_color(rgb(0x9aa0a6))
-                                .child("入力デバイスと認識エンジンの起動を待っています"),
+                                .child(if self.mic_transition == MicTransition::Stopping {
+                                    "デバイスの解放を待っています(直後の再開はしばらく受け付けません)"
+                                } else {
+                                    "入力デバイスと認識エンジンの起動を待っています"
+                                }),
                         ),
                 )
         });

@@ -104,6 +104,9 @@ class TtsJob:
 
 
 WARMUP_TEXT = "こんにちは、よろしくお願いします。"
+# 停止→再開の最小間隔(秒)。USB オーディオの短時間反復 open/close はドライバクラッシュを
+# 引き起こした実績あり(BugCheck 0xD1、2026-10 に2度)。
+SESSION_RESTART_COOLDOWN_S = 1.5
 
 
 @dataclass
@@ -168,6 +171,7 @@ class BackendApp:
 
         self._session = None  # SessionRunner
         self._utterance_seq = 0
+        self._last_session_stop_at = float("-inf")
 
         # 投機的 TTS
         self._spec_lock = threading.Lock()
@@ -834,8 +838,19 @@ class BackendApp:
         if self._session is not None:
             self.log("セッションは既に実行中です", "warn")
             return
+        # 停止直後の再開ガード(デバイスの短時間反復 open/close は USB オーディオ
+        # ドライバクラッシュ(BugCheck 0xD1 を 2026-10 に2度発生)を引き起こした)。
+        since_stop = time.monotonic() - self._last_session_stop_at
+        if since_stop < SESSION_RESTART_COOLDOWN_S:
+            self.send_error(
+                "asr",
+                f"停止直後の再開は{SESSION_RESTART_COOLDOWN_S}秒以内は受け付けません(残り"
+                f"{SESSION_RESTART_COOLDOWN_S - since_stop:.1f}秒。デバイス保護のため)",
+            )
+            return
         self._utterance_seq += 1
         asr_cfg = self.config["asr"]
+        preloaded = None
         try:
             if self.mock:
                 from .engines.mock import MockSession
@@ -881,6 +896,7 @@ class BackendApp:
             return
         self._session.stop()
         self._session = None
+        self._last_session_stop_at = time.monotonic()
         with self._state_lock:
             self._mic_running = False
         self._set_asr(IDLE if not self._asr_loaded_model else READY, None)

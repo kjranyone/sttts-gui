@@ -84,3 +84,29 @@ def test_cancel_discards_speculation(gate_app):
     app.on_asr_final(1, "こんにちは、今日はいい天気ですね。")
     assert _wait(lambda: len(app.of_type("speak_done")) == 1)
     assert all(a["speculative"] is False for a in app.of_type("tts_audio"))
+
+
+def test_session_restart_cooldown_blocks_and_allows(mock_app):
+    """停止直後の再開は拒否され、クールダウン経過後は受け付けること。"""
+    from sttts_server.app import SESSION_RESTART_COOLDOWN_S
+
+    app = mock_app
+    # mock セッションを直接注入して start/stop の実体を避ける
+    from sttts_server.engines.mock import MockSession
+
+    app._session = MockSession(app)
+    app._session.start()
+    app.stop_session()
+    assert app._session is None
+
+    # クールダウン内の再開は拒否(Error 通知)
+    app.start_session()
+    assert app._session is None
+    errs = app.of_type("error")
+    assert errs and errs[-1]["scope"] == "asr"
+
+    # クールダウン経過後は開始できる
+    time.sleep(SESSION_RESTART_COOLDOWN_S + 0.1)
+    app.start_session()
+    assert app._session is not None
+    app.stop_session()
