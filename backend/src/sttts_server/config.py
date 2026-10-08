@@ -19,8 +19,11 @@ DEFAULTS: dict[str, Any] = {
         "compute_type": "auto",  # "auto"(cuda→float16 / cpu→int8) | "int8" | "float16" | ...
         "cpu_threads": 0,  # 0 = CTranslate2 既定
         "final_beam_size": 2,
-        "partial_interval_ms": 800,
+        "partial_interval_ms": 800,  # 0 で partial(途中経過表示)を無効化
         "language": "ja",
+        # silero VAD: 無音がこの長さ続いたら発話終了(従来 400ms)。短いほど速いが文中の間で切れやすい
+        "vad_min_silence_ms": 280,
+        "vad_threshold": 0.5,
         # ReazonSpeech(asr.engine = "reazonspeech")用
         "reazon_model": "reazon-research/reazonspeech-k2-v2",
         "reazon_model_dir": None,  # 指定時は HF からDLせずこのディレクトリを使う
@@ -43,6 +46,10 @@ DEFAULTS: dict[str, Any] = {
         # 先頭チャンクを読点か約 8〜12 モーラで切って初音を早める(max=0 で無効)
         "first_chunk_mora_min": 8,
         "first_chunk_mora_max": 12,
+        # 投機的 TTS(既定 OFF): 同じ先頭チャンクが N 回連続した partial から先行合成し、
+        # 確定文の先頭チャンクと完全一致した場合だけ再生に回す(不一致なら破棄)
+        "speculative_tts": False,
+        "speculative_stable_partials": 2,
     },
 }
 

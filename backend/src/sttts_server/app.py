@@ -66,6 +66,24 @@ class SynthResult:
 
 
 @dataclass
+class SpecEntry:
+    """投機的 TTS(確定前の安定 partial から先頭チャンクを先行合成)の状態。
+
+    status: queued → running → done / failed、または discarded(不一致・キャンセル)。
+    request が設定される(=確定文の先頭チャンクと完全一致して束縛された)まで
+    音声は決して送らない。
+    """
+
+    utterance: int
+    text: str
+    seed: int
+    voice_key: tuple
+    status: str = "queued"
+    request: int | None = None
+    result: SynthResult | None = None
+
+
+@dataclass
 class TtsJob:
     request: int
     chunk: int
@@ -73,6 +91,7 @@ class TtsJob:
     caption: str | None
     ref_wavs: list[str] | None
     seed: int | None
+    spec: SpecEntry | None = None  # 投機ジョブ(request=0)の場合のみ
 
 
 @dataclass
@@ -121,6 +140,11 @@ class BackendApp:
 
         self._session = None  # SessionRunner
         self._utterance_seq = 0
+
+        # 投機的 TTS
+        self._spec_lock = threading.Lock()
+        self._specs: dict[int, SpecEntry] = {}  # utterance -> entry(最新の発話のみ保持)
+        self._spec_track: dict[int, tuple[str, int]] = {}  # utterance -> (先頭チャンク候補, 連続回数)
 
         self._stop = threading.Event()
 
@@ -280,6 +304,28 @@ class BackendApp:
 
     # ---------- TTS ----------
 
+    def _resolve_voice(self, msg: dict) -> tuple[str | None, list[str] | None]:
+        voice = self.config["voice"]
+        caption = msg.get("caption")
+        ref_wavs = msg.get("ref_wavs")
+        if caption is None and voice.get("caption"):
+            caption = voice["caption"]
+        if ref_wavs is None and voice.get("ref_wavs"):
+            ref_wavs = list(voice["ref_wavs"])
+        return caption, ref_wavs
+
+    def _voice_key(self, caption, ref_wavs) -> tuple:
+        """投機結果を流用してよいかの判定キー(声・モデル・合成設定が同一であること)。"""
+        tts = self.config["tts"]
+        return (
+            caption,
+            tuple(ref_wavs or ()),
+            tts.get("model"),
+            tts.get("num_steps"),
+            tts.get("device"),
+            tts.get("precision"),
+        )
+
     def speak(self, msg: dict) -> None:
         text = (msg.get("text") or "").strip()
         if not text:
@@ -290,13 +336,7 @@ class BackendApp:
             self.send_error("tts", "チャンクに分割できませんでした")
             return
 
-        voice = self.config["voice"]
-        caption = msg.get("caption")
-        ref_wavs = msg.get("ref_wavs")
-        if caption is None and voice.get("caption"):
-            caption = voice["caption"]
-        if ref_wavs is None and voice.get("ref_wavs"):
-            ref_wavs = list(voice["ref_wavs"])
+        caption, ref_wavs = self._resolve_voice(msg)
 
         with self._pending_lock:
             self._request_seq += 1
@@ -317,7 +357,22 @@ class BackendApp:
             }
         )
         seed = self._request_seed(msg.get("seed"))
+
+        # 投機的 TTS の束縛: 確定文の先頭チャンクと完全一致し、声・設定が同じときだけ流用する
+        first = 0
+        utterance = msg.get("utterance")
+        if utterance is not None and msg.get("seed") is None:
+            spec, emit_now = self._bind_spec(int(utterance), request, chunks[0], self._voice_key(caption, ref_wavs))
+            if spec is not None:
+                seed = spec.seed
+                first = 1
+                if emit_now:
+                    self._emit_chunk(request, 0, spec.text, spec.result, speculative=True)
+                    self._mark_chunk_done(request, failed=False)
+
         for i, chunk_text in enumerate(chunks):
+            if i < first:
+                continue
             self._tts_queue.put(
                 TtsJob(
                     request=request,
@@ -328,6 +383,75 @@ class BackendApp:
                     seed=seed,
                 )
             )
+
+    # ---------- 投機的 TTS ----------
+
+    def _spec_enabled(self) -> bool:
+        p = self.config["pipeline"]
+        return bool(p.get("speculative_tts")) and bool(p.get("auto_speak"))
+
+    def _maybe_speculate(self, utterance: int, text: str) -> None:
+        """安定した partial(同じ先頭チャンクが N 回連続)から先頭チャンクを先行合成する。"""
+        if not self._spec_enabled() or not text.strip():
+            return
+        chunks = self._split(text)
+        # 先頭チャンクの後ろに続きがある(=切れ目が確定している)場合だけ候補にする
+        if len(chunks) < 2:
+            with self._spec_lock:
+                self._spec_track.pop(utterance, None)
+            return
+        candidate = chunks[0]
+        needed = max(1, int(self.config["pipeline"].get("speculative_stable_partials", 2)))
+        caption, ref_wavs = self._resolve_voice({})
+        key = self._voice_key(caption, ref_wavs)
+        with self._spec_lock:
+            prev, count = self._spec_track.get(utterance, ("", 0))
+            count = count + 1 if prev == candidate else 1
+            self._spec_track = {utterance: (candidate, count)}  # 古い発話の追跡情報は捨てる
+            if count < needed:
+                return
+            cur = self._specs.get(utterance)
+            if cur is not None and cur.text == candidate and cur.voice_key == key and cur.status != "discarded":
+                return  # 既に同じ候補で投機済み
+            if cur is not None and cur.request is not None:
+                return  # 既に確定に束縛済み
+            for old in self._specs.values():
+                if old.request is None:
+                    old.status = "discarded"
+            spec = SpecEntry(utterance=utterance, text=candidate, seed=secrets.randbits(31), voice_key=key)
+            self._specs = {utterance: spec}
+        log.info("speculative TTS start: utt=%d text=%r", utterance, candidate)
+        self._tts_queue.put(
+            TtsJob(request=0, chunk=0, text=candidate, caption=caption, ref_wavs=ref_wavs, seed=spec.seed, spec=spec)
+        )
+
+    def _bind_spec(self, utterance: int, request: int, first_text: str, key: tuple):
+        """(spec, emit_now) を返す。一致しなければ (None, False) で投機結果は破棄。"""
+        with self._spec_lock:
+            spec = self._specs.pop(utterance, None)
+            self._spec_track.pop(utterance, None)
+            if spec is None:
+                return None, False
+            ok = (
+                spec.text == first_text
+                and spec.voice_key == key
+                and spec.status in ("queued", "running", "done")
+                and spec.request is None
+            )
+            if not ok:
+                if spec.status != "discarded":
+                    log.info("speculative TTS discarded: %r != %r", spec.text, first_text)
+                spec.status = "discarded"
+                return None, False
+            spec.request = request
+            return spec, spec.status == "done"
+
+    def _discard_specs(self) -> None:
+        with self._spec_lock:
+            for spec in self._specs.values():
+                spec.status = "discarded"
+            self._specs = {}
+            self._spec_track = {}
 
     def _split(self, text: str) -> list[str]:
         pipeline = self.config["pipeline"]
@@ -434,73 +558,108 @@ class BackendApp:
         self._tts_loaded_model = model
         self._set_tts(READY, None)
 
+    def _synthesize(self, job: TtsJob) -> SynthResult:
+        with self._engine_lock:
+            with _engine_quiet_stdout():
+                self._load_engine_locked()
+        with _engine_quiet_stdout():
+            return self._engine.synthesize(
+                job.text,
+                caption=job.caption,
+                ref_wavs=job.ref_wavs,
+                seed=job.seed,
+                progress=ProgressFn(self, "tts"),
+            )
+
+    def _emit_chunk(self, request: int, chunk: int, text: str, result: SynthResult, *, speculative: bool = False) -> None:
+        """1チャンク分の tts_chunk_start / tts_audio / tts_chunk_done を送る。"""
+        with self._pending_lock:
+            info = self._pending.get(request)
+            if info is None or info["cancelled"]:
+                return
+        self.send({"type": "tts_chunk_start", "request": request, "chunk": chunk, "text": text})
+        path = self._save_wav(result.wav_bytes)
+        self.send(
+            {
+                "type": "tts_audio",
+                "request": request,
+                "chunk": chunk,
+                "wav_base64": base64.b64encode(result.wav_bytes).decode("ascii"),
+                "sample_rate": result.sample_rate,
+                "duration_ms": result.duration_ms,
+                "gen_ms": result.gen_ms,
+                "path": path,
+                "seed": result.used_seed,
+                "speculative": speculative,
+            }
+        )
+        self.send({"type": "tts_chunk_done", "request": request, "chunk": chunk, "gen_ms": result.gen_ms})
+
+    def _mark_chunk_done(self, request: int, *, failed: bool) -> None:
+        with self._pending_lock:
+            info = self._pending.get(request)
+            if info is not None:
+                info["done"] += 1
+                if failed:
+                    info["failed"] = True
+                self._send_speak_done_locked(request)
+
+    def _run_spec_job(self, job: TtsJob) -> None:
+        spec = job.spec
+        with self._spec_lock:
+            if spec.status == "discarded":
+                return
+            spec.status = "running"
+        try:
+            result = self._synthesize(job)
+        except Exception:
+            log.exception("speculative synthesis failed")
+            result = None
+        with self._spec_lock:
+            spec.result = result
+            if spec.status == "discarded":
+                return
+            if spec.request is None:
+                spec.status = "done" if result is not None else "failed"
+                return
+            spec.status = "emitted"
+            request = spec.request
+        # 確定文に束縛済み → 先頭チャンクとして送る(後続チャンクは FIFO でこの後ろ)
+        if result is None:
+            # 投機合成が失敗した場合は同じテキストを通常合成し直す(順序を保つためここで同期実行)
+            self._run_job(TtsJob(request, 0, spec.text, job.caption, job.ref_wavs, spec.seed))
+            return
+        self._emit_chunk(request, 0, spec.text, result, speculative=True)
+        self._mark_chunk_done(request, failed=False)
+
+    def _run_job(self, job: TtsJob) -> None:
+        with self._pending_lock:
+            info = self._pending.get(job.request)
+            cancelled = bool(info is None or info["cancelled"])
+        if cancelled:
+            return  # キャンセル済みリクエストの残チャンクはスキップ
+        try:
+            result = self._synthesize(job)
+        except Exception as e:
+            log.exception("synthesis failed")
+            self.send_error("tts", f"合成失敗: {e}", recoverable=True)
+            self._mark_chunk_done(job.request, failed=True)
+            return
+        self._emit_chunk(job.request, job.chunk, job.text, result)
+        self._mark_chunk_done(job.request, failed=False)
+
     def _tts_worker(self) -> None:
         while True:
             job = self._tts_queue.get()
             if job is None or self._stop.is_set():
                 break
-            with self._pending_lock:
-                info = self._pending.get(job.request)
-                cancelled = bool(info and info["cancelled"])
-            if cancelled:
-                # キャンセル済みリクエストの残チャンクはスキップ
-                continue
             try:
-                with self._engine_lock:
-                    with _engine_quiet_stdout():
-                        self._load_engine_locked()
-                self.send(
-                    {
-                        "type": "tts_chunk_start",
-                        "request": job.request,
-                        "chunk": job.chunk,
-                        "text": job.text,
-                    }
-                )
-                with _engine_quiet_stdout():
-                    result = self._engine.synthesize(
-                        job.text,
-                        caption=job.caption,
-                        ref_wavs=job.ref_wavs,
-                        seed=job.seed,
-                        progress=ProgressFn(self, "tts"),
-                    )
-                path = self._save_wav(result.wav_bytes)
-                self.send(
-                    {
-                        "type": "tts_audio",
-                        "request": job.request,
-                        "chunk": job.chunk,
-                        "wav_base64": base64.b64encode(result.wav_bytes).decode("ascii"),
-                        "sample_rate": result.sample_rate,
-                        "duration_ms": result.duration_ms,
-                        "gen_ms": result.gen_ms,
-                        "path": path,
-                        "seed": result.used_seed,
-                    }
-                )
-                self.send(
-                    {
-                        "type": "tts_chunk_done",
-                        "request": job.request,
-                        "chunk": job.chunk,
-                        "gen_ms": result.gen_ms,
-                    }
-                )
-                with self._pending_lock:
-                    info = self._pending.get(job.request)
-                    if info is not None:
-                        info["done"] += 1
-                        self._send_speak_done_locked(job.request)
-            except Exception as e:
-                log.exception("synthesis failed")
-                self.send_error("tts", f"合成失敗: {e}", recoverable=True)
-                with self._pending_lock:
-                    info = self._pending.get(job.request)
-                    if info is not None:
-                        info["done"] += 1
-                        info["failed"] = True
-                        self._send_speak_done_locked(job.request)
+                if job.spec is not None:
+                    self._run_spec_job(job)
+                else:
+                    self._run_job(job)
+            except Exception:
+                log.exception("tts worker error")
 
     # ---------- セッション(マイク+ASR) ----------
 
@@ -556,11 +715,17 @@ class BackendApp:
 
     def on_asr_partial(self, utterance: int, text: str, asr_ms: int | None = None) -> None:
         self.send({"type": "asr_partial", "utterance": utterance, "text": text})
+        try:
+            self._maybe_speculate(utterance, text)
+        except Exception:
+            log.exception("speculative TTS failed")
 
     def on_asr_final(self, utterance: int, text: str, timing: dict | None = None) -> None:
         self.send({"type": "asr_final", "utterance": utterance, "text": text})
         if self.config["pipeline"]["auto_speak"] and text.strip():
-            self.speak({"text": text, "origin": "auto"})
+            self.speak({"text": text, "origin": "auto", "utterance": utterance})
+        else:
+            self._discard_specs()
 
     # ---------- 終了 ----------
 

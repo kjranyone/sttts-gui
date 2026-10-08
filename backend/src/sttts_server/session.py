@@ -235,7 +235,7 @@ class LiveSession:
         interval_ms = int(cfg.get("partial_interval_ms") or 0)
         self.partial_interval = max(0.4, interval_ms / 1000.0) if interval_ms > 0 else 0.0
         self.vad_threshold = float(cfg.get("vad_threshold") or 0.5)
-        self.vad_min_silence_ms = int(cfg.get("vad_min_silence_ms") or 400)
+        self.vad_min_silence_ms = int(cfg.get("vad_min_silence_ms") or 280)
         # 無制限キュー: ASR が遅くても音声は捨てない(VAD スレッドは軽量なので溜まらない)
         self.audio_q: queue.Queue[tuple[float, np.ndarray] | None] = queue.Queue()
         self._stop = threading.Event()

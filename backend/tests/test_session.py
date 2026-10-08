@@ -246,3 +246,13 @@ def test_live_session_end_to_end_with_mock_asr():
     assert (utt, text) == (1, "テストです")
     assert timing["asr_ms"] >= 40
     assert timing["speech_end"] <= timing["vad_end"]
+
+
+def test_vad_min_silence_default_is_280ms():
+    from sttts_server.config import default_config
+    from sttts_server.engines.vad_silero import SileroVad
+
+    assert default_config()["asr"]["vad_min_silence_ms"] == 280
+    vad = SileroVad()
+    assert vad._iter.min_silence_samples == 16000 * 280 / 1000
+    assert SileroVad(min_silence_ms=400)._iter.min_silence_samples == 6400

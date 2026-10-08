@@ -8,7 +8,7 @@ FRAME = 512  # 16kHz 固定(silero-vad の標準ストリーミング単位)
 
 
 class SileroVad:
-    def __init__(self, threshold: float = 0.5, min_silence_ms: int = 400) -> None:
+    def __init__(self, threshold: float = 0.5, min_silence_ms: int = 280) -> None:
         from silero_vad import VADIterator, load_silero_vad  # noqa: PLC0415
 
         model = load_silero_vad(onnx=True)
