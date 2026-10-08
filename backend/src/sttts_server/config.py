@@ -37,8 +37,12 @@ DEFAULTS: dict[str, Any] = {
     },
     "pipeline": {
         "auto_speak": True,
-        "chunk_min_chars": 16,
+        "chunk_min_chars": 16,  # 2チャンク目以降の最小文字数
+        "chunk_max_chars": 80,  # これを超える塊は読点/文節境界で分割(句読点なし ASR 出力対策)
         "first_chunk_min_chars": 1,
+        # 先頭チャンクを読点か約 8〜12 モーラで切って初音を早める(max=0 で無効)
+        "first_chunk_mora_min": 8,
+        "first_chunk_mora_max": 12,
     },
 }
 

@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import queue
+import secrets
 import sys
 import threading
 import time
@@ -284,12 +285,7 @@ class BackendApp:
         if not text:
             self.send_error("tts", "空のテキストです")
             return
-        pipeline = self.config["pipeline"]
-        chunks = split_chunks(
-            text,
-            min_chars=int(pipeline["chunk_min_chars"]),
-            first_min_chars=int(pipeline["first_chunk_min_chars"]),
-        )
+        chunks = self._split(text)
         if not chunks:
             self.send_error("tts", "チャンクに分割できませんでした")
             return
@@ -320,6 +316,7 @@ class BackendApp:
                 "tag": msg.get("tag"),
             }
         )
+        seed = self._request_seed(msg.get("seed"))
         for i, chunk_text in enumerate(chunks):
             self._tts_queue.put(
                 TtsJob(
@@ -328,9 +325,28 @@ class BackendApp:
                     text=chunk_text,
                     caption=caption,
                     ref_wavs=ref_wavs,
-                    seed=msg.get("seed"),
+                    seed=seed,
                 )
             )
+
+    def _split(self, text: str) -> list[str]:
+        pipeline = self.config["pipeline"]
+        return split_chunks(
+            text,
+            min_chars=int(pipeline.get("chunk_min_chars", 16)),
+            first_min_chars=int(pipeline.get("first_chunk_min_chars", 1)),
+            max_chars=int(pipeline.get("chunk_max_chars", 80) or 0),
+            first_mora_min=float(pipeline.get("first_chunk_mora_min", 8) or 0),
+            first_mora_max=float(pipeline.get("first_chunk_mora_max", 12) or 0),
+        )
+
+    @staticmethod
+    def _request_seed(seed) -> int:
+        """リクエスト単位の seed。未指定(ランダム)ならここで1回だけ決めて全チャンクで共有する
+        (チャンクごとに別 seed だと、参照音声なしの声質がチャンク間で変わるため)。"""
+        if seed is None:
+            return secrets.randbits(31)
+        return int(seed)
 
     def _save_wav(self, wav_bytes: bytes) -> str | None:
         """生成WAVを output/ へ保存し、パスを返す(失敗時は None、致命傷にしない)。"""
