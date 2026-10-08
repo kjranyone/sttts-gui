@@ -893,6 +893,52 @@ impl Render for StttsApp {
             "—".to_string()
         };
 
+        // マイク開始/停止の遷移中は画面全体をモーダルに差し替える。
+        // (absolute + z 順序での重ねは gpui のレイアウト解釈に依存して表示されない
+        // ことがあったため、確実に見える方式にする。遷移は数百ms〜1.5s で一時的)
+        if self.mic_transition != MicTransition::None {
+            let (title, sub) = match self.mic_transition {
+                MicTransition::Stopping => (
+                    "マイクを停止中…",
+                    "デバイスの解放を待っています(直後の再開はしばらく受け付けません)",
+                ),
+                _ => (
+                    "マイクを準備中…",
+                    "入力デバイスと認識エンジンの起動を待っています",
+                ),
+            };
+            return div()
+                .size_full()
+                .bg(rgb(0x1e1f22))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    v_flex()
+                        .id("mic-transition-modal")
+                        .gap_1()
+                        .px_8()
+                        .py_6()
+                        .rounded_lg()
+                        .bg(rgb(0x2b2d31))
+                        .border_1()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_base()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(0xe8eaed))
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(0x9aa0a6))
+                                .child(sub),
+                        ),
+                );
+        }
+
         // 発話パイプラインの状態(合成 → 再生キュー → 再生)を1行に集約する。
         // バラバラな情報(ボタンラベル/下部バー)に分散すると「今どの段階か」が読めない。
         let play_queue = self.audio.as_ref().map(|a| a.pending_chunks()).unwrap_or(0);
@@ -1047,51 +1093,6 @@ impl Render for StttsApp {
         let weak_auto_speak = cx.weak_entity();
         let weak_random_seed = cx.weak_entity();
 
-        // マイク開始中のモーダル風オーバーレイ(半透明で全画面を覆い、中央に状況カード)
-        let mic_modal = (self.mic_transition != MicTransition::None).then(|| {
-            div()
-                .id("mic-starting-overlay")
-                .occlude()
-                .absolute()
-                .size_full()
-                .top_0()
-                .left_0()
-                .bg(rgba(0x00000099))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    v_flex()
-                        .id("mic-starting-card")
-                        .gap_1()
-                        .px_6()
-                        .py_5()
-                        .rounded_lg()
-                        .bg(rgb(0x2b2d31))
-                        .border_1()
-                        .items_center()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(0xe8eaed))
-                                .child(if self.mic_transition == MicTransition::Stopping {
-                                    "マイクを停止中…"
-                                } else {
-                                    "マイクを準備中…"
-                                }),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(0x9aa0a6))
-                                .child(if self.mic_transition == MicTransition::Stopping {
-                                    "デバイスの解放を待っています(直後の再開はしばらく受け付けません)"
-                                } else {
-                                    "入力デバイスと認識エンジンの起動を待っています"
-                                }),
-                        ),
-                )
-        });
 
         div()
             .size_full()
@@ -1334,8 +1335,6 @@ impl Render for StttsApp {
                             .child(format!("会話: {} 件", self.conversation.len())),
                     ),
             )
-            // モーダルは最後に追加する(gpui は後から描いた子が上に重なる)
-            .children(mic_modal)
     }
 }
 
