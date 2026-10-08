@@ -56,6 +56,9 @@ pub struct StttsApp {
     tts_state: EngineState,
     asr_state: EngineState,
     mic_running: bool,
+    /// マイク開始要求を送ってから State(mic_running=true) が戻るまでの楽観的状態。
+    /// 押下即時にフィードバック(ボタン無効化+モーダル)を出すためのもの。
+    mic_starting: bool,
 
     speak_input: Entity<TextareaState>,
     caption_input: Entity<InputState>,
@@ -184,6 +187,7 @@ impl StttsApp {
                 model: None,
             },
             mic_running: false,
+            mic_starting: false,
             speak_input,
             caption_input,
             seed_input,
@@ -316,6 +320,7 @@ impl StttsApp {
                 app.push_log("バックエンドとの接続が切れました".into());
                 app.status_hint = "バックエンド停止".into();
                 app.mic_running = false;
+                app.mic_starting = false;
                 app.speaking = false;
                 cx.notify();
             });
@@ -457,6 +462,8 @@ impl StttsApp {
                 self.tts_state = tts;
                 self.asr_state = asr;
                 self.mic_running = mic_running;
+                // 開始/停止いずれかの応答が届いたら「準備中」を解除する
+                self.mic_starting = false;
             }
             BackendMessage::Log { level, message } => {
                 self.push_log(format!("[{level}] {message}"));
@@ -533,6 +540,10 @@ impl StttsApp {
                 ));
             }
             BackendMessage::Error { scope, message, .. } => {
+                if scope == "asr" {
+                    // マイク/ASR 起動失敗: 「準備中」のまま固めない
+                    self.mic_starting = false;
+                }
                 self.push_log(format!("[error:{scope}] {message}"));
             }
             BackendMessage::Pong { .. } => {}
@@ -709,11 +720,27 @@ impl StttsApp {
         self.persist_settings(_cx);
     }
 
-    fn toggle_mic(&mut self, _ev: &ClickEvent, _window: &mut Window, _cx: &mut Context<Self>) {
-        if self.mic_running {
+    fn toggle_mic(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.mic_running || self.mic_starting {
+            self.mic_starting = false;
             self.send(GuiMessage::StopSession);
         } else {
+            // 押下から State 応答までの間、即座に「準備中」を表示する(楽観的遷移)。
+            // backend は通常数百ms で応答するが、モデル同時ロード等で遅れることがある。
+            self.mic_starting = true;
             self.send(GuiMessage::StartSession);
+            let started_at = std::time::Instant::now();
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(std::time::Duration::from_secs(15)).await;
+                let _ = this.update(cx, |app, cx| {
+                    if app.mic_starting && started_at.elapsed() >= std::time::Duration::from_secs(15) {
+                        app.mic_starting = false;
+                        app.push_log("マイク開始がタイムアウトしました(もう一度お試しください)".into());
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
         }
     }
 
@@ -897,7 +924,16 @@ impl Render for StttsApp {
             .child(div().text_xs().text_color(rgb(0x9aa0a6)).child(self.latency_detail()))
             .child(
                 Button::new("mic")
-                    .label(if self.mic_running { "マイク停止" } else { "マイク開始" })
+                    .label(
+                        if self.mic_starting {
+                            "マイク開始中…"
+                        } else if self.mic_running {
+                            "マイク停止"
+                        } else {
+                            "マイク開始"
+                        }
+                    )
+                    .disabled(self.mic_starting)
                     .on_click(cx.listener(Self::toggle_mic)),
             )
             .child(
@@ -995,10 +1031,49 @@ impl Render for StttsApp {
         let weak_auto_speak = cx.weak_entity();
         let weak_random_seed = cx.weak_entity();
 
+        // マイク開始中のモーダル風オーバーレイ(半透明で全画面を覆い、中央に状況カード)
+        let mic_modal = self.mic_starting.then(|| {
+            div()
+                .id("mic-starting-overlay")
+                .absolute()
+                .size_full()
+                .top_0()
+                .left_0()
+                .bg(rgba(0x00000099))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    v_flex()
+                        .id("mic-starting-card")
+                        .gap_1()
+                        .px_6()
+                        .py_5()
+                        .rounded_lg()
+                        .bg(rgb(0x2b2d31))
+                        .border_1()
+                        .items_center()
+                        .child(
+                            div()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(0xe8eaed))
+                                .child("マイクを準備中…"),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(0x9aa0a6))
+                                .child("入力デバイスと認識エンジンの起動を待っています"),
+                        ),
+                )
+        });
+
         div()
             .size_full()
+            .relative()
             .bg(rgb(0x1e1f22))
             .text_color(rgb(0xe8eaed))
+            .children(mic_modal)
             .child(
                 v_flex()
                     .size_full()
