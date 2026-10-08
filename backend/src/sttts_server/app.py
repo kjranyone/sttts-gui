@@ -24,7 +24,7 @@ from pathlib import Path
 
 from . import BACKEND_VERSION
 from .chunker import split_chunks
-from .config import default_config, merge_config
+from .config import default_config, load_user_config, merge_config
 from .protocol import ERROR, IDLE, LOADING, MODEL_CATALOG, PROTOCOL_VERSION, READY
 
 # stderr 用ロガー(stdout はプロトコル専用のため)
@@ -129,6 +129,8 @@ class BackendApp:
         mock_tts: bool = False,
         input_wavs: list[str] | None = None,
         save_wavs: bool = True,
+        config_path: str | None = None,
+        load_user_file: bool = True,
     ) -> None:
         self.mock = mock
         self.mock_tts = mock or mock_tts  # 実 ASR + モック TTS(ベンチ用)
@@ -136,6 +138,8 @@ class BackendApp:
         self.save_wavs = save_wavs
         self.output_dir = output_dir
         self.config = default_config()
+        if load_user_file:
+            self.config = merge_config(self.config, load_user_config(config_path))
 
         # プロトコル専用ストリーム(元の fd 1 の複製。エンジンの fd リダイレクトの影響を受けない)
         self._proto = os.fdopen(os.dup(1), "w", encoding="utf-8", buffering=1)

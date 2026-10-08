@@ -1,9 +1,23 @@
-"""設定の既定値とマージ。設定の永続化は GUI(Rust)側が担い、backend は configure で受ける。"""
+"""設定の既定値とマージ。
+
+設定の永続化は GUI(Rust)側が担い、backend は configure で受ける。GUI に UI が無い
+上級設定(ASR エンジン・VAD・投機的 TTS 等)は、任意の JSON ファイル
+`<repo>/data/backend.json`(環境変数 STTTS_CONFIG / --config で変更可)に書くと
+起動時に既定値へマージされる。GUI からの configure はその上に適用される。
+"""
 
 from __future__ import annotations
 
 import copy
+import json
+import logging
+import os
+from pathlib import Path
 from typing import Any
+
+log = logging.getLogger("sttts.config")
+
+SECTIONS = ("tts", "asr", "audio", "voice", "pipeline")
 
 DEFAULTS: dict[str, Any] = {
     "tts": {
@@ -76,3 +90,31 @@ def merge_config(base: dict[str, Any], patch: dict[str, Any] | None) -> dict[str
         else:
             out[key] = copy.deepcopy(value)
     return out
+
+
+def default_user_config_path() -> Path:
+    env = os.environ.get("STTTS_CONFIG")
+    if env:
+        return Path(env)
+    # src/sttts_server/config.py → リポジトリルート/data/backend.json
+    return Path(__file__).resolve().parents[3] / "data" / "backend.json"
+
+
+def load_user_config(path: str | os.PathLike | None = None) -> dict[str, Any]:
+    """ユーザー設定 JSON を読む。無ければ {}。未知のセクションは無視して警告する。"""
+    p = Path(path) if path else default_user_config_path()
+    if not p.is_file():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning("設定ファイルを読めません(無視します): %s: %s", p, e)
+        return {}
+    if not isinstance(data, dict):
+        log.warning("設定ファイルの形式が不正です(オブジェクトではない): %s", p)
+        return {}
+    unknown = sorted(k for k in data if k not in SECTIONS)
+    if unknown:
+        log.warning("設定ファイルの未知のセクションを無視: %s", unknown)
+    log.info("設定ファイルを読み込みました: %s", p)
+    return {k: v for k, v in data.items() if k in SECTIONS and isinstance(v, dict)}

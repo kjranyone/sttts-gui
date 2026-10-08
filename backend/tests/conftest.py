@@ -19,6 +19,6 @@ class RecordingApp(BackendApp):
 
 @pytest.fixture
 def mock_app(tmp_path):
-    app = RecordingApp(mock=True, output_dir=str(tmp_path / "out"))
+    app = RecordingApp(mock=True, output_dir=str(tmp_path / "out"), load_user_file=False)
     yield app
     app._stop.set()

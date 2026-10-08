@@ -33,6 +33,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="マイクの代わりに WAV を実時間ペースで流す(複数指定可、ベンチ用)",
     )
     p.add_argument("--no-save-wav", action="store_true", help="生成 WAV を output/ に保存しない")
+    p.add_argument("--config", default=None, help="上級設定 JSON(既定: <repo>/data/backend.json、STTTS_CONFIG)")
     return p
 
 
@@ -101,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
         mock_tts=args.mock_tts,
         input_wavs=args.input_wav,
         save_wavs=not args.no_save_wav,
+        config_path=args.config,
     )
     app.run_stdio()
     return 0
