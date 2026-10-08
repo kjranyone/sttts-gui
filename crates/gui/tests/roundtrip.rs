@@ -15,10 +15,13 @@ fn python_program() -> Option<String> {
     if let Ok(p) = std::env::var("STTTS_PYTHON") {
         return Some(p);
     }
-    // リポジトリの venv を優先
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../backend/.venv/Scripts/python.exe");
-    if root.exists() {
-        return Some(root.to_string_lossy().into_owned());
+    // リポジトリの venv を優先(Windows: Scripts/python.exe、Linux/macOS: bin/python)
+    let venv = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../backend/.venv");
+    for rel in ["Scripts/python.exe", "bin/python"] {
+        let p = venv.join(rel);
+        if p.exists() {
+            return Some(p.to_string_lossy().into_owned());
+        }
     }
     which_python()
 }
