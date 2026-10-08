@@ -47,8 +47,11 @@ def beep_wav_bytes(duration_s: float, freq: float = 660.0, seed: int | None = No
 class MockTts:
     """stdlib のみで動く TTS エンジン代替。"""
 
-    def __init__(self, model_id: str) -> None:
+    def __init__(self, model_id: str, *, delay_ms: float = 50.0, rtf: float = 0.0, **_ignored) -> None:
+        """delay_ms: 固定の合成時間、rtf: 音声長に比例する合成時間(ベンチで実機相当を模倣)。"""
         self.model_id = model_id
+        self.delay_ms = float(delay_ms)
+        self.rtf = float(rtf)
 
     def load(self, progress=None) -> None:
         time.sleep(0.3)  # ロードを模倣
@@ -58,7 +61,11 @@ class MockTts:
         # 読了時間風: 文字数×90ms + 400ms、上限8秒
         duration = min(0.4 + 0.09 * len(text), 8.0)
         wav = beep_wav_bytes(duration, seed=seed)
-        time.sleep(0.05)  # 合成を模倣
+        # 合成を模倣(ビープ生成時間を差し引いて delay + rtf*duration に合わせる)
+        target = (self.delay_ms / 1000.0) + self.rtf * duration
+        remaining = target - (time.perf_counter() - t0)
+        if remaining > 0:
+            time.sleep(remaining)
         return SynthResult(
             wav_bytes=wav,
             sample_rate=SAMPLE_RATE,
@@ -157,7 +164,13 @@ class MockSession:
                 self.app.on_mic_level(rms=0.05, db=-26.0)
                 self.app.on_asr_partial(utt, text)
                 time.sleep(0.45)
-            self.app.on_asr_final(utt, partials[-1])
+            # 計測フィールドも模擬(話し終わり 280ms 後に VAD が確定、ASR は即時)
+            now = time.monotonic()
+            self.app.on_asr_final(
+                utt,
+                partials[-1],
+                timing={"speech_end": now - 0.28, "vad_end": now, "asr_ms": 0, "audio_ms": 1500},
+            )
             utt += 1
             time.sleep(1.2)
 

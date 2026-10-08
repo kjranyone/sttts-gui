@@ -4,6 +4,7 @@
     uv run python -m sttts_server --stdio [--mock] [--output-dir DIR]
     uv run python -m sttts_server --self-check-tts "テキスト" [--mock]
     uv run python -m sttts_server --self-check-asr
+    uv run python -m sttts_server --stdio --mock-tts --input-wav a.wav  # ベンチ用(scripts/bench_latency.py)
 """
 
 from __future__ import annotations
@@ -23,6 +24,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--self-check-tts", metavar="TEXT", help="TEXT を合成して WAV を保存し結果をJSONで出力して終了")
     p.add_argument("--self-check-asr", action="store_true", help="マイクから5秒録音して文字起こしし結果をJSONで出力して終了")
     p.add_argument("--model", default=None, help="self-check 用モデルエイリアス")
+    p.add_argument("--mock-tts", action="store_true", help="TTS だけモックにする(実 ASR + モック TTS のベンチ用)")
+    p.add_argument(
+        "--input-wav",
+        action="append",
+        default=[],
+        metavar="WAV",
+        help="マイクの代わりに WAV を実時間ペースで流す(複数指定可、ベンチ用)",
+    )
+    p.add_argument("--no-save-wav", action="store_true", help="生成 WAV を output/ に保存しない")
     return p
 
 
@@ -61,6 +71,7 @@ def _self_check_tts(args: argparse.Namespace) -> int:
                 "duration_ms": result.duration_ms,
                 "gen_ms": result.gen_ms,
                 "used_seed": result.used_seed,
+                "stages": getattr(result, "stages", None),
             },
             ensure_ascii=False,
         )
@@ -84,7 +95,13 @@ def main(argv: list[str] | None = None) -> int:
 
     from sttts_server.app import BackendApp
 
-    app = BackendApp(mock=args.mock, output_dir=args.output_dir)
+    app = BackendApp(
+        mock=args.mock,
+        output_dir=args.output_dir,
+        mock_tts=args.mock_tts,
+        input_wavs=args.input_wav,
+        save_wavs=not args.no_save_wav,
+    )
     app.run_stdio()
     return 0
 

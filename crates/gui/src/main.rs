@@ -73,6 +73,12 @@ pub struct StttsApp {
     pending_chunk_text: Option<String>,
     logs: VecDeque<String>,
     last_gen_ms: Option<u64>,
+    /// 発話終了 → 初音(先頭チャンクを再生キューに積むまで)の直近値と履歴(中央値表示用)
+    last_e2e_ms: Option<u64>,
+    e2e_history: VecDeque<u64>,
+    last_asr_ms: Option<u64>,
+    last_first_chunk_ms: Option<u64>,
+    last_rtf: Option<f64>,
     speaking: bool,
     /// 受付済み最大 request id(speak_accepted)
     last_accepted_request: u64,
@@ -170,6 +176,11 @@ impl StttsApp {
             pending_chunk_text: None,
             logs: VecDeque::new(),
             last_gen_ms: None,
+            last_e2e_ms: None,
+            e2e_history: VecDeque::new(),
+            last_asr_ms: None,
+            last_first_chunk_ms: None,
+            last_rtf: None,
             speaking: false,
             last_accepted_request: 0,
             cancelled_upto: 0,
@@ -355,10 +366,13 @@ impl StttsApp {
             BackendMessage::MicLevel { db, .. } => {
                 self.mic_level_db = db;
             }
-            BackendMessage::AsrPartial { utterance, text } => {
+            BackendMessage::AsrPartial { utterance, text, .. } => {
                 self.upsert_transcript(utterance, None, Some(text));
             }
-            BackendMessage::AsrFinal { utterance, text } => {
+            BackendMessage::AsrFinal { utterance, text, asr_ms, .. } => {
+                if asr_ms.is_some() {
+                    self.last_asr_ms = asr_ms;
+                }
                 self.upsert_transcript(utterance, Some(text), None);
             }
             BackendMessage::SpeakAccepted { request, origin, .. } => {
@@ -374,8 +388,13 @@ impl StttsApp {
                 wav_base64,
                 gen_ms,
                 path,
+                first_chunk,
+                rtf,
+                first_chunk_ms,
+                e2e_ms,
                 ..
             } => {
+                let received = std::time::Instant::now();
                 if request <= self.cancelled_upto {
                     self.pending_chunk_text = None;
                     self.push_log(format!("キャンセル済み request={request} の音声を破棄"));
@@ -393,6 +412,20 @@ impl StttsApp {
                 if let Some(audio) = &self.audio {
                     if let Err(e) = audio.enqueue_wav_base64(&wav_base64) {
                         self.push_log(format!("音声キュー追加失敗: {e}"));
+                    }
+                }
+                if first_chunk {
+                    // backend 側(話し終わり→送出)+ GUI 側(受信→再生キュー投入)
+                    let local_ms = received.elapsed().as_millis() as u64;
+                    self.last_first_chunk_ms = first_chunk_ms;
+                    self.last_rtf = rtf;
+                    if let Some(e2e) = e2e_ms {
+                        let total = e2e + local_ms;
+                        self.last_e2e_ms = Some(total);
+                        self.e2e_history.push_back(total);
+                        if self.e2e_history.len() > 20 {
+                            self.e2e_history.pop_front();
+                        }
                     }
                 }
             }
@@ -623,6 +656,30 @@ impl StttsApp {
         self.persist_settings(cx);
     }
 
+    /// ヘッダの主 KPI: 発話終了 → 初音(ms)。直近値と直近20回の中央値。
+    fn latency_label(&self) -> String {
+        match self.last_e2e_ms {
+            Some(ms) => {
+                let mut v: Vec<u64> = self.e2e_history.iter().copied().collect();
+                v.sort_unstable();
+                let median = v.get(v.len() / 2).copied().unwrap_or(ms);
+                format!("発話終了→初音 {ms}ms(中央値 {median}ms)")
+            }
+            None => "発話終了→初音 —".into(),
+        }
+    }
+
+    fn latency_detail(&self) -> String {
+        let fmt = |v: Option<u64>| v.map(|x| format!("{x}ms")).unwrap_or_else(|| "—".into());
+        let rtf = self.last_rtf.map(|r| format!("{r:.2}")).unwrap_or_else(|| "—".into());
+        format!(
+            "ASR確定 {} / TTS初チャンク {} / RTF {}",
+            fmt(self.last_asr_ms),
+            fmt(self.last_first_chunk_ms),
+            rtf
+        )
+    }
+
     fn cancel_speak(&mut self, _ev: &ClickEvent, _window: &mut Window, _cx: &mut Context<Self>) {
         self.send(GuiMessage::CancelSpeak);
         self.cancelled_upto = self.last_accepted_request;
@@ -700,6 +757,13 @@ impl Render for StttsApp {
                 Self::phase_label(&self.asr_state)
             )))
             .child(div().flex_1())
+            .child(
+                div()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(0x8ab4f8))
+                    .child(self.latency_label()),
+            )
+            .child(div().text_xs().text_color(rgb(0x9aa0a6)).child(self.latency_detail()))
             .child(
                 Button::new("mic")
                     .label(if self.mic_running { "マイク停止" } else { "マイク開始" })

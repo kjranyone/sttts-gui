@@ -4,6 +4,28 @@ from __future__ import annotations
 
 PROTOCOL_VERSION = 1
 
+# 計測用フィールド(すべて任意・追加のみなので PROTOCOL_VERSION は据え置き)。
+# 時刻 *_ms は backend の time.monotonic() 基準。Rust 側は Option / #[serde(default)]。
+#   asr_partial : asr_ms
+#   asr_final   : speech_end_ms, vad_wait_ms, asr_ms, audio_ms
+#   speak_accepted: utterance, speech_end_ms
+#   tts_audio   : first_chunk, speculative, rtf, queue_wait_ms, stages{name: ms},
+#                 first_chunk_ms(先頭のみ: 受付→送出), e2e_ms(先頭のみ: 話し終わり→送出)
+TIMING_FIELDS: dict[str, tuple[str, ...]] = {
+    "asr_partial": ("asr_ms",),
+    "asr_final": ("speech_end_ms", "vad_wait_ms", "asr_ms", "audio_ms"),
+    "speak_accepted": ("utterance", "speech_end_ms"),
+    "tts_audio": (
+        "first_chunk",
+        "speculative",
+        "rtf",
+        "queue_wait_ms",
+        "stages",
+        "first_chunk_ms",
+        "e2e_ms",
+    ),
+}
+
 # エンジン phase
 IDLE = "idle"
 LOADING = "loading"

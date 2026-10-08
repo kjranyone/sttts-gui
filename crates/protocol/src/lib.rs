@@ -4,6 +4,8 @@
 //! Python 側の対応実装は `backend/src/sttts_server/protocol.py`。
 //! 両者は必ず同期して変更すること。
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -74,10 +76,27 @@ pub enum BackendMessage {
     AsrPartial {
         utterance: u64,
         text: String,
+        /// partial デコード時間(ms)
+        #[serde(default)]
+        asr_ms: Option<u64>,
     },
+    /// 計測用フィールドはすべて任意(古い backend とも互換)。
+    /// `*_ms` の時刻は backend プロセスの monotonic 時計基準(GUI の時計とは比較しない)。
     AsrFinal {
         utterance: u64,
         text: String,
+        /// 発話終了(話し終わり)推定時刻(backend monotonic ms)
+        #[serde(default)]
+        speech_end_ms: Option<f64>,
+        /// 話し終わり → VAD が発話終了を確定するまで(ms)
+        #[serde(default)]
+        vad_wait_ms: Option<u64>,
+        /// 確定デコード時間(ms)
+        #[serde(default)]
+        asr_ms: Option<u64>,
+        /// 発話音声の長さ(ms)
+        #[serde(default)]
+        audio_ms: Option<u64>,
     },
     SpeakAccepted {
         request: u64,
@@ -85,6 +104,11 @@ pub enum BackendMessage {
         origin: String,
         #[serde(default)]
         tag: Option<String>,
+        /// 自動発話の元になった ASR 発話 id
+        #[serde(default)]
+        utterance: Option<u64>,
+        #[serde(default)]
+        speech_end_ms: Option<f64>,
     },
     TtsChunkStart {
         request: u64,
@@ -102,6 +126,27 @@ pub enum BackendMessage {
         path: Option<String>,
         #[serde(default)]
         seed: Option<i64>,
+        /// 先頭チャンクか
+        #[serde(default)]
+        first_chunk: bool,
+        /// 投機的 TTS(確定前の partial から先行合成)の結果を流用したチャンクか
+        #[serde(default)]
+        speculative: bool,
+        /// 合成時間 / 音声長
+        #[serde(default)]
+        rtf: Option<f64>,
+        /// TTS キューでの待ち時間(ms)
+        #[serde(default)]
+        queue_wait_ms: Option<u64>,
+        /// 先頭チャンクのみ: 発話受付 → 送出(ms)
+        #[serde(default)]
+        first_chunk_ms: Option<u64>,
+        /// 先頭チャンクのみ: 話し終わり → 送出(ms)。自動発話のときだけ
+        #[serde(default)]
+        e2e_ms: Option<u64>,
+        /// Irodori の段階別時間(ms)。例: predict_duration / sample_meanflow / decode_latent
+        #[serde(default)]
+        stages: Option<BTreeMap<String, f64>>,
     },
     TtsChunkDone {
         request: u64,
@@ -166,26 +211,45 @@ pub enum GuiMessage {
 pub struct TtsConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// "auto" | "xpu" | "cpu"
+    /// "auto" | "cuda" | "xpu" | "cpu"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub num_steps: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decode_mode: Option<String>,
+    /// "auto" | "fp32" | "bf16"(auto: CUDA cc<8.0 → fp32)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub precision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warmup: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compile: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_conditions: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_latent_cache: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AsrConfig {
+    /// "kotoba" | "reazonspeech"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// CTranslate2 compute type: "int8" | "float32" ...
+    /// "auto" | "cuda" | "cpu"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    /// CTranslate2 compute type: "auto" | "int8" | "float16" | "float32" ...
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partial_interval_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vad_min_silence_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -213,6 +277,16 @@ pub struct PipelineConfig {
     pub chunk_min_chars: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_chunk_min_chars: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_max_chars: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_chunk_mora_min: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_chunk_mora_max: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speculative_tts: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speculative_stable_partials: Option<u32>,
 }
 
 /// 既知/未知をまとめて受けるラッパ。未知のtypeはUI側でログ表示に回す。
@@ -284,6 +358,50 @@ mod tests {
             }
             _ => panic!("expected tts_audio"),
         }
+    }
+
+    #[test]
+    fn parse_timing_fields() {
+        let m: AnyMessage = serde_json::from_str(
+            r#"{"type":"asr_final","utterance":3,"text":"こんにちは","speech_end_ms":12345.6,"vad_wait_ms":290,"asr_ms":180,"audio_ms":2100}"#,
+        )
+        .unwrap();
+        match m {
+            AnyMessage::Known(BackendMessage::AsrFinal { utterance, speech_end_ms, vad_wait_ms, asr_ms, audio_ms, .. }) => {
+                assert_eq!(utterance, 3);
+                assert_eq!(speech_end_ms, Some(12345.6));
+                assert_eq!((vad_wait_ms, asr_ms, audio_ms), (Some(290), Some(180), Some(2100)));
+            }
+            _ => panic!("expected asr_final"),
+        }
+
+        let m: AnyMessage = serde_json::from_str(
+            r#"{"type":"tts_audio","request":2,"chunk":0,"wav_base64":"","sample_rate":48000,"duration_ms":1200,"gen_ms":300,
+               "first_chunk":true,"speculative":true,"rtf":0.25,"queue_wait_ms":3,"first_chunk_ms":310,"e2e_ms":820,
+               "stages":{"predict_duration":20.5,"sample_meanflow":150.0},"path":null,"seed":7}"#,
+        )
+        .unwrap();
+        match m {
+            AnyMessage::Known(BackendMessage::TtsAudio { first_chunk, speculative, rtf, e2e_ms, first_chunk_ms, stages, queue_wait_ms, .. }) => {
+                assert!(first_chunk && speculative);
+                assert_eq!(rtf, Some(0.25));
+                assert_eq!((e2e_ms, first_chunk_ms, queue_wait_ms), (Some(820), Some(310), Some(3)));
+                assert_eq!(stages.unwrap()["sample_meanflow"], 150.0);
+            }
+            _ => panic!("expected tts_audio"),
+        }
+    }
+
+    #[test]
+    fn timing_fields_are_optional_for_old_backends() {
+        let m: AnyMessage =
+            serde_json::from_str(r#"{"type":"asr_final","utterance":1,"text":"x"}"#).unwrap();
+        assert!(matches!(m, AnyMessage::Known(BackendMessage::AsrFinal { asr_ms: None, .. })));
+        let m: AnyMessage = serde_json::from_str(
+            r#"{"type":"speak_accepted","request":1,"origin":"auto","utterance":null,"speech_end_ms":null}"#,
+        )
+        .unwrap();
+        assert!(matches!(m, AnyMessage::Known(BackendMessage::SpeakAccepted { utterance: None, .. })));
     }
 
     #[test]

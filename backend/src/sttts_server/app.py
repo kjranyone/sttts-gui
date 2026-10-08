@@ -55,6 +55,11 @@ def _engine_quiet_stdout():
             os.close(saved)
 
 
+def _ms(t: float) -> float:
+    """time.monotonic() 秒 → ms(小数1桁)。"""
+    return round(t * 1000.0, 1)
+
+
 @dataclass
 class SynthResult:
     wav_bytes: bytes
@@ -94,6 +99,7 @@ class TtsJob:
     seed: int | None
     spec: SpecEntry | None = None  # 投機ジョブ(request=0)の場合のみ
     warmup: bool = False  # ウォームアップ合成(結果は送らない)
+    enqueued: float = 0.0  # time.monotonic()(queue_wait_ms 計測用)
 
 
 WARMUP_TEXT = "こんにちは、よろしくお願いします。"
@@ -115,8 +121,19 @@ class ProgressFn:
 
 
 class BackendApp:
-    def __init__(self, *, mock: bool = False, output_dir: str = "output") -> None:
+    def __init__(
+        self,
+        *,
+        mock: bool = False,
+        output_dir: str = "output",
+        mock_tts: bool = False,
+        input_wavs: list[str] | None = None,
+        save_wavs: bool = True,
+    ) -> None:
         self.mock = mock
+        self.mock_tts = mock or mock_tts  # 実 ASR + モック TTS(ベンチ用)
+        self.input_wavs = list(input_wavs or [])  # マイクの代わりに流す WAV(ベンチ用)
+        self.save_wavs = save_wavs
         self.output_dir = output_dir
         self.config = default_config()
 
@@ -370,14 +387,19 @@ class BackendApp:
                 "done": 0,
                 "cancelled": False,
                 "failed": False,
+                "accepted": time.monotonic(),
+                "speech_end": msg.get("speech_end"),
             }
 
+        speech_end = msg.get("speech_end")
         self.send(
             {
                 "type": "speak_accepted",
                 "request": request,
                 "origin": msg.get("origin", "manual"),
                 "tag": msg.get("tag"),
+                "utterance": msg.get("utterance"),
+                "speech_end_ms": _ms(speech_end) if speech_end is not None else None,
             }
         )
         seed = self._request_seed(msg.get("seed"))
@@ -405,6 +427,7 @@ class BackendApp:
                     caption=caption,
                     ref_wavs=ref_wavs,
                     seed=seed,
+                    enqueued=time.monotonic(),
                 )
             )
 
@@ -498,6 +521,8 @@ class BackendApp:
 
     def _save_wav(self, wav_bytes: bytes) -> str | None:
         """生成WAVを output/ へ保存し、パスを返す(失敗時は None、致命傷にしない)。"""
+        if not self.save_wavs:
+            return None
         try:
             out_dir = Path(self.output_dir)
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -575,10 +600,14 @@ class BackendApp:
 
         self._set_tts(LOADING, f"loading {model}")
         progress = ProgressFn(self, "tts")
-        if self.mock:
+        if self.mock_tts:
             from .engines.mock import MockTts
 
-            engine = MockTts(model_id=model)
+            engine = MockTts(
+                model_id=model,
+                delay_ms=float(cfg.get("mock_delay_ms", 50) or 0),
+                rtf=float(cfg.get("mock_rtf", 0.0) or 0.0),
+            )
         else:
             from .engines.tts_irodori import IrodoriTts
 
@@ -611,7 +640,16 @@ class BackendApp:
                 progress=ProgressFn(self, "tts"),
             )
 
-    def _emit_chunk(self, request: int, chunk: int, text: str, result: SynthResult, *, speculative: bool = False) -> None:
+    def _emit_chunk(
+        self,
+        request: int,
+        chunk: int,
+        text: str,
+        result: SynthResult,
+        *,
+        speculative: bool = False,
+        queue_wait_ms: int | None = None,
+    ) -> None:
         """1チャンク分の tts_chunk_start / tts_audio / tts_chunk_done を送る。
 
         キャンセル済み(または speak_done 送信済み)のリクエストには何も送らない。
@@ -635,6 +673,10 @@ class BackendApp:
             "path": path,
             "seed": result.used_seed,
             "speculative": speculative,
+            "first_chunk": chunk == 0,
+            "rtf": round(result.gen_ms / result.duration_ms, 3) if result.duration_ms else None,
+            "queue_wait_ms": queue_wait_ms,
+            "stages": result.stages,
         }
         with self._pending_lock:
             info = self._pending.get(request)
@@ -642,6 +684,12 @@ class BackendApp:
                 log.info("drop audio of cancelled request %d chunk %d", request, chunk)
                 return
             self.send({"type": "tts_chunk_start", "request": request, "chunk": chunk, "text": text})
+            if chunk == 0:
+                now = time.monotonic()
+                audio_msg["first_chunk_ms"] = int((now - info["accepted"]) * 1000)
+                if info.get("speech_end") is not None:
+                    # 発話終了 → 先頭チャンク送出(GUI 側で受信→再生キュー投入分を加算して表示)
+                    audio_msg["e2e_ms"] = int((now - info["speech_end"]) * 1000)
             self.send(audio_msg)
             self.send({"type": "tts_chunk_done", "request": request, "chunk": chunk, "gen_ms": result.gen_ms})
 
@@ -688,6 +736,7 @@ class BackendApp:
             cancelled = bool(info is None or info["cancelled"])
         if cancelled:
             return  # キャンセル済みリクエストの残チャンクはスキップ
+        queue_wait_ms = int((time.monotonic() - job.enqueued) * 1000) if job.enqueued else None
         try:
             result = self._synthesize(job)
         except Exception as e:
@@ -695,7 +744,7 @@ class BackendApp:
             self.send_error("tts", f"合成失敗: {e}", recoverable=True)
             self._mark_chunk_done(job.request, failed=True)
             return
-        self._emit_chunk(job.request, job.chunk, job.text, result)
+        self._emit_chunk(job.request, job.chunk, job.text, result, queue_wait_ms=queue_wait_ms)
         self._mark_chunk_done(job.request, failed=False)
 
     def _run_warmup(self, job: TtsJob) -> None:
@@ -742,7 +791,18 @@ class BackendApp:
             else:
                 from .session import LiveSession
 
-                session = LiveSession(self)
+                source_factory = None
+                if self.input_wavs:
+                    from .engines.wav_source import WavSource
+
+                    def source_factory(on_block):
+                        return WavSource(
+                            self.input_wavs,
+                            on_block,
+                            on_eof=lambda: self.send({"type": "log", "level": "info", "message": "input_eof"}),
+                        )
+
+                session = LiveSession(self, source_factory=source_factory)
         except Exception as e:
             log.exception("session init failed")
             self.send_error("asr", f"セッション初期化失敗: {e}")
@@ -779,16 +839,30 @@ class BackendApp:
         self.send({"type": "mic_level", "rms": rms, "db": db})
 
     def on_asr_partial(self, utterance: int, text: str, asr_ms: int | None = None) -> None:
-        self.send({"type": "asr_partial", "utterance": utterance, "text": text})
+        self.send({"type": "asr_partial", "utterance": utterance, "text": text, "asr_ms": asr_ms})
         try:
             self._maybe_speculate(utterance, text)
         except Exception:
             log.exception("speculative TTS failed")
 
     def on_asr_final(self, utterance: int, text: str, timing: dict | None = None) -> None:
-        self.send({"type": "asr_final", "utterance": utterance, "text": text})
+        timing = timing or {}
+        speech_end = timing.get("speech_end")
+        vad_end = timing.get("vad_end")
+        self.send(
+            {
+                "type": "asr_final",
+                "utterance": utterance,
+                "text": text,
+                # 計測用(backend の time.monotonic() 基準 ms)
+                "speech_end_ms": _ms(speech_end) if speech_end is not None else None,
+                "vad_wait_ms": int((vad_end - speech_end) * 1000) if (speech_end and vad_end) else None,
+                "asr_ms": timing.get("asr_ms"),
+                "audio_ms": timing.get("audio_ms"),
+            }
+        )
         if self.config["pipeline"]["auto_speak"] and text.strip():
-            self.speak({"text": text, "origin": "auto", "utterance": utterance})
+            self.speak({"text": text, "origin": "auto", "utterance": utterance, "speech_end": speech_end})
         else:
             self._discard_specs()
 
