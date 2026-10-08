@@ -20,7 +20,7 @@ class SileroVad:
         )
 
     def reset(self) -> None:
-        self._iter.reset()
+        self._iter.reset_states()
 
     def process(self, chunk: np.ndarray) -> dict | None:
         """512サンプルを与えると発話開始/終了イベント({'start':n} / {'end':n})を返す。"""

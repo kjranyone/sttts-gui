@@ -115,6 +115,12 @@ class MockSession:
             utt += 1
             time.sleep(1.2)
 
-        # 以降はループせず待機(停止指示を待つ)
+        # 以降も疑似レベルを流し続ける(mock は実マイクを持たないが、
+        # レベルメータの UI 経路を常時確認できるようにする)
+        t0 = time.monotonic()
         while not self._stop.is_set():
-            time.sleep(0.2)
+            time.sleep(0.45)
+            if self._stop.is_set():
+                break
+            db = -30.0 + 9.0 * math.sin((time.monotonic() - t0) * 1.7)
+            self.app.on_mic_level(rms=10.0 ** (db / 20.0), db=db)

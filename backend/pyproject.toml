@@ -6,7 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "irodori-tts[xpu] @ git+https://github.com/Aratako/Irodori-TTS",
     "faster-whisper>=1.1.0",
-    "silero-vad[onnx-cpu]>=5.0.2",
+    "silero-vad[onnx-cpu]>=6",
     "sounddevice>=0.5.1",
     "soxr>=0.5.0.post1",
     "numpy>=1.26",
