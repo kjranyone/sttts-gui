@@ -799,12 +799,14 @@ class BackendApp:
                 if self.input_wavs:
                     from .engines.wav_source import WavSource
 
+                    def on_eof():
+                        # 投入済み音声の ASR がすべて終わってから通知する(ベンチの終了判定用)
+                        if self._session is not None:
+                            self._session.wait_asr_idle()
+                        self.send({"type": "log", "level": "info", "message": "input_eof"})
+
                     def source_factory(on_block):
-                        return WavSource(
-                            self.input_wavs,
-                            on_block,
-                            on_eof=lambda: self.send({"type": "log", "level": "info", "message": "input_eof"}),
-                        )
+                        return WavSource(self.input_wavs, on_block, on_eof=on_eof)
 
                 session = LiveSession(self, source_factory=source_factory)
         except Exception as e:

@@ -64,6 +64,7 @@ class AsrWorker:
         self._finals: deque[FinalJob] = deque()
         self._partial: PartialJob | None = None
         self._finalized_upto = 0
+        self._busy = False
         self._stop = False
         self._thread: threading.Thread | None = None
         self.stats = {"partials_done": 0, "partials_dropped": 0, "finals_done": 0}
@@ -102,45 +103,69 @@ class AsrWorker:
         with self._cv:
             return len(self._finals) + (1 if self._partial is not None else 0)
 
+    def wait_idle(self, timeout: float = 60.0) -> bool:
+        """キューが空で、デコード中でもない状態になるまで待つ(ベンチの終了判定用)。"""
+        end = time.monotonic() + timeout
+        with self._cv:
+            while self._finals or self._partial is not None or self._busy:
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._cv.wait(remaining)
+            return True
+
     def _next_job(self):
         with self._cv:
             while not self._finals and self._partial is None and not self._stop:
                 self._cv.wait()
             if self._finals:
+                self._busy = True
                 return "final", self._finals.popleft()
             if self._stop:
                 return None, None
             job, self._partial = self._partial, None
+            self._busy = True
             return "partial", job
+
+    def _job_done(self) -> None:
+        with self._cv:
+            self._busy = False
+            self._cv.notify_all()
 
     def run(self) -> None:
         while True:
             kind, job = self._next_job()
             if kind is None:
                 break
-            t0 = time.perf_counter()
             try:
-                if kind == "final":
-                    text = self.asr.transcribe_utterance(job.audio)
-                else:
-                    text = self.asr.transcribe_partial(job.audio)
-            except Exception as e:  # 1件の失敗でワーカーを止めない
-                log.exception("asr decode failed")
-                if self.on_error is not None:
-                    self.on_error(f"ASR デコード失敗: {e}")
-                continue
-            asr_ms = int((time.perf_counter() - t0) * 1000)
+                self._process(kind, job)
+            finally:
+                self._job_done()
+
+    def _process(self, kind: str, job) -> None:
+        t0 = time.perf_counter()
+        try:
             if kind == "final":
-                self.stats["finals_done"] += 1
-                self.on_final(job, text, asr_ms)
+                text = self.asr.transcribe_utterance(job.audio)
             else:
-                with self._cv:
-                    stale = job.utterance <= self._finalized_upto
-                if stale:
-                    self.stats["partials_dropped"] += 1  # 処理中に確定が来た partial は捨てる
-                    continue
-                self.stats["partials_done"] += 1
-                self.on_partial(job.utterance, text, asr_ms)
+                text = self.asr.transcribe_partial(job.audio)
+        except Exception as e:  # 1件の失敗でワーカーを止めない
+            log.exception("asr decode failed")
+            if self.on_error is not None:
+                self.on_error(f"ASR デコード失敗: {e}")
+            return
+        asr_ms = int((time.perf_counter() - t0) * 1000)
+        if kind == "final":
+            self.stats["finals_done"] += 1
+            self.on_final(job, text, asr_ms)
+        else:
+            with self._cv:
+                stale = job.utterance <= self._finalized_upto
+            if stale:
+                self.stats["partials_dropped"] += 1  # 処理中に確定が来た partial は捨てる
+                return
+            self.stats["partials_done"] += 1
+            self.on_partial(job.utterance, text, asr_ms)
 
 
 class VadSegmenter:
@@ -258,6 +283,16 @@ class LiveSession:
             self._thread.join(timeout=10)
 
     # ---------- 実装 ----------
+
+    def wait_asr_idle(self, timeout: float = 120.0) -> bool:
+        """投入済みの音声の ASR(と確定コールバック)がすべて終わるまで待つ。"""
+        if self.worker is None:
+            return True
+        # VAD スレッドがキュー上のブロックを処理し終えるまで待つ
+        end = time.monotonic() + timeout
+        while self.audio_q.qsize() > 0 and time.monotonic() < end:
+            time.sleep(0.02)
+        return self.worker.wait_idle(max(0.0, end - time.monotonic()))
 
     def _on_block(self, block: np.ndarray) -> None:
         self.audio_q.put((time.monotonic(), block))

@@ -274,3 +274,17 @@ def test_real_silero_reset_and_multiple_utterances():
         seg.feed(np.zeros(32000, dtype=np.float32))
     assert len(worker.finals) >= 3
     assert [j.utterance for j in worker.finals] == list(range(1, len(worker.finals) + 1))
+
+
+def test_wait_idle_waits_for_inflight_final():
+    asr = GateAsr()
+    finals = []
+    w = AsrWorker(asr, lambda *a: None, lambda j, t, ms: finals.append(j.utterance))
+    w.start()
+    w.submit_final(_final(1, 1))
+    assert asr.entered.wait(2)
+    assert w.wait_idle(timeout=0.2) is False  # デコード中は idle ではない
+    asr.gate.set()
+    assert w.wait_idle(timeout=3) is True
+    assert finals == [1]
+    w.stop()
