@@ -757,7 +757,7 @@ impl StttsApp {
         .detach();
     }
 
-    /// 入力デバイス選択の適用。マイク実行中はセッションを張り直す。
+    /// 入力デバイス選択の適用。マイク実行中は停止して再開はユーザーに任せる。
     fn apply_input_device(&mut self, name: String, _window: &mut Window, cx: &mut Context<Self>) {
         let index = if name == DEFAULT_INPUT_LABEL {
             None
@@ -778,9 +778,15 @@ impl StttsApp {
             pipeline: None,
         });
         if self.mic_running {
+            // 停止→即再開はbackendの再開クールダウンに拒否されるうえ、デバイスの
+            // 短時間反復 open/close はドライバクラッシュの原因。停止のみ送り、
+            // 再開はユーザー操作(マイク開始)に任せる。
+            self.mic_transition = MicTransition::Stopping;
             self.send(GuiMessage::StopSession);
-            self.send(GuiMessage::StartSession);
-            self.push_log("入力デバイスを変更したためマイクセッションを再起動します".into());
+            self.push_log(
+                "入力デバイスを変更したためマイクを停止しました。新しいデバイスで使うには「マイク開始」を押してください"
+                    .into(),
+            );
         }
         self.persist_settings(cx);
     }

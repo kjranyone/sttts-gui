@@ -26,6 +26,11 @@ sttts-gui で作業するエージェントへの指示。人間のコントリ�
 
 ## コーディング規約
 
+- **リソースのライフサイクルを最後まで見る。** 「応答を返した」≠「リソースを解放した」。デバイス・セッション・子プロセス・スレッドは、状態遷移の完了(マイクのクローズ、join、kill)を保証してから次の状態へ進めること。具体的には:
+  - 停止系 API(`LiveSession.stop` 等)は、戻り時点でデバイス解放を保証する(join タイムアウト時も強制クローズ)。
+  - 遷移中(開始中/停止中)の再入・連打を GUI と backend の両面で拒否する。デバイスの短時間反復 open/close は BugCheck 0xD1 の実績あり(2026-10 に2度)。
+  - 停止→再開にはクールダウン(`SESSION_RESTART_COOLDOWN_S`)を挟む。
+  - ライフサイクルを変える変更は `test_mic_first_*` / `test_session_restart_cooldown_*` 等の該当テストを必ず通す。
 - **後方互換シムを書かない。** 依存の破壊的変更はフロア引き上げで対処する(例: silero-vad 6 の `reset_states()` → `pyproject.toml` を `>=6` に)。
 - バックエンドのスレッド構成(マイク → VAD スレッド → ASR ワーカー)は `backend/src/sttts_server/session.py` の docstring を参照。**ASR ロードはマイクオープンと並行**(mic-first)であり、レベルメーターはいかなるブロッキング中も止まらないこと。この挙動のテスト(`test_mic_first_*`)があるので変更時は通すこと。
 - GUI⇄backend 間プロトコルは `crates/protocol/src/lib.rs` と `backend/src/sttts_server/protocol.py` の**両方を必ず同期**して変更する。

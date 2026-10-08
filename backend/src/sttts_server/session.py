@@ -283,10 +283,24 @@ class LiveSession:
         self._thread.start()
 
     def stop(self) -> None:
+        """セッションを停止する。戻った時点で音声ソース(マイク)の解放を保証する。
+
+        スレッドが重い処理で join に間に合わなくても、ここでソースを閉じてしまう
+        (MicStream.stop はロック+二重呼び出し安全)。放置するとプロセスが生きている
+        限りマイクを掴み続け、次回開始時の二重オープンがドライバクラッシュを
+        引き起こす(2026-10 の BugCheck 0xD1)。
+        """
         self._stop.set()
         self.audio_q.put(None)
         if self._thread is not None:
             self._thread.join(timeout=10)
+            if self._thread.is_alive():
+                log.warning("session thread did not stop in time; forcing source close")
+        if self._source is not None:
+            try:
+                self._source.stop()
+            except Exception:
+                log.exception("source close failed during stop")
 
     # ---------- 実装 ----------
 
