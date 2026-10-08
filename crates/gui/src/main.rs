@@ -80,6 +80,9 @@ pub struct StttsApp {
     last_first_chunk_ms: Option<u64>,
     last_rtf: Option<f64>,
     speaking: bool,
+    /// 現在の発話リクエストの合成進行(TtsChunkStart/TtsAudio で数える。受付時にリセット)
+    synth_started: u32,
+    synth_done: u32,
     /// 受付済み最大 request id(speak_accepted)
     last_accepted_request: u64,
     /// キャンセル時点の last_accepted_request。これ以下の request の音声は捨てる
@@ -182,6 +185,8 @@ impl StttsApp {
             last_first_chunk_ms: None,
             last_rtf: None,
             speaking: false,
+            synth_started: 0,
+            synth_done: 0,
             last_accepted_request: 0,
             cancelled_upto: 0,
             audio,
@@ -378,9 +383,12 @@ impl StttsApp {
             BackendMessage::SpeakAccepted { request, origin, .. } => {
                 self.last_accepted_request = self.last_accepted_request.max(request);
                 self.speaking = true;
+                self.synth_started = 0;
+                self.synth_done = 0;
                 self.push_log(format!("発話受付 request={request} origin={origin}"));
             }
             BackendMessage::TtsChunkStart { text, .. } => {
+                self.synth_started += 1;
                 self.pending_chunk_text = Some(text);
             }
             BackendMessage::TtsAudio {
@@ -395,6 +403,7 @@ impl StttsApp {
                 ..
             } => {
                 let received = std::time::Instant::now();
+                self.synth_done += 1;
                 if request <= self.cancelled_upto {
                     self.pending_chunk_text = None;
                     self.push_log(format!("キャンセル済み request={request} の音声を破棄"));
@@ -697,12 +706,13 @@ impl StttsApp {
         cx.quit();
     }
 
-    fn phase_label(state: &EngineState) -> String {
+    /// ヘッダ表示用の短ラベル(固定語のみ。detail のような長い文字列はログで確認する)
+    fn phase_label(state: &EngineState) -> &'static str {
         match state.phase.as_str() {
-            "ready" => "準備完了".into(),
-            "loading" => format!("ロード中 {}", state.detail.clone().unwrap_or_default()),
-            "error" => format!("エラー: {}", state.detail.clone().unwrap_or_default()),
-            _ => "未ロード".into(),
+            "ready" => "準備完了",
+            "loading" => "ロード中…",
+            "error" => "エラー",
+            _ => "未ロード",
         }
     }
 }
@@ -736,6 +746,28 @@ impl Render for StttsApp {
             format!("{:+.0} dB", self.mic_level_db.max(-99.0))
         } else {
             "—".to_string()
+        };
+
+        // 発話パイプラインの状態(合成 → 再生キュー → 再生)を1行に集約する。
+        // バラバラな情報(ボタンラベル/下部バー)に分散すると「今どの段階か」が読めない。
+        let play_queue = self.audio.as_ref().map(|a| a.pending_chunks()).unwrap_or(0);
+        let (pipeline_status, pipeline_color) = if self.speaking {
+            let synth = if self.synth_started > 0 {
+                format!("合成 {}/{}", self.synth_done, self.synth_started)
+            } else {
+                "合成待ち…".to_string()
+            };
+            if play_queue > 0 {
+                (format!("▶ 再生中(キュー {play_queue})・{synth}"), rgb(0x8ab4f8))
+            } else if self.synth_done < self.synth_started || self.synth_started == 0 {
+                (format!("{synth}"), rgb(0xd29922))
+            } else {
+                ("合成完了・再生待ち".to_string(), rgb(0x3fb950))
+            }
+        } else if play_queue > 0 {
+            (format!("▶ 再生中(キュー {play_queue})"), rgb(0x8ab4f8))
+        } else {
+            ("待機中".to_string(), rgb(0x6b7075))
         };
 
         let mock_label = if self.mock { " [mock]" } else { "" };
@@ -1008,10 +1040,22 @@ impl Render for StttsApp {
                                             })
                                     })
                                     .child(
-                                        Button::new("speak")
-                                            .primary()
-                                            .label(if self.speaking { "発話中…" } else { "発話" })
-                                            .on_click(cx.listener(Self::speak_from_input)),
+                                        h_flex()
+                                            .gap_2()
+                                            .items_center()
+                                            .child(
+                                                Button::new("speak")
+                                                    .primary()
+                                                    .label("発話")
+                                                    .on_click(cx.listener(Self::speak_from_input)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_family("Consolas")
+                                                    .text_color(pipeline_color)
+                                                    .child(pipeline_status),
+                                            ),
                                     )
                                     .child(
                                         div()
@@ -1063,11 +1107,7 @@ impl Render for StttsApp {
                             .gap_3()
                             .child(self.status_hint.clone())
                             .child(div().flex_1())
-                            .child(format!(
-                                "再生キュー: {} / 履歴: {}",
-                                self.audio.as_ref().map(|a| a.pending_chunks()).unwrap_or(0),
-                                self.history.len()
-                            )),
+                            .child(format!("履歴: {}", self.history.len())),
                     ),
             )
     }
