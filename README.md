@@ -91,10 +91,10 @@ uv run --no-sync python -c "import ctranslate2; print(ctranslate2.get_cuda_devic
 
 ## 実行
 
-開発用起動スクリプト `dev.ps1`(Windows PowerShell)。**`-Mode` を省略すると起動モードを対話式で尋ねます**:
+開発用起動スクリプト `dev.ps1`(Windows PowerShell)。**`-Mode` を省略すると起動モードを対話式で尋ねます(空欄で real)**:
 
 ```powershell
-.\dev.ps1                        # モードを対話式で選択(1: mock / 2: real、空欄で mock)
+.\dev.ps1                        # モードを対話式で選択(1: real / 2: mock、空欄で real)
 .\dev.ps1 -Mode real             # 実エンジンモードを直接指定(対話なし・自動化向け)
 .\dev.ps1 -Mode real -Sync       # uv sync --extra xpu してから起動
 .\dev.ps1 -Mode real -Sync -Backend cu128   # NVIDIA GPU 用に同期してから起動

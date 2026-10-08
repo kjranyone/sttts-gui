@@ -20,7 +20,7 @@
 [CmdletBinding()]
 param(
     # mock: モデルDLなし / real: Irodori+ASR を実行(初回はモデルDLあり)。
-    # 省略した場合は対話式で選択を求める。
+    # 省略した場合は対話式で選択を求める(既定は real)。
     [ValidateSet('mock', 'real')]
     [string]$Mode,
 
@@ -50,21 +50,21 @@ function Step([string]$Message) {
     Write-Host "[dev.ps1] $Message" -ForegroundColor Cyan
 }
 function Select-Mode {
-    # 起動モードを対話式に選択させる(空欄で mock)
+    # 起動モードを対話式に選択させる(空欄で real)
     Write-Host ""
     Write-Host "起動モードを選択してください:" -ForegroundColor Cyan
-    Write-Host "  [1] mock : モデルDLなしで起動(UI/配線の確認用・既定)"
-    Write-Host "  [2] real : 実エンジンで起動(Irodori + ASR / 初回はモデル自動DL)"
+    Write-Host "  [1] real : 実エンジンで起動(Irodori + ASR / 初回はモデル自動DL・既定)"
+    Write-Host "  [2] mock : モデルDLなしで起動(UI/配線の確認用)"
     while ($true) {
         $choice = Read-Host "選択 [1/2] (空欄=1)"
         switch ($choice.Trim().ToLower()) {
-            ''     { return 'mock' }
-            '1'    { return 'mock' }
-            'mock' { return 'mock' }
-            '2'    { return 'real' }
+            ''     { return 'real' }
+            '1'    { return 'real' }
             'real' { return 'real' }
+            '2'    { return 'mock' }
+            'mock' { return 'mock' }
             default {
-                Write-Host "  'mock' または 'real'(1/2)を入力してください" -ForegroundColor Yellow
+                Write-Host "  'real' または 'mock'(1/2)を入力してください" -ForegroundColor Yellow
             }
         }
     }
