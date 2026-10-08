@@ -1,5 +1,10 @@
 # sttts-gui — 実装計画(Windows 11 + Intel Arc B570 向け)
 
+> **[2026-10-08 追記] アーキテクチャ v2(GPUI 版)への移行について**
+> 本書は当初の PySide6 単体 TTS 計画(履歴として保持)。現在の実装は本書末尾の
+> 「6. v2 アーキテクチャ(GPUI + ストリーミングパイプライン)」を参照。
+> 実装済みベースの使い方・セットアップは README.md を参照。
+
 - 作成日: 2026-10-08
 - ステータス: **計画確定・未実装**(本リポジトリには本計画書のみ存在する)
 - ゴール: 音声↔テキスト↔音声(speech-to-text-to-speech)を扱う Windows デスクトップGUIアプリ **sttts-gui**(PySide6)を作る。フェーズ1として [Aratako/Irodori-TTS](https://github.com/Aratako/Irodori-TTS) を Intel Arc B570(XPU)でローカル実行し、テキスト入力→音声生成→再生→WAV保存を実現する
@@ -198,3 +203,73 @@ sttts-gui/
 - ドライバ: https://www.intel.com/content/www/us/en/download/785597/intel-arc-graphics-windows.html
 - Intel Arc 実績記事: https://toaru-hitorigoto.com/?p=5187 (Ubuntu/A750 改変編 — 本家公式対応済みのため改変は不要になった) / https://touch-sp.hateblo.jp/entry/2026/08/04/081532 (B580 + `uv sync --extra xpu` 実績)
 - 既知 Issue: https://github.com/Aratako/Irodori-TTS/issues/33 (WAV再生) / https://github.com/Aratako/Irodori-TTS/issues/40 (torchcodec DLL)
+
+---
+
+## 6. v2 アーキテクチャ(GPUI + ストリーミングパイプライン)— 実装済みベース
+
+### 6-1. 確定した設計判断(2026-10-08)
+
+| 項目 | 決定 | 根拠 |
+|---|---|---|
+| UI | **gpui-kit 0.7**(gpui-component / gpui-base 同梱スナップショット) | Input/Dock等75+コンポーネント、Windows実運用実績(Longbridge Pro)。公式 crates.io `gpui` 0.2.2 は陳腐化 & Windows 未記載、gpui-unofficial はウィジェット無しのため混在不可の二者択一でこちらを選択 |
+| ASR | **kotoba-whisper-v2.0-faster**(CTranslate2, CPU)+ silero-vad(ONNX) | CT2 は XPU 非対応(公式 Issue #2032)→ ASR を CPU に置き XPU を TTS 専用化。インストール容易・高精度(CER 11.6 in-domain) |
+| IPC | **stdio NDJSON 子プロセス**(音声は base64 WAV) | ポート競合・ファイアウォール不要、両側とも非async(スレッド)で実装可、stderr をログに分離 |
+| TTS | ライブラリ直呼び + **文チャンク逐次合成**(Server SSE 方式の疑似ストリーミング) | irodori にストリーミングAPIは無い。確定文を句点等で分割し、チャンク単位で合成→即送出 |
+
+### 6-2. パイプライン
+
+```
+mic(48k共有モード)→ soxr → 16k → silero VAD(512frame)
+  ├─ 発話中: partial_interval_ms(既定800ms)ごとにバッファ再デコード → asr_partial
+  └─ VAD終了: バッファ全体を高品質再デコード → asr_final → 自動発話(auto_speak)
+        → chunker(。!?…\n で分割、first/min chars) → TTSキュー(ワーカースレッド)
+        → InferenceRuntime.synthesize(チャンク) → WAV保存(output/) + base64送出
+        → GUI(rodio Sink)が届いたチャンクから順に再生
+```
+
+- 実測(B570 / v4.1-Small-MF / 4steps): 6.1秒音声を 5.2秒で合成(**RTF≈0.86**)。
+  PLAN.md当初の「数十秒/文」の懸念は Small-MF チェックポイントで実用速度を確認。
+- XPU は TTS のみ、ASR(CT2)は CPU — 並列動作で干渉しない。
+
+### 6-3. プロトコル(sttts-protocol crate ⇔ sttts_server/protocol.py で同期)
+
+- backend→GUI: `hello`(modelsカタログ含む) / `devices` / `state` / `log` / `mic_level` /
+  `asr_partial` / `asr_final` / `speak_accepted` / `tts_chunk_start` / `tts_audio` /
+  `tts_chunk_done` / `speak_done` / `error` / `pong`
+- GUI→backend: `configure`(tts/asr/audio/voice/pipeline 部分更新) / `start_session` /
+  `stop_session` / `speak` / `cancel_speak`(キューflushのみ。合成中1チャンクは中断不可=irodori仕様) / `ping` / `shutdown`
+- `--mock` モード(標準ライブラリのみ)でモデルDL無しにUI/配線を検証可能。
+  Rust 統合テストがモック子プロセスで speak→tts_audio 往復を検証する。
+
+### 6-4. 実装時の発見事項(本家環境構築の注意)
+
+- 下流プロジェクトから irodori-tts を git 依存にする場合、hatchling は
+  `allow-direct-references = true` が必要
+- `sentencepiece 0.1.x`(本家ピン)は cp312 Windows wheel が無く sdist ビルドが
+  現行 CMake で失敗 → `[tool.uv] override-dependencies` で 0.2.x へ上書き
+- 初回 `uv sync` を src 未作成状態で走らせると editable wheel が空になり
+  `python -m sttts_server` が見つからない → `--reinstall-package sttts-server` で復旧
+- `result.audio` は形状 (1, N) のことがある → WAV 化前に reshape(-1)
+- **irodori / dacvae / silentcipher は print() でプロセスの stdout へ直接出力する**
+  (codec DL時の案内、毎合成時の "Using the default SDR of 47 dB" 等で NDJSON を破壊する)。
+  対策としてエンジン呼び出し中は fd レベルで stdout→stderr へ dup2 リダイレクトし、
+  プロトコルは起動時に `os.dup(1)` した専用ストリームへ書く
+- **shutdown 時の teardown で `unload()`(=`del self.model`)を合成中に呼ぶと
+  AttributeError で死ぬ** → teardown は TTS ワーカーのチャンク完了を待ってから解放する
+- **同一プロセスで faster-whisper(ctranslate2) をロードした後に irodori(silentcipher)
+  が scipy を import すると、Windows では scipy の OpenBLAS 系 DLL ロードが
+  デッドロックする**(TTS 単独 / ASR 単独では発生しない)。→ backend 起動時に
+  scipy を先行 import しておき、後続 import をキャッシュヒットさせる
+- GUI を force-kill した場合、子の python バックエンドは孤児化する
+  (正常終了は「終了」ボタン / BackendHandle::shutdown 経由で行うこと)
+- ウォーターマーク処理(silentcipher)が 48k→44.1k リサンプルの警告を出すが
+  最終出力は 48kHz
+
+### 6-5. 未実装(次フェーズ候補)
+
+- 参照WAV(音声クローン)のGUIファイル選択(プロトコルは対応済み、UI未接続)
+- 履歴の永続化(JSONL)・履歴からのパラメータ再利用
+- mic レベルメータの UI 表示、Enter キー送信、チャンク生成の逐次ダウンロード進捗
+- タイムスタンプ表示・文字起こしの書き出し
+- ASR エンジン差し替え(sherpa-onnx streaming zipformer 等への切替 Interface は整備済み)

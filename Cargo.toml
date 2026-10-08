@@ -1,0 +1,18 @@
+[workspace]
+resolver = "3"
+members = ["crates/protocol", "crates/gui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+async-channel = "2"
+base64 = "0.22"
+
+[profile.dev.package."*"]
+# gpui-kit は debug ビルドが重いので依存のみ最適化する
+opt-level = 2

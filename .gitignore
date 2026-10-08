@@ -1,0 +1,17 @@
+# Rust
+/target/
+
+# Python (uv)
+backend/.venv/
+__pycache__/
+*.py[cod]
+
+# 生成物・実行時データ
+output/
+/data/
+
+# ローカル検証の残骸
+*.log
+
+# ZCode セッション成果物
+.zcode/

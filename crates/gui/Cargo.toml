@@ -1,0 +1,18 @@
+[package]
+name = "sttts-gui"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "sttts-gui"
+path = "src/main.rs"
+
+[dependencies]
+sttts-protocol = { path = "../protocol" }
+gpui-kit = "0.7"
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+async-channel = { workspace = true }
+base64 = { workspace = true }
+rodio = "0.21"
