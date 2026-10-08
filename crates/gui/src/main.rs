@@ -1051,6 +1051,7 @@ impl Render for StttsApp {
         let mic_modal = (self.mic_transition != MicTransition::None).then(|| {
             div()
                 .id("mic-starting-overlay")
+                .occlude()
                 .absolute()
                 .size_full()
                 .top_0()
@@ -1097,7 +1098,6 @@ impl Render for StttsApp {
             .relative()
             .bg(rgb(0x1e1f22))
             .text_color(rgb(0xe8eaed))
-            .children(mic_modal)
             .child(
                 v_flex()
                     .size_full()
@@ -1334,6 +1334,8 @@ impl Render for StttsApp {
                             .child(format!("会話: {} 件", self.conversation.len())),
                     ),
             )
+            // モーダルは最後に追加する(gpui は後から描いた子が上に重なる)
+            .children(mic_modal)
     }
 }
 
