@@ -24,6 +24,12 @@ pub fn list_output_devices() -> Vec<String> {
     names
 }
 
+/// Sink を空にして再生可能な状態に戻す。
+pub fn clear_and_resume(sink: &Sink) {
+    sink.clear();
+    sink.play();
+}
+
 pub struct AudioOut {
     // OutputStream は再生デバイスを保持し続けるためにフィールドに置いておく必要がある
     _stream: rodio::OutputStream,
@@ -72,13 +78,74 @@ impl AudioOut {
         Ok(())
     }
 
-    /// 未再生分を破棄する(キャンセル)。再生中の1チャンクは中断できない前提。
+    /// 再生中・未再生のチャンクをすべて破棄する(キャンセル)。
+    ///
+    /// rodio 0.21 の `Sink::clear()` はキューを空にした上で Sink を一時停止状態にするため、
+    /// そのままだと以降に積んだチャンクが一切鳴らなくなる。clear 後に必ず play() で再開する。
     pub fn clear(&self) {
-        self.sink.clear();
+        clear_and_resume(&self.sink);
     }
 
     /// 未再生チャンク数(現在再生中のものを含む)。
     pub fn pending_chunks(&self) -> usize {
         self.sink.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rodio::source::{SineWave, Source};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// 出力デバイス無しで Sink を駆動する(オーディオスレッドの代わりにサンプルを引き続ける)。
+    fn drive(mut out: rodio::queue::SourcesQueueOutput, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                for _ in 0..512 {
+                    let _ = out.next();
+                }
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        })
+    }
+
+    #[test]
+    fn clear_does_not_leave_sink_paused() {
+        let (sink, out) = Sink::new();
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = drive(out, stop.clone());
+
+        sink.append(SineWave::new(440.0).take_duration(Duration::from_secs(5)));
+        assert_eq!(sink.len(), 1);
+        clear_and_resume(&sink);
+        assert!(!sink.is_paused(), "clear 後に Sink が一時停止のまま");
+        assert_eq!(sink.len(), 0);
+
+        // キャンセル後に届いたチャンクが再生される(=消費されて len が減る)こと
+        sink.append(SineWave::new(440.0).take_duration(Duration::from_millis(20)));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while sink.len() > 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(sink.len(), 0, "キャンセル後のチャンクが再生されない");
+
+        stop.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn plain_clear_pauses_sink_in_rodio() {
+        // 回帰検知用: rodio の clear() が pause する仕様であることを確認(仕様変更に気付けるように)
+        let (sink, out) = Sink::new();
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = drive(out, stop.clone());
+        sink.append(SineWave::new(440.0).take_duration(Duration::from_secs(5)));
+        sink.clear();
+        assert!(sink.is_paused());
+        stop.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
     }
 }

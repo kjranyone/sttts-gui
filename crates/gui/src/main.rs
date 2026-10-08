@@ -74,6 +74,11 @@ pub struct StttsApp {
     logs: VecDeque<String>,
     last_gen_ms: Option<u64>,
     speaking: bool,
+    /// 受付済み最大 request id(speak_accepted)
+    last_accepted_request: u64,
+    /// キャンセル時点の last_accepted_request。これ以下の request の音声は捨てる
+    /// (キャンセル前に送出済みでパイプ上にあった tts_audio を鳴らさないため)
+    cancelled_upto: u64,
     audio: Option<crate::audio::AudioOut>,
     /// Select 等のイベント購読(gpui は Subscription を drop すると購読解除になる)
     subscriptions: Vec<gpui::Subscription>,
@@ -166,6 +171,8 @@ impl StttsApp {
             logs: VecDeque::new(),
             last_gen_ms: None,
             speaking: false,
+            last_accepted_request: 0,
+            cancelled_upto: 0,
             audio,
             subscriptions: Vec::new(),
             status_hint: "バックエンドを起動中…".into(),
@@ -328,6 +335,9 @@ impl StttsApp {
                 }
                 self.mock = mock;
                 self.models = models;
+                // backend(再)起動で request id は 1 から振り直される
+                self.last_accepted_request = 0;
+                self.cancelled_upto = 0;
                 self.status_hint = if mock {
                     "モック接続".into()
                 } else {
@@ -352,6 +362,7 @@ impl StttsApp {
                 self.upsert_transcript(utterance, Some(text), None);
             }
             BackendMessage::SpeakAccepted { request, origin, .. } => {
+                self.last_accepted_request = self.last_accepted_request.max(request);
                 self.speaking = true;
                 self.push_log(format!("発話受付 request={request} origin={origin}"));
             }
@@ -359,11 +370,17 @@ impl StttsApp {
                 self.pending_chunk_text = Some(text);
             }
             BackendMessage::TtsAudio {
+                request,
                 wav_base64,
                 gen_ms,
                 path,
                 ..
             } => {
+                if request <= self.cancelled_upto {
+                    self.pending_chunk_text = None;
+                    self.push_log(format!("キャンセル済み request={request} の音声を破棄"));
+                    return;
+                }
                 self.last_gen_ms = Some(gen_ms);
                 self.history.push(HistoryItem {
                     text: self.pending_chunk_text.take().unwrap_or_default(),
@@ -608,7 +625,9 @@ impl StttsApp {
 
     fn cancel_speak(&mut self, _ev: &ClickEvent, _window: &mut Window, _cx: &mut Context<Self>) {
         self.send(GuiMessage::CancelSpeak);
+        self.cancelled_upto = self.last_accepted_request;
         if let Some(audio) = &self.audio {
+            // clear() は内部で play() し直す(rodio の clear は Sink を pause するため)
             audio.clear();
         }
     }

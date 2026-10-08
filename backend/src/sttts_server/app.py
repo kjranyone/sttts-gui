@@ -142,6 +142,7 @@ class BackendApp:
         self._pending: dict[int, dict] = {}  # request -> {total, done, cancelled}
         self._pending_lock = threading.Lock()
         self._request_seq = 0
+        self._cancel_generation = 0
 
         self._session = None  # SessionRunner
         self._utterance_seq = 0
@@ -508,6 +509,13 @@ class BackendApp:
             return None
 
     def cancel_speak(self) -> None:
+        """受付済みの全リクエストを取り消す。
+
+        - キュー上の未合成チャンクを破棄
+        - 合成中のチャンク(Irodori は途中中断できない)は完了後に結果を捨てる
+          (_emit_chunk が cancelled / 削除済みリクエストを送らない)
+        - 投機的 TTS も破棄
+        """
         drained: list[TtsJob] = []
         while True:
             try:
@@ -515,16 +523,20 @@ class BackendApp:
             except queue.Empty:
                 break
             drained.append(job)
-        affected = sorted({j.request for j in drained})
+        # ウォームアップは取り消し対象外(モデルロードを無駄にしない)
+        for job in drained:
+            if job.warmup:
+                self._tts_queue.put(job)
+        self._discard_specs()
         with self._pending_lock:
-            for req in affected:
+            self._cancel_generation += 1
+            for req in sorted(self._pending.keys()):
                 info = self._pending.get(req)
                 if info is None:
                     continue
                 info["cancelled"] = True
                 self._send_speak_done_locked(req)
-        # 合成中の1チャンクは中断不可(irodori 仕様)
-        self.log("キューを破棄しました(合成中の1チャンクは中断できません)", "warn")
+        self.log("発話をキャンセルしました(合成中のチャンクは完了後に破棄)", "info")
 
     def _send_speak_done_locked(self, request: int) -> None:
         """_pending_lock 保持中に呼ぶこと。done==total か cancelled で speak_done を送る。"""
@@ -600,28 +612,38 @@ class BackendApp:
             )
 
     def _emit_chunk(self, request: int, chunk: int, text: str, result: SynthResult, *, speculative: bool = False) -> None:
-        """1チャンク分の tts_chunk_start / tts_audio / tts_chunk_done を送る。"""
+        """1チャンク分の tts_chunk_start / tts_audio / tts_chunk_done を送る。
+
+        キャンセル済み(または speak_done 送信済み)のリクエストには何も送らない。
+        判定と送信を _pending_lock 内で行い、cancel_speak との競合で
+        speak_done 後に音声が届くことを防ぐ。
+        """
         with self._pending_lock:
             info = self._pending.get(request)
             if info is None or info["cancelled"]:
+                log.info("drop audio of cancelled request %d chunk %d", request, chunk)
                 return
-        self.send({"type": "tts_chunk_start", "request": request, "chunk": chunk, "text": text})
         path = self._save_wav(result.wav_bytes)
-        self.send(
-            {
-                "type": "tts_audio",
-                "request": request,
-                "chunk": chunk,
-                "wav_base64": base64.b64encode(result.wav_bytes).decode("ascii"),
-                "sample_rate": result.sample_rate,
-                "duration_ms": result.duration_ms,
-                "gen_ms": result.gen_ms,
-                "path": path,
-                "seed": result.used_seed,
-                "speculative": speculative,
-            }
-        )
-        self.send({"type": "tts_chunk_done", "request": request, "chunk": chunk, "gen_ms": result.gen_ms})
+        audio_msg = {
+            "type": "tts_audio",
+            "request": request,
+            "chunk": chunk,
+            "wav_base64": base64.b64encode(result.wav_bytes).decode("ascii"),
+            "sample_rate": result.sample_rate,
+            "duration_ms": result.duration_ms,
+            "gen_ms": result.gen_ms,
+            "path": path,
+            "seed": result.used_seed,
+            "speculative": speculative,
+        }
+        with self._pending_lock:
+            info = self._pending.get(request)
+            if info is None or info["cancelled"]:
+                log.info("drop audio of cancelled request %d chunk %d", request, chunk)
+                return
+            self.send({"type": "tts_chunk_start", "request": request, "chunk": chunk, "text": text})
+            self.send(audio_msg)
+            self.send({"type": "tts_chunk_done", "request": request, "chunk": chunk, "gen_ms": result.gen_ms})
 
     def _mark_chunk_done(self, request: int, *, failed: bool) -> None:
         with self._pending_lock:
