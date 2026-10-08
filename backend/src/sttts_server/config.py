@@ -8,9 +8,16 @@ from typing import Any
 DEFAULTS: dict[str, Any] = {
     "tts": {
         "model": "v4.1-small-mf",
-        "device": "auto",  # "auto" | "xpu" | "cpu"
+        "device": "auto",  # "auto" | "cuda" | "xpu" | "cpu"
         "num_steps": None,  # None で checkpoint 既定(MF:4 / RF:40)
         "decode_mode": "sequential",  # 低VRAM 既定
+        # "auto": CUDA cc<8.0(RTX 20xx 等)→fp32、cc>=8.0 / XPU→bf16、CPU→fp32
+        "precision": "auto",
+        "warmup": True,  # 起動後(初回 configure 時)にモデルをロードして短文を1回合成しておく
+        "compile": False,  # torch.compile(初回が遅く、Windows では triton が必要)
+        "cache_conditions": True,  # text/caption/speaker エンコード結果のメモ化
+        "ref_latent_cache": True,  # 参照 WAV の DACVAE latent をディスクにキャッシュ
+        "ref_cache_dir": None,  # None で ~/.cache/sttts-gui/ref_latents(Windows は %LOCALAPPDATA%)
     },
     "asr": {
         "engine": "kotoba",  # "kotoba"(faster-whisper) | "reazonspeech"(sherpa-onnx) | "mock"

@@ -63,6 +63,7 @@ class SynthResult:
     gen_ms: int
     used_seed: int | None
     path: str | None = None
+    stages: dict | None = None  # Irodori の段階別時間(ms)
 
 
 @dataclass
@@ -92,6 +93,10 @@ class TtsJob:
     ref_wavs: list[str] | None
     seed: int | None
     spec: SpecEntry | None = None  # 投機ジョブ(request=0)の場合のみ
+    warmup: bool = False  # ウォームアップ合成(結果は送らない)
+
+
+WARMUP_TEXT = "こんにちは、よろしくお願いします。"
 
 
 @dataclass
@@ -145,6 +150,7 @@ class BackendApp:
         self._spec_lock = threading.Lock()
         self._specs: dict[int, SpecEntry] = {}  # utterance -> entry(最新の発話のみ保持)
         self._spec_track: dict[int, tuple[str, int]] = {}  # utterance -> (先頭チャンク候補, 連続回数)
+        self._warmup_model: str | None = None
 
         self._stop = threading.Event()
 
@@ -301,6 +307,23 @@ class BackendApp:
         }
         self.config = merge_config(self.config, patch)
         self.log(f"configure 適用: {sorted(patch.keys())}", "debug")
+        if "tts" in patch:
+            self._maybe_schedule_warmup()
+
+    def _maybe_schedule_warmup(self) -> None:
+        """tts.warmup が有効なら、モデルのロード + 短文合成を TTS ワーカーに先行投入する。
+        初回発話時のロード待ち・初回カーネル起動/メモリ確保のコストを先払いする。"""
+        tts = self.config["tts"]
+        if not tts.get("warmup", True):
+            return
+        model = tts.get("model")
+        if self._warmup_model == model:
+            return
+        self._warmup_model = model
+        caption, ref_wavs = self._resolve_voice({})
+        self._tts_queue.put(
+            TtsJob(request=-1, chunk=0, text=WARMUP_TEXT, caption=caption, ref_wavs=ref_wavs, seed=0, warmup=True)
+        )
 
     # ---------- TTS ----------
 
@@ -552,6 +575,11 @@ class BackendApp:
                 device=str(cfg.get("device") or "auto"),
                 num_steps=cfg.get("num_steps"),
                 decode_mode=str(cfg.get("decode_mode") or "sequential"),
+                precision=str(cfg.get("precision") or "auto"),
+                compile_model=bool(cfg.get("compile", False)),
+                cache_conditions=bool(cfg.get("cache_conditions", True)),
+                ref_latent_cache=bool(cfg.get("ref_latent_cache", True)),
+                ref_cache_dir=cfg.get("ref_cache_dir"),
             )
         engine.load(progress)
         self._engine = engine
@@ -648,13 +676,28 @@ class BackendApp:
         self._emit_chunk(job.request, job.chunk, job.text, result)
         self._mark_chunk_done(job.request, failed=False)
 
+    def _run_warmup(self, job: TtsJob) -> None:
+        if job.text and self.config["tts"].get("model") != self._warmup_model:
+            return  # 投入後にモデルが変わった
+        try:
+            t0 = time.perf_counter()
+            result = self._synthesize(job)
+            self.log(
+                f"ウォームアップ完了: 合成 {result.gen_ms} ms(ロード込み {int((time.perf_counter() - t0) * 1000)} ms)"
+            )
+        except Exception as e:
+            log.exception("warmup failed")
+            self.log(f"ウォームアップ失敗: {e}", "warn")
+
     def _tts_worker(self) -> None:
         while True:
             job = self._tts_queue.get()
             if job is None or self._stop.is_set():
                 break
             try:
-                if job.spec is not None:
+                if job.warmup:
+                    self._run_warmup(job)
+                elif job.spec is not None:
                     self._run_spec_job(job)
                 else:
                     self._run_job(job)
