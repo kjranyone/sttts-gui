@@ -826,12 +826,10 @@ impl StttsApp {
     fn latency_detail(&self) -> String {
         let fmt = |v: Option<u64>| v.map(|x| format!("{x}ms")).unwrap_or_else(|| "—".into());
         let rtf = self.last_rtf.map(|r| format!("{r:.2}")).unwrap_or_else(|| "—".into());
-        format!(
-            "文字起こし {} / 最初の音声 {} / 合成速度 {}",
+        format!("文字 {} / 音声 {} / 速度 {}",
             fmt(self.last_asr_ms),
             fmt(self.last_first_chunk_ms),
-            rtf
-        )
+            rtf)
     }
 
     fn cancel_speak(&mut self, _ev: &ClickEvent, _window: &mut Window, _cx: &mut Context<Self>) {
@@ -1015,11 +1013,12 @@ impl Render for StttsApp {
                             )
                         })
                 };
-                let row = h_flex().w_full().py_1();
+                let row = h_flex().w_full().py_1_5();
                 let row = if is_user {
-                    row.flex_row_reverse().child(bubble)
+                    // 右寄せ(残り幅を左に置く)
+                    row.child(div().flex_1()).child(bubble)
                 } else {
-                    row.child(bubble)
+                    row.child(bubble).child(div().flex_1())
                 };
                 row.into_any_element()
             })
@@ -1150,7 +1149,9 @@ impl Render for StttsApp {
                     .flex_1()
                     .h(px(12.))
                     .rounded_full()
-                    .bg(rgba(0x00000055))
+                    .bg(rgba(0x00000075))
+                    .border_1()
+                    .border_color(rgba(0xffffff26))
                     .overflow_hidden()
                     .child(
                         div()
