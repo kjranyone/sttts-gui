@@ -133,8 +133,13 @@ cd backend && uv run --no-sync pytest   :: チャンク分割・設定マージ�
 
 ## ライセンス・クレジット
 
-- [Irodori-TTS](https://github.com/Aratako/Irodori-TTS)(Apache-2.0)/ 同モデル群は **Gemma Terms of Use** が適用されます。配布・利用の際は規約を確認してください
-- [kotoba-whisper](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0)(Apache-2.0 / CT2 変換は MIT)
+- [Irodori-TTS](https://github.com/Aratako/Irodori-TTS)(コード: MIT)
+  - モデルのライセンスはチェックポイントごとに異なります。配布・利用の際は各モデルカードを確認してください
+    - [v4.1-Small-MF](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF) / [v4.1-Small](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small) / [v4.1-Small-Quantized](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-Quantized): MIT
+    - [v4-Large](https://huggingface.co/Aratako/Irodori-TTS-v4-Large) / [v4-Large-Quantized](https://huggingface.co/Aratako/Irodori-TTS-v4-Large-Quantized): **Gemma Terms of Use**
+    - コーデック [Semantic-DACVAE-Japanese-32dim](https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim): MIT
+  - 上記 Irodori-TTS の各モデルカードには、ライセンスに加えて倫理的な利用制限があります(本人の同意なく声優・著名人など実在人物の声を複製・なりすましに使わない、誤情報やディープフェイク目的に使わない 等)
+- [kotoba-whisper-v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0)(Apache-2.0)/ 本アプリが使う CTranslate2 変換版 [kotoba-whisper-v2.0-faster](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0-faster)(MIT)
 - [silero-vad](https://github.com/snakers4/silero-vad)(MIT)
 - gpui-kit(Apache-2.0)/ Zed GPUI(Apache-2.0)
 - 本リポジトリのコード: ライセンスは未確定(リポジトリオーナーが確定してください)
