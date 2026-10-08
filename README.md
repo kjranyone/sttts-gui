@@ -62,12 +62,12 @@ cargo build --release
 .\dev.ps1                        # モードを対話式で選択(1: mock / 2: real、空欄で mock)
 .\dev.ps1 -Mode real             # 実エンジンモードを直接指定(対話なし・自動化向け)
 .\dev.ps1 -Mode real -Sync       # uv sync --extra xpu してから起動
-.\dev.ps1 -Build                 # 強制再ビルドして起動
 .\dev.ps1 -DebugBuild            # debug プロファイルで起動
 ```
 
-スクリプトは 前提確認(cargo / uv)→ 必要時のみ `uv sync --extra xpu` と
-`cargo build`(バイナリ未生成時は自動)→ GUI 起動、を行います。
+スクリプトは 前提確認(cargo / uv)→ 必要時のみ `uv sync --extra xpu` →
+`cargo build`(毎回実行。変更がなければ差分ビルドで数秒)→ GUI 起動、を行います。
+コード編集後に古いバイナリが起動することはありません。
 
 直接起動する場合:
 

@@ -6,12 +6,14 @@
 .DESCRIPTION
     前提確認 → (必要なら) Python 環境同期 / cargo build → GUI を起動する。
     -Mode を省略した場合は起動モードを対話式で尋ねる。
+    cargo build は毎回実行する(フィンガープリントにより変更なし時は数秒、
+    変更があれば変更クレートのみ再コンパイルされるため、コード編集後の
+    再ビルド漏れが起きない)。
 
 .EXAMPLE
     .\dev.ps1                       # モードを対話式で選択して起動
     .\dev.ps1 -Mode real            # 実エンジンモードを直接指定(対話なし)
     .\dev.ps1 -Mode real -Sync      # uv sync --extra xpu を実行してから起動
-    .\dev.ps1 -Build                # 強制再ビルドしてから起動
     .\dev.ps1 -DebugBuild -Mode mock
 #>
 [CmdletBinding()]
@@ -23,9 +25,6 @@ param(
 
     # backend の Python 環境を同期する (uv sync --extra xpu)
     [switch]$Sync,
-
-    # cargo build を強制する(通常はバイナリが無い場合のみ自動ビルド)
-    [switch]$Build,
 
     # デバッグプロファイル (target/debug) を使う(既定は release)
     [switch]$DebugBuild,
@@ -103,18 +102,16 @@ elseif (-not (Test-Path $VenvPython)) {
     }
 }
 
-# --- 2) ビルド
+# --- 2) ビルド(毎回実行。cargo の差分ビルドにより、変更がなければ数秒で終わる)
 $Config = if ($DebugBuild) { 'debug' } else { 'release' }
 $Exe = Join-Path $Root "target\$Config\sttts-gui.exe"
-if ($Build -or -not (Test-Path $Exe)) {
-    Step "cargo build ($Config) を実行します(初回は数分かかります)"
-    Push-Location $Root
-    try {
-        if ($DebugBuild) { cargo build } else { cargo build --release }
-        if ($LASTEXITCODE -ne 0) { Fail 'cargo build に失敗しました' }
-    }
-    finally { Pop-Location }
+Step "cargo build ($Config) を実行します(初回のみ数分・以降は差分ビルド)"
+Push-Location $Root
+try {
+    if ($DebugBuild) { cargo build } else { cargo build --release }
+    if ($LASTEXITCODE -ne 0) { Fail 'cargo build に失敗しました' }
 }
+finally { Pop-Location }
 
 # --- 3) 起動
 Step "sttts-gui を起動します (mode=$Mode, build=$Config)"
