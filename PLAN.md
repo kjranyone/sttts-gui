@@ -1,8 +1,9 @@
-# Irodori TTS GUI — 実装計画(Windows 11 + Intel Arc B570 向け)
+# sttts-gui — 実装計画(Windows 11 + Intel Arc B570 向け)
 
 - 作成日: 2026-10-08
 - ステータス: **計画確定・未実装**(本リポジトリには本計画書のみ存在する)
-- ゴール: [Aratako/Irodori-TTS](https://github.com/Aratako/Irodori-TTS) を Intel Arc B570(XPU)でローカル実行し、テキスト入力→音声生成→再生→WAV保存ができる Windows デスクトップGUIアプリ(PySide6)を作る
+- ゴール: 音声↔テキスト↔音声(speech-to-text-to-speech)を扱う Windows デスクトップGUIアプリ **sttts-gui**(PySide6)を作る。フェーズ1として [Aratako/Irodori-TTS](https://github.com/Aratako/Irodori-TTS) を Intel Arc B570(XPU)でローカル実行し、テキスト入力→音声生成→再生→WAV保存を実現する
+- プロジェクト名について: TTSエンジンのブランド名(Irodori)をリポジトリ名に含めない方針。後続フェーズで ASR(音声認識)を追加し「音声→テキスト→音声」パイプラインに拡張する構想のため、中立的な名前 **sttts-gui**(speech-to-text-to-speech)を採用
 
 ---
 
@@ -117,7 +118,7 @@ out_path = save_wav("output.wav", result.audio, result.sample_rate)  # 48kHz WAV
 
 ### 2-1. プロジェクト構成(本リポジトリに作る)
 ```
-irodori-tts-gui/
+sttts-gui/
   pyproject.toml        # 依存: irodori-tts[xpu] @ git+https://github.com/Aratako/Irodori-TTS
                         #       + PySide6 + sounddevice + soundfile + numpy
                         # [tool.uv] の pytorch-xpu index 設定は本家 pyproject をミラー
@@ -182,7 +183,12 @@ irodori-tts-gui/
 
 ---
 
-## 4. 参考URL
+## 4. 将来拡張(ASR 連携)
+- 本アプリは speech-to-text-to-speech を目標とするため、後続フェーズで ASR(音声認識)を追加する。候補は kotoba-whisper 系(日本語特化 Whisper)等。XPU で動作させる形態(whisper.cpp / transformers+XPU 等)は実装時に改めて調査する。
+- そのため core 層は **TTS エンジン(Irodori)に依存しないエンジン抽象化インターフェース**(ロード/実行/解放)で設計し、ASR エンジンが同じ枠組みに載せられるようにする。
+- GUI は「TTS タブ」「ASR タブ」(+将来のパイプライン画面)に拡張可能な構成とし、音声→テキスト→音声を一連の流れで実行できるようにする。
+
+## 5. 参考URL
 
 - 本体: https://github.com/Aratako/Irodori-TTS (PR #20 が XPU 対応)
 - 中核コード: https://github.com/Aratako/Irodori-TTS/blob/main/irodori_tts/inference_runtime.py / `infer.py` / `docs/parameters.md`
