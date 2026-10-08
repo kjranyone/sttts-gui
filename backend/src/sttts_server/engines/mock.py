@@ -2,6 +2,7 @@
 
 - MockTts: テキスト長に比例した長さのビープWAVを生成
 - MockSession: 台本に従って asr_partial / asr_final / mic_level を発生
+- MockAsr: 実 VAD + 実音声入力と組み合わせるための ASR 代替(ベンチ用、asr.engine="mock")
 """
 
 from __future__ import annotations
@@ -68,6 +69,51 @@ class MockTts:
 
     def unload(self) -> None:
         pass
+
+
+class MockAsr:
+    """固定テキストを返す ASR エンジン代替。latency_ms で推論時間を模倣する。
+
+    確定(transcribe_utterance)ごとに texts を順に返す。partial は次に確定する
+    テキストの先頭を音声長に比例して返す(1秒あたり約6文字)。
+    """
+
+    engine_name = "mock"
+    DEFAULT_TEXTS = [
+        "こんにちは、今日はいい天気ですね。",
+        "音声合成のレイテンシを測定しています。",
+        "これは三つ目の発話です。チャンク分割を確認します。",
+    ]
+
+    def __init__(self, latency_ms: int = 0, texts: list[str] | None = None) -> None:
+        self.model_id = "mock-asr"
+        self.device = "cpu"
+        self.compute_type = "mock"
+        self.latency_ms = max(0, int(latency_ms))
+        self.texts = list(texts) if texts else list(self.DEFAULT_TEXTS)
+        self._finals = 0
+
+    def load(self, progress=None) -> None:
+        pass
+
+    def _sleep(self) -> None:
+        if self.latency_ms:
+            time.sleep(self.latency_ms / 1000.0)
+
+    def _current(self) -> str:
+        return self.texts[self._finals % len(self.texts)]
+
+    def transcribe_utterance(self, audio) -> str:
+        self._sleep()
+        text = self._current()
+        self._finals += 1
+        return text
+
+    def transcribe_partial(self, audio) -> str:
+        self._sleep()
+        text = self._current()
+        n = max(1, min(len(text), int(len(audio) / 16000 * 6)))
+        return text[:n]
 
 
 class MockSession:

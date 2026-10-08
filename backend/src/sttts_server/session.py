@@ -16,7 +16,7 @@ import time
 import numpy as np
 
 from .app import _engine_quiet_stdout
-from .engines.asr_whisper import StreamingAsr
+from .engines.asr import create_asr
 from .engines.mic import MicStream
 from .engines.vad_silero import FRAME, SileroVad
 
@@ -31,11 +31,7 @@ class LiveSession:
     def __init__(self, app) -> None:
         self.app = app
         cfg = app.config["asr"]
-        self.asr = StreamingAsr(
-            model_id=cfg["model"],
-            compute_type=cfg["compute_type"],
-            language=cfg["language"],
-        )
+        self.asr = create_asr(cfg)
         self.partial_interval = max(0.4, cfg["partial_interval_ms"] / 1000.0)
         self.audio_q: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=200)
         self._stop = threading.Event()

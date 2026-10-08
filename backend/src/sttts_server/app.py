@@ -511,7 +511,8 @@ class BackendApp:
         session.start()
         with self._state_lock:
             self._mic_running = True
-        self._set_asr(LOADING, f"loading {asr_cfg['model']}")
+        label = asr_cfg["model"] if asr_cfg.get("engine", "kotoba") == "kotoba" else asr_cfg.get("engine")
+        self._set_asr(LOADING, f"loading {label}")
         self.log("マイクセッション開始")
 
     def stop_session(self) -> None:

@@ -6,6 +6,7 @@ def test_defaults_shape():
     assert set(cfg.keys()) == {"tts", "asr", "audio", "voice", "pipeline"}
     assert cfg["tts"]["model"] == "v4.1-small-mf"
     assert cfg["pipeline"]["auto_speak"] is True
+    assert cfg["asr"]["engine"] == "kotoba"  # 既定エンジンは変えない
 
 
 def test_merge_partial_section():

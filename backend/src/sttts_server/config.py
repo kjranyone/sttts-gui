@@ -13,10 +13,19 @@ DEFAULTS: dict[str, Any] = {
         "decode_mode": "sequential",  # 低VRAM 既定
     },
     "asr": {
+        "engine": "kotoba",  # "kotoba"(faster-whisper) | "reazonspeech"(sherpa-onnx) | "mock"
         "model": "kotoba-tech/kotoba-whisper-v2.0-faster",
-        "compute_type": "int8",
+        "device": "auto",  # "auto"(CUDA があれば cuda) | "cuda" | "cpu"
+        "compute_type": "auto",  # "auto"(cuda→float16 / cpu→int8) | "int8" | "float16" | ...
+        "cpu_threads": 0,  # 0 = CTranslate2 既定
+        "final_beam_size": 2,
         "partial_interval_ms": 800,
         "language": "ja",
+        # ReazonSpeech(asr.engine = "reazonspeech")用
+        "reazon_model": "reazon-research/reazonspeech-k2-v2",
+        "reazon_model_dir": None,  # 指定時は HF からDLせずこのディレクトリを使う
+        "reazon_precision": "fp32",  # int8 は短い発話で崩れやすいので非推奨
+        "reazon_threads": 4,
     },
     "audio": {
         "input_device_index": None,

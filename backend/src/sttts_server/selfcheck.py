@@ -38,11 +38,23 @@ def self_check_asr(*, seconds: float = 5.0, model: str | None = None, mock: bool
         return 1
 
     asr = StreamingAsr(
-        model_id=model or "kotoba-tech/kotoba-whisper-v2.0-faster", compute_type="int8", language="ja"
+        model_id=model or "kotoba-tech/kotoba-whisper-v2.0-faster",
+        compute_type="auto",
+        device="auto",
+        language="ja",
     )
     asr.load(lambda m, f=None: print(f"[load] {m}", file=sys.stderr))
     text = asr.transcribe_utterance(audio)
     print(
-        json.dumps({"ok": True, "text": text, "seconds": audio.size / 16000}, ensure_ascii=False)
+        json.dumps(
+            {
+                "ok": True,
+                "text": text,
+                "seconds": audio.size / 16000,
+                "device": asr.device,
+                "compute_type": asr.compute_type,
+            },
+            ensure_ascii=False,
+        )
     )
     return 0
