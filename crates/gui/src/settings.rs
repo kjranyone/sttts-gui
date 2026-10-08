@@ -23,6 +23,9 @@ pub struct AppSettings {
     /// 出力デバイス名(None = システム既定)
     #[serde(default)]
     pub output_device: Option<String>,
+    /// 選択中の声バンク名(data/voices のファイル名。None = 既定の声)
+    #[serde(default)]
+    pub voice: Option<String>,
 }
 
 pub fn config_path(root: &Path) -> PathBuf {

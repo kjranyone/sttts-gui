@@ -255,10 +255,14 @@ class VadSegmenter:
 
 
 class LiveSession:
-    def __init__(self, app, *, source_factory=None, vad_factory=None) -> None:
+    def __init__(self, app, *, source_factory=None, vad_factory=None, asr_factory=None) -> None:
         self.app = app
         cfg = app.config["asr"]
-        self.asr = create_asr(cfg)
+        # asr_factory: プリロード済みエンジンの注入(app._asr_engine)。無ければここで生成し、
+        # _load_asr で並行ロードする(mic-first は維持)。
+        self.asr = asr_factory() if asr_factory is not None else create_asr(cfg)
+        # プリロード済みエンジンは _load_asr をスキップ(即 ready)
+        self._asr_preloaded = asr_factory is not None
         interval_ms = int(cfg.get("partial_interval_ms") or 0)
         self.partial_interval = max(0.4, interval_ms / 1000.0) if interval_ms > 0 else 0.0
         self.vad_threshold = float(cfg.get("vad_threshold") or 0.5)
@@ -337,6 +341,10 @@ class LiveSession:
         asr_failed = threading.Event()
 
         def _load_asr() -> None:
+            if self._asr_preloaded:
+                self.app.on_asr_model_ready(self.asr.model_id)
+                asr_ready.set()
+                return
             try:
                 with _engine_quiet_stdout():
                     self.asr.load(lambda m, f=None: self.app._set_asr("loading", m))

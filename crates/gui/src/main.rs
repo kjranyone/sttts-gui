@@ -25,21 +25,27 @@ use sttts_protocol::{
 
 const DEFAULT_INPUT_LABEL: &str = "既定の入力デバイス";
 const DEFAULT_OUTPUT_LABEL: &str = "既定のデバイス";
+const DEFAULT_VOICE_LABEL: &str = "既定の声(自動)";
 
-/// UI に並べる文字起こし1件。
+/// 会話の1発話(あなた=ASR確定文 / 音声=TTS生成)。時系列で1本のビューに並べる。
 #[derive(Debug, Clone)]
-struct TranscriptEntry {
-    utterance: u64,
-    final_text: Option<String>,
-    partial: Option<String>,
+struct ConversationEntry {
+    kind: ConversationKind,
+    text: String,
+    /// ASR: 発話id(partial → final の置換用)。TTS: None
+    utterance: Option<u64>,
+    /// ASR partial(確定前の灰色表示)
+    partial: bool,
+    /// TTS: 合成時間
+    gen_ms: Option<u64>,
+    /// TTS: 生成wavパス(再生ボタン用)
+    path: Option<String>,
 }
 
-/// 生成済みチャンク(履歴)。
-#[derive(Debug, Clone)]
-struct HistoryItem {
-    text: String,
-    path: Option<String>,
-    gen_ms: u64,
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ConversationKind {
+    User,
+    Assistant,
 }
 
 pub struct StttsApp {
@@ -59,6 +65,10 @@ pub struct StttsApp {
 
     input_select: Entity<SelectState<Vec<String>>>,
     output_select: Entity<SelectState<Vec<String>>>,
+    /// 声バンク(data/voices の wav ファイル)
+    voice_select: Entity<SelectState<Vec<String>>>,
+    voices: Vec<(String, PathBuf)>,
+    selected_voice_name: Option<String>,
     input_devices: Vec<AudioDeviceInfo>,
     /// デバイス一覧到着後に render(windowあり)で Select へ反映するための保留領域
     pending_input_items: Option<Vec<String>>,
@@ -67,8 +77,7 @@ pub struct StttsApp {
     saved_input_device: Option<String>,
     mic_level_db: f32,
 
-    transcript: Vec<TranscriptEntry>,
-    history: Vec<HistoryItem>,
+    conversation: Vec<ConversationEntry>,
     /// 現在合成中/直前のチャンクテキスト(tts_chunk_start で設定、tts_audio で履歴へ)
     pending_chunk_text: Option<String>,
     logs: VecDeque<String>,
@@ -135,6 +144,20 @@ impl StttsApp {
         });
         let input_select = cx.new(|cx| SelectState::new(Vec::new(), None, window, cx));
 
+        // --- 声バンク(data/voices の wav を参照音声として選択できる)
+        let voices = scan_voice_bank(&root);
+        let saved_voice = saved
+            .voice
+            .clone()
+            .filter(|n| voices.iter().any(|(vn, _)| vn == n));
+        let mut voice_items = vec![DEFAULT_VOICE_LABEL.to_string()];
+        voice_items.extend(voices.iter().map(|(n, _)| n.clone()));
+        let voice_sel_ix = saved_voice
+            .as_ref()
+            .and_then(|n| voices.iter().position(|(vn, _)| vn == n))
+            .map(|p| IndexPath::new(p + 1));
+        let voice_select = cx.new(|cx| SelectState::new(voice_items, voice_sel_ix, window, cx));
+
         let audio = match crate::audio::AudioOut::open(saved_output_device.as_deref())
             .or_else(|_| crate::audio::AudioOut::open(None))
         {
@@ -168,14 +191,16 @@ impl StttsApp {
             auto_speak,
             input_select,
             output_select,
+            voice_select,
+            voices,
+            selected_voice_name: saved_voice.clone(),
             input_devices: Vec::new(),
             pending_input_items: None,
             selected_input_name: None,
             selected_output_name: saved_output_device,
             saved_input_device,
             mic_level_db: -100.0,
-            transcript: Vec::new(),
-            history: Vec::new(),
+            conversation: Vec::new(),
             pending_chunk_text: None,
             logs: VecDeque::new(),
             last_gen_ms: None,
@@ -227,6 +252,18 @@ impl StttsApp {
                 }
             },
         ));
+        let weak_voice = cx.weak_entity();
+        app.subscriptions.push(window.subscribe(
+            &app.voice_select,
+            cx,
+            move |_, event, _window, cx| {
+                if let (Some(app), SelectEvent::Confirm(Some(name))) =
+                    (weak_voice.upgrade(), event)
+                {
+                    app.update(cx, |app, _cx| app.apply_voice(name.clone()));
+                }
+            },
+        ));
 
         // 初期設定を backend へ反映
         app.send(GuiMessage::Configure {
@@ -236,10 +273,7 @@ impl StttsApp {
             }),
             asr: None,
             audio: None,
-            voice: Some(VoiceConfig {
-                no_ref: Some(true),
-                ..Default::default()
-            }),
+            voice: Some(app.selected_voice_config()),
             pipeline: Some(PipelineConfig {
                 auto_speak: Some(app.auto_speak),
                 ..Default::default()
@@ -312,6 +346,64 @@ impl StttsApp {
         }
     }
 
+    /// 選択中の声に対応する voice 設定(バンク選択時は参照音声、既定は no_ref)。
+    fn selected_voice_config(&self) -> VoiceConfig {
+        match self
+            .selected_voice_name
+            .as_ref()
+            .and_then(|n| self.voices.iter().find(|(vn, _)| vn == n))
+        {
+            Some((_, path)) => VoiceConfig {
+                ref_wavs: Some(vec![path.to_string_lossy().into_owned()]),
+                no_ref: Some(false),
+                ..Default::default()
+            },
+            None => VoiceConfig {
+                no_ref: Some(true),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// 声バンクの選択適用。参照音声が変わるとウォームアップもやり直される。
+    fn apply_voice(&mut self, name: String) {
+        self.selected_voice_name = (name != DEFAULT_VOICE_LABEL).then_some(name);
+        self.send(GuiMessage::Configure {
+            tts: None,
+            asr: None,
+            audio: None,
+            voice: Some(self.selected_voice_config()),
+            pipeline: None,
+        });
+        match &self.selected_voice_name {
+            Some(n) => self.push_log(format!("声を切替: {n}(参照音声で合成します)")),
+            None => self.push_log("声を既定に戻しました(キャプション/自動音質で合成)".into()),
+        }
+    }
+
+    /// 声バンクフォルダ(data/voices)を Explorer で開き、内容を再読込する。
+    fn open_voice_folder(&mut self, _ev: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = self.root.join("data").join("voices");
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+        // フォルダを開いた後に追加された wav も選択できるように再スキャン
+        self.voices = scan_voice_bank(&self.root);
+        let mut items = vec![DEFAULT_VOICE_LABEL.to_string()];
+        items.extend(self.voices.iter().map(|(n, _)| n.clone()));
+        let selected = self
+            .selected_voice_name
+            .clone()
+            .unwrap_or_else(|| DEFAULT_VOICE_LABEL.to_string());
+        self.voice_select.update(cx, |s, cx| {
+            s.set_items(items, window, cx);
+            s.set_selected_value(&selected, window, cx);
+        });
+        self.push_log(format!(
+            "声フォルダを開きました: {}(wav を置いたら再読込されます)",
+            dir.display()
+        ));
+    }
+
     fn push_log(&mut self, line: String) {
         self.logs.push_back(line);
         while self.logs.len() > 300 {
@@ -329,6 +421,7 @@ impl StttsApp {
             random_seed: Some(self.random_seed),
             input_device: self.selected_input_name.clone(),
             output_device: self.selected_output_name.clone(),
+            voice: self.selected_voice_name.clone(),
         };
         saved.save(&self.root);
     }
@@ -372,13 +465,13 @@ impl StttsApp {
                 self.mic_level_db = db;
             }
             BackendMessage::AsrPartial { utterance, text, .. } => {
-                self.upsert_transcript(utterance, None, Some(text));
+                self.upsert_transcript(utterance, text, false);
             }
             BackendMessage::AsrFinal { utterance, text, asr_ms, .. } => {
                 if asr_ms.is_some() {
                     self.last_asr_ms = asr_ms;
                 }
-                self.upsert_transcript(utterance, Some(text), None);
+                self.upsert_transcript(utterance, text, true);
             }
             BackendMessage::SpeakAccepted { request, origin, .. } => {
                 self.last_accepted_request = self.last_accepted_request.max(request);
@@ -410,14 +503,8 @@ impl StttsApp {
                     return;
                 }
                 self.last_gen_ms = Some(gen_ms);
-                self.history.push(HistoryItem {
-                    text: self.pending_chunk_text.take().unwrap_or_default(),
-                    path,
-                    gen_ms,
-                });
-                if self.history.len() > 100 {
-                    self.history.remove(0);
-                }
+                let chunk_text = self.pending_chunk_text.take().unwrap_or_default();
+                self.push_assistant_entry(chunk_text, gen_ms, path);
                 if let Some(audio) = &self.audio {
                     if let Err(e) = audio.enqueue_wav_base64(&wav_base64) {
                         self.push_log(format!("音声キュー追加失敗: {e}"));
@@ -481,33 +568,45 @@ impl StttsApp {
         cx.notify();
     }
 
-    fn upsert_transcript(
-        &mut self,
-        utterance: u64,
-        final_text: Option<String>,
-        partial: Option<String>,
-    ) {
+    /// ASR の partial/final を会話ビューへ反映。final は同発話の partial を確定化する。
+    fn upsert_transcript(&mut self, utterance: u64, text: String, is_final: bool) {
         if let Some(entry) = self
-            .transcript
+            .conversation
             .iter_mut()
             .rev()
-            .find(|e| e.utterance == utterance)
+            .find(|e| e.utterance == Some(utterance))
         {
-            if final_text.is_some() {
-                entry.final_text = final_text;
-                entry.partial = None;
-            } else {
-                entry.partial = partial;
-            }
+            entry.text = text;
+            entry.partial = !is_final;
             return;
         }
-        self.transcript.push(TranscriptEntry {
-            utterance,
-            final_text,
-            partial,
+        self.conversation.push(ConversationEntry {
+            kind: ConversationKind::User,
+            text,
+            utterance: Some(utterance),
+            partial: !is_final,
+            gen_ms: None,
+            path: None,
         });
-        while self.transcript.len() > 500 {
-            self.transcript.remove(0);
+        self.trim_conversation();
+    }
+
+    /// TTS 生成を会話ビューへ追加(音声の発話として時系列に並ぶ)。
+    fn push_assistant_entry(&mut self, text: String, gen_ms: u64, path: Option<String>) {
+        self.conversation.push(ConversationEntry {
+            kind: ConversationKind::Assistant,
+            text,
+            utterance: None,
+            partial: false,
+            gen_ms: Some(gen_ms),
+            path,
+        });
+        self.trim_conversation();
+    }
+
+    fn trim_conversation(&mut self) {
+        while self.conversation.len() > 500 {
+            self.conversation.remove(0);
         }
     }
 
@@ -545,12 +644,12 @@ impl StttsApp {
         self.persist_settings(cx);
     }
 
-    fn replay_history(&mut self, index: usize, _ev: &ClickEvent, _w: &mut Window, cx: &mut Context<Self>) {
-        let Some(item) = self.history.get(index) else {
+    fn replay_conversation(&mut self, index: usize, _ev: &ClickEvent, _w: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.conversation.get(index) else {
             return;
         };
-        let Some(path) = &item.path else {
-            self.push_log("この履歴にはファイルがありません".into());
+        let Some(path) = &entry.path else {
+            self.push_log("この発話には音声ファイルがありません".into());
             return;
         };
         if let Some(audio) = &self.audio {
@@ -665,16 +764,16 @@ impl StttsApp {
         self.persist_settings(cx);
     }
 
-    /// ヘッダの主 KPI: 発話終了 → 初音(ms)。直近値と直近20回の中央値。
+    /// ヘッダの主 KPI: 話し終えてから音声が鳴り始めるまで(=応答速度)。直近値と直近20回の中央値。
     fn latency_label(&self) -> String {
         match self.last_e2e_ms {
             Some(ms) => {
                 let mut v: Vec<u64> = self.e2e_history.iter().copied().collect();
                 v.sort_unstable();
                 let median = v.get(v.len() / 2).copied().unwrap_or(ms);
-                format!("発話終了→初音 {ms}ms(中央値 {median}ms)")
+                format!("応答 {ms}ms(中央値 {median}ms)")
             }
-            None => "発話終了→初音 —".into(),
+            None => "応答 —".into(),
         }
     }
 
@@ -682,7 +781,7 @@ impl StttsApp {
         let fmt = |v: Option<u64>| v.map(|x| format!("{x}ms")).unwrap_or_else(|| "—".into());
         let rtf = self.last_rtf.map(|r| format!("{r:.2}")).unwrap_or_else(|| "—".into());
         format!(
-            "ASR確定 {} / TTS初チャンク {} / RTF {}",
+            "文字起こし {} / 最初の音声 {} / 合成速度 {}",
             fmt(self.last_asr_ms),
             fmt(self.last_first_chunk_ms),
             rtf
@@ -803,28 +902,76 @@ impl Render for StttsApp {
             )
             .child(
                 Button::new("cancel")
-                    .label("キュー取消")
+                    .label("発話を中止")
                     .on_click(cx.listener(Self::cancel_speak)),
             )
             .child(Button::new("quit").label("終了").on_click(cx.listener(Self::quit)));
 
-        // 左: 文字起こし
-        let transcript_items: Vec<_> = self
-            .transcript
+        // 左: 会話ビュー(あなたの発話=ASR と 音声の発話=TTS を時系列で1本に)
+        let conversation_items: Vec<_> = self
+            .conversation
             .iter()
-            .map(|e| {
-                let (text, color) = if let Some(f) = &e.final_text {
-                    (f.clone(), rgb(0xe8eaed))
-                } else {
-                    (e.partial.clone().unwrap_or_default(), rgb(0x9aa0a6))
+            .enumerate()
+            .map(|(i, e)| {
+                let (label, label_color) = match e.kind {
+                    ConversationKind::User => ("あなた", rgb(0x9aa0a6)),
+                    ConversationKind::Assistant => ("音声", rgb(0x8ab4f8)),
                 };
-                div().child(text).text_color(color).py_0p5().into_any_element()
+                let text_color = if e.partial {
+                    rgb(0x9aa0a6)
+                } else {
+                    match e.kind {
+                        ConversationKind::User => rgb(0xe8eaed),
+                        ConversationKind::Assistant => rgb(0xd7e3fb),
+                    }
+                };
+                let row = h_flex().gap_2().items_start().py_1().child(
+                    div()
+                        .flex_1()
+                        .child(
+                            v_flex()
+                                .gap_0p5()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(label_color)
+                                        .child(if e.partial {
+                                            format!("{label}(認識中…)")
+                                        } else {
+                                            label.to_string()
+                                        }),
+                                )
+                                .child(div().text_sm().text_color(text_color).child(e.text.clone())),
+                        ),
+                );
+                let row = match e.kind {
+                    ConversationKind::Assistant => row
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0x6b7075))
+                                .child(e.gen_ms.map(|ms| format!("{ms}ms")).unwrap_or_default()),
+                        )
+                        .child(if e.path.is_some() {
+                            Button::new(SharedString::from(format!("replay-{i}")))
+                                .label("再生")
+                                .compact()
+                                .on_click(cx.listener(move |this, ev, w, cx| {
+                                    this.replay_conversation(i, ev, w, cx)
+                                }))
+                        } else {
+                            Button::new(SharedString::from(format!("replay-{i}"))).label("再生").compact()
+                        }),
+                    ConversationKind::User => row,
+                };
+                row.into_any_element()
             })
             .collect();
-        let empty_hint = self.transcript.is_empty().then(|| {
+        let empty_hint = self.conversation.is_empty().then(|| {
             div()
                 .text_color(rgb(0x6b7075))
-                .child("まだ文字起こしはありません。「マイク開始」で話しかけてください。")
+                .child("「マイク開始」で話しかけると文字起こしと音声の応答がここに並びます。")
                 .into_any_element()
         });
 
@@ -843,44 +990,6 @@ impl Render for StttsApp {
             })
             .collect();
         let models_loaded = !self.models.is_empty();
-
-        let history_items: Vec<_> = self
-            .history
-            .iter()
-            .enumerate()
-            .rev()
-            .take(15)
-            .map(|(i, h)| {
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .py_0p5()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_sm()
-                            .text_color(rgb(0xbdc1c6))
-                            .child(truncate(&h.text, 24)),
-                    )
-                    .child(
-                        div().text_xs().text_color(rgb(0x6b7075)).child(format!("{}ms", h.gen_ms)),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("replay-{i}")))
-                            .label("再生")
-                            .compact()
-                            .on_click(cx.listener(move |this, ev, w, cx| {
-                                this.replay_history(i, ev, w, cx)
-                            })),
-                    )
-                    .into_any_element()
-            })
-            .collect();
-
-        let last_gen_line = match self.last_gen_ms {
-            Some(ms) => format!("直近チャンク生成: {ms}ms"),
-            None => "直近の生成なし".into(),
-        };
 
         // Switch の on_click は &mut App を受けるため弱参照経由で Self を更新する
         let weak_auto_speak = cx.weak_entity();
@@ -902,7 +1011,7 @@ impl Render for StttsApp {
                             .overflow_hidden()
                             .child(
                                 v_flex()
-                                    .id("transcript")
+                                    .id("conversation")
                                     .flex_1()
                                     .h_full()
                                     .p_2()
@@ -910,7 +1019,7 @@ impl Render for StttsApp {
                                     .bg(rgb(0x26282c))
                                     .overflow_y_scroll()
                                     .text_sm()
-                                    .children(empty_hint.into_iter().chain(transcript_items)),
+                                    .children(empty_hint.into_iter().chain(conversation_items)),
                             )
                             .child(
                                 v_flex()
@@ -969,6 +1078,32 @@ impl Render for StttsApp {
                                                                 .placeholder(DEFAULT_OUTPUT_LABEL)
                                                                 .text_sm(),
                                                         ),
+                                                    ),
+                                            )
+                                            .child(
+                                                // 声バンク(参照音声による声質指定)
+                                                h_flex()
+                                                    .gap_2()
+                                                    .items_center()
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(rgb(0x9aa0a6))
+                                                            .w(px(28.))
+                                                            .child("声"),
+                                                    )
+                                                    .child(
+                                                        div().flex_1().child(
+                                                            Select::new(&self.voice_select)
+                                                                .placeholder(DEFAULT_VOICE_LABEL)
+                                                                .text_sm(),
+                                                        ),
+                                                    )
+                                                    .child(
+                                                        Button::new("open-voices")
+                                                            .label("📁")
+                                                            .compact()
+                                                            .on_click(cx.listener(Self::open_voice_folder)),
                                                     ),
                                             )
                                             .child(
@@ -1070,17 +1205,7 @@ impl Render for StttsApp {
                                     .child(
                                         h_flex().flex_wrap().gap_1().children(model_buttons),
                                     )
-                                    .child(div().flex_1())
-                                    .child(
-                                        div().text_xs().text_color(rgb(0x6b7075)).child(last_gen_line),
-                                    )
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_sm()
-                                            .child("生成履歴"),
-                                    )
-                                    .children(history_items),
+                                    .child(div().flex_1()),
                             ),
                     )
                     .child(
@@ -1107,19 +1232,35 @@ impl Render for StttsApp {
                             .gap_3()
                             .child(self.status_hint.clone())
                             .child(div().flex_1())
-                            .child(format!("履歴: {}", self.history.len())),
+                            .child(format!("会話: {} 件", self.conversation.len())),
                     ),
             )
     }
 }
 
-fn truncate(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(max_chars).collect();
-        format!("{cut}…")
+/// data/voices の wav を声バンクとして読み込む(ファイル名=話者名)。
+fn scan_voice_bank(root: &std::path::Path) -> Vec<(String, PathBuf)> {
+    let dir = root.join("data").join("voices");
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            let is_wav = p
+                .extension()
+                .and_then(|x| x.to_str())
+                .map(|x| x.eq_ignore_ascii_case("wav"))
+                .unwrap_or(false);
+            if is_wav {
+                if let Some(name) = p.file_stem().and_then(|s| s.to_str()) {
+                    if !name.is_empty() {
+                        out.push((name.to_string(), p));
+                    }
+                }
+            }
+        }
     }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 fn main() {

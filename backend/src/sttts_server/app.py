@@ -25,6 +25,7 @@ from pathlib import Path
 from . import BACKEND_VERSION
 from .chunker import split_chunks
 from .config import default_config, load_user_config, merge_config
+from .engines.asr import create_asr
 from .protocol import ERROR, IDLE, LOADING, MODEL_CATALOG, PROTOCOL_VERSION, READY
 
 # stderr 用ロガー(stdout はプロトコル専用のため)
@@ -174,6 +175,11 @@ class BackendApp:
         self._spec_track: dict[int, tuple[str, int]] = {}  # utterance -> (先頭チャンク候補, 連続回数)
         self._warmup_model: str | None = None
 
+        # ASR プリロード(asr.preload)
+        self._asr_engine = None
+        self._asr_lock = threading.Lock()
+        self._asr_preload_key = None
+
         self._stop = threading.Event()
 
     # ---------- 出力系 ----------
@@ -214,10 +220,12 @@ class BackendApp:
             self._tts_detail = detail
         self.send_state()
 
-    def _set_asr(self, phase: str, detail: str | None) -> None:
+    def _set_asr(self, phase: str, detail: str | None, model_id: str | None = None) -> None:
         with self._state_lock:
             self._asr_phase = phase
             self._asr_detail = detail
+            if model_id is not None:
+                self._asr_loaded_model = model_id
         self.send_state()
 
     def send_devices(self) -> None:
@@ -282,6 +290,10 @@ class BackendApp:
         )
         self._tts_thread.start()
 
+        # backend.json 由来の asr 設定でもプリロードが走るよう起動時にチェックする
+        # (GUI の初期 configure には asr セクションが無いため)
+        self._maybe_schedule_asr_preload()
+
         for line in sys.stdin:
             line = line.strip()
             if not line:
@@ -331,6 +343,8 @@ class BackendApp:
         self.log(f"configure 適用: {sorted(patch.keys())}", "debug")
         if "tts" in patch:
             self._maybe_schedule_warmup()
+        if "asr" in patch:
+            self._maybe_schedule_asr_preload()
 
     def _maybe_schedule_warmup(self) -> None:
         """tts.warmup が有効なら、モデルのロード + 短文合成を TTS ワーカーに先行投入する。
@@ -346,6 +360,41 @@ class BackendApp:
         self._tts_queue.put(
             TtsJob(request=-1, chunk=0, text=WARMUP_TEXT, caption=caption, ref_wavs=ref_wavs, seed=0, warmup=True)
         )
+
+    def _maybe_schedule_asr_preload(self) -> None:
+        """asr.preload が有効なら ASR エンジンを起動時にロードしてキャッシュする。
+        「マイク開始」を押した瞬間から(ロード待ちなく)文字起こしが始まるようにする
+        先払い。engine 設定が変わったら作り直す。"""
+        asr_cfg = self.config["asr"]
+        if not asr_cfg.get("preload", True) or self.mock:
+            return
+        key = (asr_cfg.get("engine"), asr_cfg.get("model"), asr_cfg.get("nemotron_model_dir"),
+               asr_cfg.get("nemotron_chunk_ms"), asr_cfg.get("reazon_model_dir"))
+        if self._asr_preload_key == key:
+            return
+        self._asr_preload_key = key
+        threading.Thread(target=self._preload_asr, args=(key,), name="asr-preload", daemon=True).start()
+
+    def _preload_asr(self, key) -> None:
+        try:
+            with _engine_quiet_stdout():
+                engine = create_asr(self.config["asr"])
+                engine.load(lambda m, f=None: self._set_asr("loading", m))
+        except Exception as e:
+            log.exception("asr preload failed")
+            self._asr_preload_key = None  # 再試験できるように
+            self._set_asr(ERROR, f"ASRプリロード失敗: {e}")
+            return
+        with self._asr_lock:
+            old = self._asr_engine
+            self._asr_engine = engine
+        if old is not None:
+            try:
+                old.unload() if hasattr(old, "unload") else None
+            except Exception:
+                log.exception("old asr unload failed")
+        self._set_asr(READY, None, model_id=engine.model_id)
+        self.log(f"ASR プリロード完了: {engine.model_id}")
 
     # ---------- TTS ----------
 
@@ -808,7 +857,13 @@ class BackendApp:
                     def source_factory(on_block):
                         return WavSource(self.input_wavs, on_block, on_eof=on_eof)
 
-                session = LiveSession(self, source_factory=source_factory)
+                # プリロード済み ASR があれば注入(マイク開始→即文字起こし可能)
+                with self._asr_lock:
+                    preloaded = self._asr_engine
+                if preloaded is not None:
+                    session = LiveSession(self, source_factory=source_factory, asr_factory=lambda: preloaded)
+                else:
+                    session = LiveSession(self, source_factory=source_factory)
         except Exception as e:
             log.exception("session init failed")
             self.send_error("asr", f"セッション初期化失敗: {e}")
@@ -818,7 +873,7 @@ class BackendApp:
         with self._state_lock:
             self._mic_running = True
         label = asr_cfg["model"] if asr_cfg.get("engine", "kotoba") == "kotoba" else asr_cfg.get("engine")
-        self._set_asr(LOADING, f"loading {label}")
+        self._set_asr(LOADING if preloaded is None else READY, None if preloaded is None else f"loading {label}")
         self.log("マイクセッション開始")
 
     def stop_session(self) -> None:

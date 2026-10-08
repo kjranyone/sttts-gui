@@ -42,6 +42,7 @@ DEFAULTS: dict[str, Any] = {
         "final_beam_size": 2,
         "partial_interval_ms": 800,  # 0 で partial(途中経過表示)を無効化
         "language": "ja",
+        "preload": True,  # 起動時に ASR をロードして「マイク開始」を即座に使えるようにする
         # silero VAD: 無音がこの長さ続いたら発話終了(従来 400ms)。短いほど速いが文中の間で切れやすい
         "vad_min_silence_ms": 280,
         "vad_threshold": 0.5,

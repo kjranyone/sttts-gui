@@ -147,6 +147,15 @@ uv run --no-sync python -m sttts_server --self-check-asr
 
 ## 低レイテンシ設定
 
+### 声のバンク(voice cloning)
+
+`data/voices/` に参照音声の wav(10秒程度・話者の声)を置くと、GUI の「声」ドロップダウンから
+選択できるようになります(📁 ボタンでフォルダを開けます)。選択すると Irodori-TTS は
+その音声を話者参照として合成し、話し方を模倣します。未選択(既定の声)は
+キャプション/自動音質での合成になります。選択は `data/config.json` に保存されます。
+
+注意: 参照音声は本人の同意のある声のみ使ってください(モデルカードの利用制限参照)。
+
 GUI に UI の無い設定は `data/backend.json`(任意。`STTTS_CONFIG` 環境変数または
 `--config` で別パス)に書くと、backend 起動時に既定値へマージされます
 (GUI から送られる設定はその上に適用)。例:
@@ -166,6 +175,7 @@ GUI に UI の無い設定は `data/backend.json`(任意。`STTTS_CONFIG` 環境
 | `asr.cpu_threads` | `0` | CTranslate2 の CPU スレッド数(0 = 既定) |
 | `asr.final_beam_size` | `2` | 確定デコードのビーム幅(1 にすると少し速い) |
 | `asr.partial_interval_ms` | `800` | 途中経過デコードの間隔。`0` で無効(CPU kotoba では確定の待ちを減らせる) |
+| `asr.preload` | `true` | 起動時に ASR をロードして「マイク開始」を即座に使えるようにする |
 | `asr.vad_min_silence_ms` | `280` | 無音がこの長さ続いたら発話終了(従来 400)。短いほど速いが文中の間で切れやすい |
 | `asr.vad_threshold` | `0.5` | silero VAD のしきい値 |
 | `asr.reazon_model_dir` | `null` | ReazonSpeech のモデルディレクトリ(null で HF から自動DL) |
