@@ -161,7 +161,7 @@ GUI に UI の無い設定は `data/backend.json`(任意。`STTTS_CONFIG` 環境
 
 | キー | 既定 | 説明 |
 |---|---|---|
-| `asr.engine` | `kotoba` | `kotoba`(faster-whisper)/ `reazonspeech`(sherpa-onnx、要 `--extra reazonspeech`) |
+| `asr.engine` | `kotoba` | `kotoba`(faster-whisper)/ `reazonspeech`(sherpa-onnx、要 `--extra reazonspeech`)/ `nemotron`(onnxruntime、要 `--extra nemotron`) |
 | `asr.device` / `asr.compute_type` | `auto` / `auto` | kotoba 用。auto = CUDA なら cuda/float16、無ければ cpu/int8 |
 | `asr.cpu_threads` | `0` | CTranslate2 の CPU スレッド数(0 = 既定) |
 | `asr.final_beam_size` | `2` | 確定デコードのビーム幅(1 にすると少し速い) |
@@ -171,6 +171,10 @@ GUI に UI の無い設定は `data/backend.json`(任意。`STTTS_CONFIG` 環境
 | `asr.reazon_model_dir` | `null` | ReazonSpeech のモデルディレクトリ(null で HF から自動DL) |
 | `asr.reazon_precision` | `fp32` | `int8` は短い発話で崩れやすいので非推奨 |
 | `asr.reazon_threads` | `4` | ReazonSpeech の CPU スレッド数 |
+| `asr.nemotron_model_dir` | `null` | Nemotron の ONNX ディレクトリ(null で HF から自動DL。自前exportグラフはここへ) |
+| `asr.nemotron_chunk_ms` | `320` | ストリーミングチャンク。HF パッケージは 320 のみ(1120 は発話確定がさらに速い。下記「Nemotron 1120ms export」参照) |
+| `asr.nemotron_precision` | `fp16` | `int8` は dynamic quantum で精度劣化するため非推奨 |
+| `asr.nemotron_threads` | `4` | onnxruntime の intra_op スレッド数 |
 | `pipeline.first_chunk_mora_min` / `max` | `8` / `12` | 先頭チャンクを読点または約 8〜12 モーラの文節境界で切る(`max=0` で無効) |
 | `pipeline.chunk_min_chars` | `16` | 2チャンク目以降の最小文字数 |
 | `pipeline.chunk_max_chars` | `80` | これを超える塊は読点 / 文節境界で分割(句読点の無い ASR 出力対策) |
@@ -271,10 +275,40 @@ ASR(`asr.engine`):
 |---|---|---|
 | `kotoba`(既定) | `kotoba-tech/kotoba-whisper-v2.0-faster`(CTranslate2) | CUDA があれば float16、無ければ CPU int8。句読点は出ない |
 | `reazonspeech` | `reazon-research/reazonspeech-k2-v2`(sherpa-onnx、Apache-2.0) | CPU でも非常に速い(下表)。**句読点なし**・**固有名詞/英字略語に弱い**(例:「NLP」→「エネルギー」)・**int8 は短い発話で崩れる**ので fp32 推奨。`uv sync --extra <torch extra> --extra reazonspeech` |
+| `nemotron` | `nemotron-3.5-asr-streaming-0.6b` の ONNX export(cache-aware FastConformer-RNNT / onnxruntime、コード Apache-2.0 / 重み OpenMDW-1.1) | **句読点をネイティブ出力**・whisper large-v3 級の精度・発話確定 **平均 0.31 秒 / 最大 0.51 秒**(i5-12600KF、chunk=1120ms fp16 実測。chunk=320ms は平均 0.56 秒)。モデル ~2.5GB(fp16)。`uv sync --extra <torch extra> --extra nemotron`。ストリーミングエンジンは `engines/vendor/nemotron_onnx_streaming.py` として同梱 |
 
 VAD は silero-vad(ONNX)。VAD 発話終了時にバッファ全体を再デコードして確定文を作り、
 発話中は partial_interval_ms(既定800ms)ごとに部分表示を更新します。
-どちらの ASR も句読点を出さないため、チャンク分割は文節境界の近似と長さで切ります。
+kotoba / reazonspeech は句読点を出さないため、チャンク分割は文節境界の近似と長さで切ります
+(nemotron のみ句読点をネイティブ出力するため、読点で綺麗に切れます)。
+
+### Nemotron 1120ms export(発話確定をさらに速く)
+
+HF 配布の fp16 パッケージは 320ms チャンクのみ。発話単位デコードには
+chunk=1120ms(RTF 約 0.14、i5-12600KF 実測: 発話確定 平均 0.31s / 最大 0.51s)が最速なので、
+速さを優先する場合は下記で自前 export する(CPU だけで可、ベースモデル ~2.5GB を DL):
+
+```bash
+git clone --depth 1 https://github.com/codavidgarcia/nemotron-3.5-asr-streaming-onnx
+cd nemotron-3.5-asr-streaming-onnx
+uv run --no-project --with "torch>=2.6" --with "transformers>=5.13.0" \
+  --with "librosa>=0.10" --with "onnx>=1.17" --with "onnxruntime>=1.20" \
+  --with "onnxmltools>=1.12" --with scipy --with soundfile --with "sentencepiece>=0.2" \
+  python export/export_onnx.py --output-dir ../onnx-out --chunk-ms 1120 --validate
+uv run --no-project --with "torch>=2.6" --with onnx --with onnxruntime \
+  --with "onnxmltools>=1.12" python export/quantize.py --model-dir ../onnx-out --fp16
+```
+
+`encoder_1120ms_fp16.onnx(.data)` / `encoder_1120ms_first_fp16.onnx(.data)`(各ディレクトリ内)
+と `decoder.onnx` / `joiner.onnx` / `tokens.txt` / `nemotron_onnx_config.json` を
+`data/nemotron-onnx/`(gitignore 済み)へ平置きし、`data/backend.json` に:
+
+```json
+{"asr": {"engine": "nemotron", "nemotron_model_dir": "data/nemotron-onnx", "nemotron_chunk_ms": 1120}}
+```
+
+参照実装のライセンスは Apache-2.0(vendor 同梱の LICENSE ファイル参照)、
+重みは OpenMDW-1.1(NVIDIA 所有・商用可)。
 
 ## テスト
 

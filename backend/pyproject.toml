@@ -46,6 +46,11 @@ reazonspeech = [
     "sherpa-onnx>=1.13.8,<1.14",
     "sherpa-onnx-core>=1.13.8,<1.14",
 ]
+# 任意: Nemotron 3.5 ASR (onnxruntime) エンジン。asr.engine = "nemotron" で使う。
+# ストリーミングエンジン本体は sttts_server/engines/vendor/ に同梱(Apache-2.0)。
+nemotron = [
+    "onnxruntime>=1.20",
+]
 
 [tool.uv]
 # sentencepiece 0.1.x(irodori-tts のピン "<0.2")は cp312 Windows wheel が存在せず、

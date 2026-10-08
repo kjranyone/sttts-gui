@@ -4433,6 +4433,9 @@ cu128 = [
     { name = "torchaudio", version = "2.10.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "(sys_platform == 'linux' and extra == 'extra-12-sttts-server-cu128') or (sys_platform == 'win32' and extra == 'extra-12-sttts-server-cu128') or (extra == 'extra-12-sttts-server-cu128' and extra == 'extra-12-sttts-server-xpu') or (extra == 'extra-12-sttts-server-cpu' and extra == 'extra-12-sttts-server-cu128') or (extra == 'extra-12-sttts-server-cpu' and extra == 'extra-12-sttts-server-xpu')" },
     { name = "torchcodec" },
 ]
+nemotron = [
+    { name = "onnxruntime" },
+]
 reazonspeech = [
     { name = "sherpa-onnx" },
     { name = "sherpa-onnx-core" },
@@ -4455,6 +4458,7 @@ requires-dist = [
     { name = "faster-whisper", specifier = ">=1.1.0" },
     { name = "irodori-tts", git = "https://github.com/Aratako/Irodori-TTS?rev=89f9d8fbd4d51ea019867ee1197725ede1df13c5" },
     { name = "numpy", specifier = ">=1.26" },
+    { name = "onnxruntime", marker = "extra == 'nemotron'", specifier = ">=1.20" },
     { name = "sherpa-onnx", marker = "extra == 'reazonspeech'", specifier = ">=1.13.8,<1.14" },
     { name = "sherpa-onnx-core", marker = "extra == 'reazonspeech'", specifier = ">=1.13.8,<1.14" },
     { name = "silero-vad", extras = ["onnx-cpu"], specifier = ">=6" },
@@ -4478,7 +4482,7 @@ requires-dist = [
     { name = "torchcodec", marker = "extra == 'cu128'", specifier = ">=0.10.0,<0.11.0" },
     { name = "triton-xpu", marker = "(sys_platform == 'linux' and extra == 'xpu') or (sys_platform == 'win32' and extra == 'xpu')", specifier = "==3.6.0", index = "https://download.pytorch.org/whl/xpu", conflict = { package = "sttts-server", extra = "xpu" } },
 ]
-provides-extras = ["xpu", "cu128", "cpu", "reazonspeech"]
+provides-extras = ["xpu", "cu128", "cpu", "reazonspeech", "nemotron"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0" }]

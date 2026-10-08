@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-ENGINES = ("kotoba", "reazonspeech", "mock")
+ENGINES = ("kotoba", "reazonspeech", "nemotron", "mock")
 
 
 def create_asr(cfg: dict[str, Any]):
@@ -33,6 +33,17 @@ def create_asr(cfg: dict[str, Any]):
             model_dir=cfg.get("reazon_model_dir"),
             precision=cfg.get("reazon_precision") or "fp32",
             num_threads=int(cfg.get("reazon_threads") or 4),
+        )
+    if engine == "nemotron":
+        from .asr_nemotron_onnx import NemotronOnnxAsr  # noqa: PLC0415
+
+        return NemotronOnnxAsr(
+            model_id=cfg.get("nemotron_repo") or "",
+            model_dir=cfg.get("nemotron_model_dir"),
+            chunk_ms=int(cfg.get("nemotron_chunk_ms") or 320),
+            precision=cfg.get("nemotron_precision") or "fp16",
+            language=cfg.get("language") or "ja",
+            num_threads=int(cfg.get("nemotron_threads") or 0),
         )
     if engine == "mock":
         from .mock import MockAsr  # noqa: PLC0415

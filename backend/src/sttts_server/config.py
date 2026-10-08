@@ -34,7 +34,7 @@ DEFAULTS: dict[str, Any] = {
         "ref_cache_dir": None,  # None で ~/.cache/sttts-gui/ref_latents(Windows は %LOCALAPPDATA%)
     },
     "asr": {
-        "engine": "kotoba",  # "kotoba"(faster-whisper) | "reazonspeech"(sherpa-onnx) | "mock"
+        "engine": "kotoba",  # "kotoba"(faster-whisper) | "reazonspeech"(sherpa-onnx) | "nemotron"(onnxruntime) | "mock"
         "model": "kotoba-tech/kotoba-whisper-v2.0-faster",
         "device": "auto",  # "auto"(CUDA があれば cuda) | "cuda" | "cpu"
         "compute_type": "auto",  # "auto"(cuda→float16 / cpu→int8) | "int8" | "float16" | ...
@@ -50,6 +50,12 @@ DEFAULTS: dict[str, Any] = {
         "reazon_model_dir": None,  # 指定時は HF からDLせずこのディレクトリを使う
         "reazon_precision": "fp32",  # int8 は短い発話で崩れやすいので非推奨
         "reazon_threads": 4,
+        # Nemotron 3.5 ASR(asr.engine = "nemotron")用
+        "nemotron_repo": "codavidgarcia/nemotron-3.5-asr-streaming-0.6b-onnx",
+        "nemotron_model_dir": None,  # 指定時は HF からDLせずこのディレクトリを使う(自前export向け)
+        "nemotron_chunk_ms": 320,  # 320(HFパッケージ既定)。他は自前exportが必要
+        "nemotron_precision": "fp16",  # int8 は dynamic quantum で精度劣化するため非推奨
+        "nemotron_threads": 4,  # onnxruntime の intra_op スレッド数
     },
     "audio": {
         "input_device_index": None,
