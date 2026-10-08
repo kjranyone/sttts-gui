@@ -15,10 +15,13 @@ fn python_program() -> Option<String> {
     if let Ok(p) = std::env::var("STTTS_PYTHON") {
         return Some(p);
     }
-    // リポジトリの venv を優先
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../backend/.venv/Scripts/python.exe");
-    if root.exists() {
-        return Some(root.to_string_lossy().into_owned());
+    // リポジトリの venv を優先(Windows: Scripts/python.exe、Linux/macOS: bin/python)
+    let venv = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../backend/.venv");
+    for rel in ["Scripts/python.exe", "bin/python"] {
+        let p = venv.join(rel);
+        if p.exists() {
+            return Some(p.to_string_lossy().into_owned());
+        }
     }
     which_python()
 }
@@ -140,7 +143,21 @@ fn mock_backend_speak_roundtrip() {
                 assert!(!text.is_empty());
                 got_chunk_start = true;
             }
-            AnyMessage::Known(BackendMessage::TtsAudio { wav_base64, sample_rate: sr, .. }) => {
+            AnyMessage::Known(BackendMessage::TtsAudio {
+                wav_base64,
+                sample_rate: sr,
+                chunk,
+                first_chunk,
+                first_chunk_ms,
+                e2e_ms,
+                rtf,
+                ..
+            }) => {
+                // 計測フィールド: 先頭チャンクだけ first_chunk_ms を持ち、手動発話なので e2e_ms は無い
+                assert_eq!(first_chunk, chunk == 0);
+                assert_eq!(first_chunk_ms.is_some(), chunk == 0);
+                assert!(e2e_ms.is_none());
+                assert!(rtf.is_some());
                 let wav = base64::engine::general_purpose::STANDARD
                     .decode(&wav_base64)
                     .expect("valid base64");

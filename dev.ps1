@@ -14,6 +14,7 @@
     .\dev.ps1                       # モードを対話式で選択して起動
     .\dev.ps1 -Mode real            # 実エンジンモードを直接指定(対話なし)
     .\dev.ps1 -Mode real -Sync      # uv sync --extra xpu を実行してから起動
+    .\dev.ps1 -Mode real -Sync -Backend cu128   # NVIDIA GPU (CUDA 12.8) 用に同期
     .\dev.ps1 -DebugBuild -Mode mock
 #>
 [CmdletBinding()]
@@ -23,8 +24,12 @@ param(
     [ValidateSet('mock', 'real')]
     [string]$Mode,
 
-    # backend の Python 環境を同期する (uv sync --extra xpu)
+    # backend の Python 環境を同期する (uv sync --extra <Backend>)
     [switch]$Sync,
+
+    # PyTorch バックエンド: xpu(Intel Arc・既定) / cu128(NVIDIA CUDA 12.8) / cpu
+    [ValidateSet('xpu', 'cu128', 'cpu')]
+    [string]$Backend = 'xpu',
 
     # デバッグプロファイル (target/debug) を使う(既定は release)
     [switch]$DebugBuild,
@@ -82,11 +87,11 @@ if (-not $PSBoundParameters.ContainsKey('Mode')) {
 $VenvPython = Join-Path $Root 'backend\.venv\Scripts\python.exe'
 $NeedSync = $Sync -or (($Mode -eq 'real') -and -not (Test-Path $VenvPython))
 if ($NeedSync) {
-    Step 'backend の Python 環境を同期します (uv sync --extra xpu / 初回は数GBのダウンロード)'
+    Step "backend の Python 環境を同期します (uv sync --extra $Backend / 初回は数GBのダウンロード)"
     Push-Location (Join-Path $Root 'backend')
     try {
-        uv sync --extra xpu
-        if ($LASTEXITCODE -ne 0) { Fail 'uv sync --extra xpu に失敗しました' }
+        uv sync --extra $Backend
+        if ($LASTEXITCODE -ne 0) { Fail "uv sync --extra $Backend に失敗しました" }
     }
     finally { Pop-Location }
 }

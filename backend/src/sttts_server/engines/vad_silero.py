@@ -8,7 +8,7 @@ FRAME = 512  # 16kHz 固定(silero-vad の標準ストリーミング単位)
 
 
 class SileroVad:
-    def __init__(self, threshold: float = 0.5, min_silence_ms: int = 400) -> None:
+    def __init__(self, threshold: float = 0.5, min_silence_ms: int = 280) -> None:
         from silero_vad import VADIterator, load_silero_vad  # noqa: PLC0415
 
         model = load_silero_vad(onnx=True)
@@ -20,6 +20,8 @@ class SileroVad:
         )
 
     def reset(self) -> None:
+        # silero-vad の VADIterator は reset_states()(reset() は存在しない)。
+        # 以前は reset() を呼んでいたため、最初の発話終了で VAD スレッドが例外終了していた。
         self._iter.reset_states()
 
     def process(self, chunk: np.ndarray) -> dict | None:

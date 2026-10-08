@@ -52,8 +52,7 @@ pub fn default_spawn(mock: bool, output_dir: &Path) -> BackendSpawn {
         };
     }
 
-    let venv_python = root.join("backend/.venv/Scripts/python.exe");
-    let (program, needs_pythonpath) = if venv_python.exists() {
+    let (program, needs_pythonpath) = if let Some(venv_python) = find_venv_python(&root) {
         (venv_python.to_string_lossy().into_owned(), false)
     } else {
         ("python".to_string(), true)
@@ -75,6 +74,14 @@ pub fn default_spawn(mock: bool, output_dir: &Path) -> BackendSpawn {
         args,
         pythonpath: needs_pythonpath.then(|| root.join("backend/src").to_string_lossy().into_owned()),
     }
+}
+
+/// backend/.venv の python を探す(Windows: Scripts/python.exe、Linux/macOS: bin/python)。
+pub fn find_venv_python(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    ["backend/.venv/Scripts/python.exe", "backend/.venv/bin/python"]
+        .iter()
+        .map(|rel| root.join(rel))
+        .find(|p| p.exists())
 }
 
 pub struct BackendHandle {
