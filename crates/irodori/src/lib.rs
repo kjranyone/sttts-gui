@@ -17,7 +17,7 @@
 pub use burn::tensor::{Device, Tensor};
 
 #[cfg(feature = "_gpu")]
-pub use device::gpu_device;
+pub use device::{gpu_device, try_gpu_device};
 
 pub mod codec;
 pub mod condition;

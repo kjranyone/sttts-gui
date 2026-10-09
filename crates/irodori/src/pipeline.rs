@@ -30,7 +30,26 @@ pub struct TtsPaths {
     pub watermark_dir: Option<PathBuf>,
 }
 
+/// Irodori-TTS v4.1 Small MF のモデルと、組み合わせるコーデック・透かしの HF リポジトリ
+pub const MODEL_REPO: &str = "Aratako/Irodori-TTS-v4.1-Small-MF";
+pub const CODEC_REPO: &str = "Aratako/Semantic-DACVAE-Japanese-32dim";
+pub const WATERMARK_REPO: &str = "sony/silentcipher";
+
 impl TtsPaths {
+    /// HF キャッシュに無いモデルをダウンロードして(あれば再利用して)パスを返す。
+    pub fn ensure_downloaded(progress: &dyn Fn(&str)) -> Result<Self> {
+        let model_dir = crate::hub::ensure_files(MODEL_REPO, &["model.safetensors", "tokenizer/tokenizer.json", "tokenizer/tokenizer_config.json"], progress)?;
+        let codec_dir = crate::hub::ensure_files(CODEC_REPO, &["weights.pth"], progress)?;
+        let wm = crate::hub::ensure_files(
+            WATERMARK_REPO,
+            &["44_1_khz/73999_iteration/enc_c.ckpt", "44_1_khz/73999_iteration/dec_c.ckpt", "44_1_khz/73999_iteration/hparams.yaml"],
+            progress,
+        );
+        // 透かしが取れなくても合成は動く(未取得の警告つき)。取れたときだけ使う
+        let watermark_dir = wm.ok().map(|d| d.join("44_1_khz/73999_iteration"));
+        Ok(Self { model_dir, codec_weights: codec_dir.join("weights.pth"), watermark_dir })
+    }
+
     /// HuggingFace キャッシュ(`~/.cache/huggingface/hub`)から既定のモデルを探す
     pub fn from_hf_cache() -> Result<Self> {
         let model_dir = crate::hub::find_snapshot("models--Aratako--Irodori-TTS-v4.1-Small-MF", "model.safetensors").context("Irodori-TTS v4.1 Small MF が HF キャッシュにありません")?;
@@ -48,6 +67,9 @@ pub struct SamplingRequest {
     pub caption: Option<String>,
     /// 参照音声(WAV / FLAC)。`no_ref` が false のとき必要
     pub ref_wav: Option<PathBuf>,
+    /// 符号化済みの参照潜在 `[1, T, latent_dim]`(`Tts::encode_reference` の結果)。指定すると `ref_wav` の読み込みと
+    /// 符号化を省く(同じ声を繰り返し使うときのキャッシュ用)。
+    pub ref_latent: Option<Tensor<3>>,
     pub no_ref: bool,
     /// None なら乱数で決め、`SynthResult::used_seed` に返す(PyTorch とは別の乱数列)
     pub seed: Option<u64>,
@@ -74,6 +96,7 @@ impl Default for SamplingRequest {
             text: String::new(),
             caption: None,
             ref_wav: None,
+            ref_latent: None,
             no_ref: false,
             seed: None,
             num_steps: 4,
@@ -250,8 +273,13 @@ impl Tts {
                 // 全無効の話者トークンは注意から除外されるので、DiT には渡さない(結果は同じ)
                 (None, None, false)
             } else {
-                let path = req.ref_wav.as_deref().context("参照音声(ref_wav)を指定するか、no_ref を true にしてください")?;
-                let latent = self.encode_reference(path, req, &mut messages)?;
+                let latent = match &req.ref_latent {
+                    Some(l) => l.clone(),
+                    None => {
+                        let path = req.ref_wav.as_deref().context("参照音声(ref_wav)を指定するか、no_ref を true にしてください")?;
+                        self.encode_reference(path, req, &mut messages)?
+                    }
+                };
                 let steps = latent.dims()[1];
                 ensure!(steps > 0, "Reference latent length became zero.");
                 let mask = Tensor::<2>::ones([1, steps], &self.device);
@@ -383,7 +411,7 @@ impl Tts {
     }
 
     /// 参照音声 → DACVAE 潜在 `[1, T, latent_dim]`(最大長でトリム)
-    fn encode_reference(&self, path: &Path, req: &SamplingRequest, messages: &mut Vec<String>) -> Result<Tensor<3>> {
+    pub fn encode_reference(&self, path: &Path, req: &SamplingRequest, messages: &mut Vec<String>) -> Result<Tensor<3>> {
         let max_ref_seconds = req.max_ref_seconds.or(self.cfg.ref_max_seconds).unwrap_or(30.0);
         let (channels, sr) = load_audio(path)?;
         let n = channels[0].len();

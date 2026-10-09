@@ -1,8 +1,17 @@
 [package]
 name = "sttts-nemotron"
+description = "Nemotron 3.5 ASR streaming (FastConformer-RNNT, ONNX) の純 Rust 推論(ort / CPU EP)"
+license = "Apache-2.0"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+serde_json = { workspace = true }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-native"] }
+realfft = "3"
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
+
+[dev-dependencies]
+hound = "3.5.1"
