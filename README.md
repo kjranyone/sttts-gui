@@ -26,6 +26,7 @@ Irodori-TTS は文単位の非ストリーミング合成のため、**確定文
 |---|---|
 | `crates/protocol/` | GUI⇄backend の NDJSON メッセージ型(Rust/serde) |
 | `crates/gui/` | GPUI クライアント(gpui-kit 0.7 + rodio) |
+| `crates/irodori/` | Irodori-TTS の純 Rust 推論(burn / wgpu。PyTorch 不要。設計・精度・速度は `docs/irodori-rs.md`) |
 | `backend/` | Python バックエンド(uv プロジェクト) |
 | `backend/src/sttts_server/` | stdio サーバ本体・チャンク分割・エンジン実装 |
 | `backend/src/sttts_server/engines/` | `tts_irodori` / `asr`(ファクトリ)/ `asr_whisper` / `asr_reazon` / `vad_silero` / `mic` / `wav_source` / `mock` |

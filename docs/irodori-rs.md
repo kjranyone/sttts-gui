@@ -9,9 +9,75 @@ PyTorch / Python に依存しない Irodori-TTS(v4.1 Small MF)の推論。**目�
   - GPU: `gpu` feature → wgpu(Vulkan)。Intel Arc で PyTorch XPU / Level Zero を通らない。
 - **モデルは自前の構造体**で持つ(burn の `Module` derive は使わない)。重みは `Weights::tensor::<D>(name, &device)` で名前から取り出す。
 - **精度**: 各段階を PyTorch の CPU fp32 と突き合わせる。目標は最大絶対誤差 ≤ 1e-4 × 参照の最大絶対値(`testing::assert_close(.., 1e-4)`)。ModernBERT や DiT のように深い段は 1e-3 まで許容してよいが、理由を残す。
-- **速度は後段**: まず一致、次に GPU、最後に最適化(固定長パディングのマスク済みトークンの除去、f16 など)。最初から最適化しない。
+- **速度は後段**: まず一致、次に GPU、最後に最適化。最初から最適化しない(実際、最適化の中身は下の「GPU で分かったこと」のとおり、演算の速さよりメモリと形状の扱いだった)。
 - **PyTorch 実装が正**。原典は `backend/.venv/Lib/site-packages/irodori_tts/`(`model.py` / `inference_runtime.py` / `meanflow.py` / `codec.py` / `duration.py` / `text_normalization.py` / `attention.py`)。挙動に迷ったら原典を読み、参照出力で確かめる。
 - MeanFlow(`flow_parameterization == "meanflow"`)のみ対象。RF(CFG あり)は対象外。
+
+## 状態
+
+**実装済み・検証済み**: テキスト → 音声の全工程(正規化、トークナイザ、ModernBERT、条件エンコーダ、長さ予測、MeanFlow DiT と話者エンコーダ、サンプラ、DACVAE のデコード/エンコード、SilentCipher 透かし)。
+各段階とエンドツーエンドが、PyTorch(CPU, fp32)の参照と **CPU(flex)でも GPU(wgpu / Vulkan)でも一致**する(`cargo test -p irodori --release`、GPU は `--features gpu` と `IRODORI_DEVICE=gpu`)。
+
+| 段階 | 最大絶対誤差(参照の最大値に対する比) |
+|---|---|
+| トークン ID・マスク | 完全一致 |
+| ModernBERT / 条件エンコーダ | 2e-5(5e-7) |
+| 長さ予測 | 5e-7 |
+| DiT 1 ステップ | 3e-5(6e-6) |
+| 4 ステップ後の潜在(CPU / GPU) | 2e-3 / 4e-3(5e-4 / 1e-3)。f32 の足し込み順の違いが 4 ステップで積み上がる |
+| DACVAE デコード / エンコード | 1e-5 |
+| 透かし(差分の相関 / SDR) | 0.999999 / 0.00 dB |
+| 最終音声(ケース A〜D) | 8e-5 〜 4e-3(相対 1e-4 〜 4e-3。最大は GPU のケース A) |
+
+乱数だけは PyTorch と同じ列にならない(`rand` の標準正規。seed を渡せば再現はする)。参照との比較では初期ノイズを注入している。
+
+### 速度(Intel Arc B570 / Vulkan、f32、同一プロセスで 36 発話を連続合成)
+
+| 発話の長さ | 合成時間 | RTF |
+|---|---|---|
+| 約 1 秒 | 0.5 秒 | 0.5 |
+| 3〜5 秒 | 0.9〜1.4 秒 | 0.3 |
+| 9 秒 | 2.3 秒 | 0.25 |
+| 14 秒 | 3.7 秒(メモリの競合で 6〜8 秒になることがある) | 0.26(〜0.55) |
+
+比較: 同じマシンの PyTorch XPU(`uv run` のバックエンド)は 3 秒の発話に約 4 秒(RTF 1.4)かかり、長さの違う発話を数回続けると `UR_RESULT_ERROR_OUT_OF_RESOURCES` → `DEVICE_LOST` で落ちた(PyTorch 2.10 / 2.11 / 2.14.1 のどれでも再現)。この実装は同じ条件で落ちない。
+起動後の最初の数発話は、GPU のカーネルをコンパイルするので 1〜数秒余計にかかる。`Tts::warmup()`(約 10〜30 秒)を先に呼べば、最初の発話から定常の速度になる。
+
+## 使い方
+
+```
+# 参照出力(PyTorch, CPU のみ。約 1 分)
+cd backend && uv run --no-sync python scripts/dump_irodori_ref.py
+
+# テスト(CPU)/ GPU
+cargo test -p irodori --release
+IRODORI_DEVICE=gpu cargo test -p irodori --release --features gpu -- --test-threads=1
+
+# 合成(CLI)。段階ごとの時間は IRODORI_TRACE=1 で出る
+cargo run -p irodori --release --features gpu --example tts -- --warmup     --text "こんにちは、よろしくお願いします。" [--caption "落ち着いた声で"] [--ref ref.wav] --out out.wav
+```
+
+```rust
+let paths = irodori::pipeline::TtsPaths::from_hf_cache()?;      // HF キャッシュのモデル
+let tts = irodori::pipeline::Tts::load(&paths, &irodori::gpu_device())?;
+tts.warmup()?;                                                    // 任意: カーネルを先にコンパイル
+let out = tts.synthesize(&SamplingRequest { text: "…".into(), no_ref: true, ..Default::default() })?;
+// out.audio: Vec<f32>(モノ)、out.sample_rate: 48000
+```
+
+## GPU で分かったこと(Arc B570、ドライバ 32.0.101.8860、burn 0.22 / wgpu)
+
+実装の大半は「速い演算を書く」ことではなく、burn-wgpu の落とし穴を避けることだった。
+
+1. **`burn/vulkan`(SPIR-V コンパイラ)は使わない**。reduce 系(`sum` / `mean` / `max` / `softmax` / `attention`)が誤った値を返す(`examples/gpu_ops_check.rs` で再現)。WGSL 経路(`burn/wgpu` だけ)は全演算が CPU と一致する。
+2. **メモリ管理は `ExclusivePages`**(`device::gpu_device`)。既定の適応型は、長い発話を 1 回処理したあと以降のすべての演算が約 10 倍遅くなる状態に入った(メモリ使用量は変わらない)。
+3. **`burn/fusion` と `burn/autotune` は使わない**。有効にすると初回のカーネル探索・コンパイルが極端に長く(ModernBERT だけで 40 秒以上)、定常速度は変わらない。
+4. **大きな単一の確保を避ける**。トークン埋め込み表(300MB)は CPU に置いて必要な行だけ送る(GPU に置くとメモリプールが肥大して全体が遅くなった)。畳み込みの im2col と透かしの活性は固定長の列塊(`CHUNK`)に分ける。GPU メモリは他のアプリと取り合いになり、一時テンソルが数百 MB になると演算が数倍〜10 倍遅くなる。
+5. **畳み込みは im2col + 行列積**。burn の `conv1d` / `conv2d` は GPU でカーネル探索が極端に遅いことがある。行列積は速い(2〜3 TFLOPS)。3x3 の `conv2d` は、縁取り付きの平らな配列上の一次元のずらし(`Geometry`)にして、4D のまま切り出して詰め直すコピーを避ける。
+6. **形状を揃える**。GPU のカーネルは形状の整列クラスごとに作られ、初回は 1 本数百 ms。テキストのトークン数・潜在の長さは数段階(`bucket`)に零詰めして(無効位置は注意のキーから除外するので結果は同じ)、コーデックは固定長(窓 25 フレーム + 文脈 8 フレーム)の窓で処理する。
+7. **無効トークンを計算しない**。テキストは 256、キャプションは 512 に固定でパディングされるが、無効位置は注意から完全に除かれるので、有効な先頭部分だけで計算しても同じ結果になる(空キャプションは省略)。
+8. **f16 は使えない**(試して外した)。行列積を f16 にすると潜在が最大 11% ずれる(重みだけを f16 にしても 30% ずれた)うえ、速度も変わらなかった。
+9. **PyTorch のバージョンは関係ない**。同じ失敗が 2.10 / 2.11 / 2.14.1 のすべてで出た。
 
 ## 参照出力(PyTorch, CPU, fp32)
 
@@ -48,7 +114,7 @@ cd backend && uv run --no-sync python scripts/dump_irodori_ref.py     # → targ
 | `dit` | 話者エンコーダ(`ReferenceLatentEncoder`)、`encode_conditions` の話者側、`forward_with_encoded_conditions`、`build_context_kv_cache`、JointAttention / LowRankAdaLN / SwiGLU / RoPE | `encode_conditions.out2`, `dit.out.*`(入力は `dit.in.*` を注入) |
 | `duration` | `DurationPredictor`(`token_sum_dual_adarn_zero_no_aux`) | `duration.out.0` |
 | `sampler` | `sample_euler_meanflow`(4 ステップ、`linspace(1,0)`)、`unpatchify`、`find_flattening_point`(末尾トリム) | `dit.*` 全 4 ステップと最終潜在 |
-| `pth` | PyTorch `.pth`(zip + pickle)の読み取り(依存なしの最小実装) | DACVAE `weights.pth` |
+| `pth` | PyTorch `.pth` / `.ckpt`(zip + pickle)の読み取り(依存なしの最小実装。透かしの ckpt も読む) | DACVAE `weights.pth` |
 | `codec` | DACVAE のデコーダ(と参照音声用エンコーダ、ラウドネス正規化)。透かし枝は `forward_no_conv` のみ | `codec_decode`, `codec_encode` |
 | `watermark` | SilentCipher 44.1k(`sony/silentcipher` の ckpt)。`encode_batch` | `watermark.out0` |
 | `pipeline` | `Tts::load(dir) → synthesize(SamplingRequest) → audio`。上を結ぶ。乱数は自前の RNG(seed 指定可、PyTorch とは別系列) | `final_audio`(注入ノイズで一致) |
