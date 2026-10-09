@@ -74,79 +74,77 @@ impl WatermarkConfig {
     }
 }
 
-/// ゲート付き畳み込み + BatchNorm(`silentcipher.model.Layer`)
-struct Layer {
-    /// conv と gate を出力チャネル方向に連結した重み `[2*Cout, Cin, k, k]` と偏り(1 回の行列積で両方を計算する)
-    /// im2col 用に並べ替え済みの重み `[2*Cout, kh*kw*Cin]`(f16 モードでは f16)
-    w2: Tensor<2>,
-    b: Tensor<1>,
-    out_ch: usize,
-    k: usize,
-    bn_w: Tensor<1>,
-    bn_b: Tensor<1>,
-    pad: usize,
+/// 1 回の行列積で出力する位置数(固定長。最後の塊は零詰め)。大きすぎると一時メモリが膨らみ、
+/// 小さすぎると演算の数が増える。`[k*k*C, CHUNK]` の im2col が数十 MB に収まる大きさ。
+const CHUNK: usize = 65536;
+
+/// 活性を「縁取り付きの格子を行優先で平らにした」形 `[C, buf_len]` で持つための寸法。
+///
+/// 格子は高さ `h`(周波数ビン)× 幅 `w`(フレーム)で、各行の幅を `wp = w + 2` に取り、行間の
+/// 2 列分と先頭 `wp + 1`・末尾の余りを零にしておく。位置 `(i, j)` は `q = (i + 1) * wp + j + 1`。
+/// こうすると 3x3 近傍は平らな配列上の一次元のずらし(`dy * wp + dx`)になるので、畳み込みは
+/// 連続した切り出しを積んだ行列と重みの行列積になり、4D のまま切り出して詰め直すより
+/// GPU でのコピーが連続で済み、一時メモリも少ない。
+struct Geometry {
+    h: usize,
+    w: usize,
+    wp: usize,
+    nchunks: usize,
+    buf_len: usize,
+    /// `[1, nchunks * CHUNK]`: 有効な出力位置(行内の `j < w` かつ `p < ncols`)が 1
+    mask: Tensor<2>,
+    /// 有効位置の数(`h * w`)。BatchNorm の N
+    n_valid: f32,
 }
 
-/// im2col を作る出力列数の上限(1 回の行列積あたり)
-const CONV_CHUNK_COLS: usize = 65536;
-
-/// 3x3 などの 2D 畳み込み(stride 1・batch 1・「same」パディング)を行列積で計算する。
-///
-/// 入力を零で縁取って `[C, (H+2p)*(W+2p)]` に平らにすると、近傍 (dy, dx) は一次元の連続したずらし
-/// (`dy*(W+2p) + dx` 位置の切り出し)になる。これを `k*k` 本積んだ `[k*k*C, 列]` と重みの行列積で
-/// 畳み込みになる。2D のまま切り出して詰め直す方式に比べて、GPU での詰め直し(strided コピー)が
-/// 連続コピーだけで済み、数倍速い。出力の各行末には縁取り分の無効な列が `2p` 個できるので最後に捨てる。
-/// 列は固定長 `CONV_CHUNK_COLS` の塊に分け(最後の塊は零詰め)、GPU のカーネル形状を発話長に依存させない。
-fn conv2d_mm(x: Tensor<4>, w2: Tensor<2>, k: usize, b: Tensor<1>, pad: usize) -> Tensor<4> {
-    let [n, c, h, wd] = x.dims();
-    let co = w2.dims()[0];
-    let (kh, kw) = (k, k);
-    assert_eq!(n, 1, "conv2d_mm は batch 1 のみ");
-    assert!(kh == kw && kh == 2 * pad + 1, "conv2d_mm は kernel = 2*pad+1 の正方のみ");
-    let dev = x.device();
-    let trace = std::env::var_os("IRODORI_TRACE_WM").is_some();
-    let t0 = std::time::Instant::now();
-    let lap = |what: &str| {
-        if trace {
-            let _ = dev.sync();
-            eprintln!("[wm]        conv2d_mm {what}: {:.3}s", t0.elapsed().as_secs_f64());
-        }
-    };
-    let (hp, wp) = (h + 2 * pad, wd + 2 * pad);
-    let zr = Tensor::<4>::zeros([1, c, pad, wd], &dev);
-    let x = Tensor::cat(vec![zr.clone(), x, zr], 2);
-    let zc = Tensor::<4>::zeros([1, c, hp, pad], &dev);
-    let x = Tensor::cat(vec![zc.clone(), x, zc], 3);
-    lap("pad cats");
-    let flat = x.reshape([c, hp * wp]);
-    lap("flatten");
-
-    let ncols = h * wp; // 出力位置(各行は wp 列。末尾 2*pad 列は無効)
-    let chunk = CONV_CHUNK_COLS.min(ncols.div_ceil(256) * 256);
-    let nchunks = ncols.div_ceil(chunk);
-    let halo = (kh - 1) * wp + (kw - 1);
-    let need = nchunks * chunk + halo;
-    let flat = if need > hp * wp { Tensor::cat(vec![flat, Tensor::<2>::zeros([c, need - hp * wp], &dev)], 1) } else { flat };
-
-    lap("zero tail + w2");
-    let mut pieces = Vec::with_capacity(nchunks);
-    for ci in 0..nchunks {
-        let base = ci * chunk;
-        let mut parts = Vec::with_capacity(kh * kw);
-        for dy in 0..kh {
-            for dx in 0..kw {
-                parts.push(flat.clone().narrow(1, base + dy * wp + dx, chunk));
+impl Geometry {
+    fn new(h: usize, w: usize, device: &Device) -> Self {
+        let wp = w + 2;
+        let ncols = h * wp;
+        let nchunks = ncols.div_ceil(CHUNK);
+        let buf_len = nchunks * CHUNK + 2 * wp + 2;
+        let mut m = vec![0f32; nchunks * CHUNK];
+        for (p, v) in m.iter_mut().enumerate() {
+            if p < ncols && p % wp < w {
+                *v = 1.0;
             }
         }
-        pieces.push(crate::ops::matmul_lw(w2.clone(), Tensor::cat(parts, 0)));
+        let mask = Tensor::<2>::from_data(TensorData::new(m, [1, nchunks * CHUNK]), device);
+        Self { h, w, wp, nchunks, buf_len, mask, n_valid: (h * w) as f32 }
     }
-    lap("chunk loop");
-    let y = if pieces.len() == 1 { pieces.pop().unwrap() } else { Tensor::cat(pieces, 1) };
-    lap("cat pieces");
-    let y = y.narrow(1, 0, ncols).reshape([co, h, wp]).narrow(2, 0, wd);
-    let out = (y + b.reshape([co, 1, 1])).reshape([1, co, h, wd]);
-    lap("bias+crop");
-    out
+
+    /// 1 チャネルの値 `[h * w]`(行優先)を縁取り付きの平らな配列 `[1, buf_len]` にして GPU へ送る
+    fn place(&self, vals: &[f32], device: &Device) -> Tensor<2> {
+        let mut buf = vec![0f32; self.buf_len];
+        for i in 0..self.h {
+            let q = (i + 1) * self.wp + 1;
+            buf[q..q + self.w].copy_from_slice(&vals[i * self.w..(i + 1) * self.w]);
+        }
+        Tensor::<2>::from_data(TensorData::new(buf, [1, self.buf_len]), device)
+    }
+
+    /// 平らな出力 `[1, buf_len]` から `[h * w]`(行優先)を取り出す
+    fn extract(&self, flat: &[f32]) -> Vec<f32> {
+        let mut out = vec![0f32; self.h * self.w];
+        for i in 0..self.h {
+            let q = (i + 1) * self.wp + 1;
+            out[i * self.w..(i + 1) * self.w].copy_from_slice(&flat[q..q + self.w]);
+        }
+        out
+    }
+}
+
+/// ゲート付き畳み込み + BatchNorm(`silentcipher.model.Layer`)
+struct Layer {
+    /// conv と gate を出力チャネル方向に連結して im2col 用に並べた重み `[2*Cout, k*k*Cin]`(並びは dy, dx, c)
+    w2: Tensor<2>,
+    /// conv と gate の偏り `[2*Cout, 1]`
+    b: Tensor<2>,
+    out_ch: usize,
+    bn_w: Tensor<2>,
+    bn_b: Tensor<2>,
+    k: usize,
+    pad: usize,
 }
 
 impl Layer {
@@ -157,51 +155,62 @@ impl Layer {
         let gate_b = sd.tensor::<1>(&format!("{prefix}.gate.bias"), device)?;
         let k = conv_w.dims()[2];
         let out_ch = conv_w.dims()[0];
+        ensure!(k == 1 || k == 3, "unsupported kernel size {k}");
+        let w = Tensor::cat(vec![conv_w, gate_w], 0);
+        let [co2, c, kh, kw] = w.dims();
+        let b = Tensor::cat(vec![conv_b, gate_b], 0);
         Ok(Self {
-            w2: {
-                let w = Tensor::cat(vec![conv_w, gate_w], 0);
-                let [co, c, kh, kw] = w.dims();
-                crate::ops::store(w.permute([0, 2, 3, 1]).reshape([co, kh * kw * c]))
-            },
-            b: Tensor::cat(vec![conv_b, gate_b], 0),
+            w2: w.permute([0, 2, 3, 1]).reshape([co2, kh * kw * c]),
+            b: b.reshape([co2, 1]),
             out_ch,
+            bn_w: sd.tensor::<1>(&format!("{prefix}.bn.weight"), device)?.reshape([out_ch, 1]),
+            bn_b: sd.tensor::<1>(&format!("{prefix}.bn.bias"), device)?.reshape([out_ch, 1]),
             k,
-            bn_w: sd.tensor(&format!("{prefix}.bn.weight"), device)?,
-            bn_b: sd.tensor(&format!("{prefix}.bn.bias"), device)?,
             pad: k / 2,
         })
     }
 
-    fn forward(&self, x: Tensor<4>) -> Tensor<4> {
-        let trace = std::env::var_os("IRODORI_TRACE_WM").is_some();
-        let dev = x.device();
-        let t0 = std::time::Instant::now();
-        let lap = |what: &str| {
-            if trace {
-                let _ = dev.sync();
-                eprintln!("[wm]    {what}: {:.3}s", t0.elapsed().as_secs_f64());
-            }
-        };
-        let cg = conv2d_mm(x, self.w2.clone(), self.k, self.b.clone(), self.pad);
-        lap("conv");
-        let c = cg.clone().narrow(1, 0, self.out_ch);
-        let g = cg.narrow(1, self.out_ch, self.out_ch);
-        let y = c * sigmoid(g);
-        lap("gate");
-        // BatchNorm2d(学習モード): チャネル毎に (N,H,W) で平均・偏分散
-        let [n, ch, h, w] = y.dims();
-        let flat = y.swap_dims(0, 1).reshape([ch, n * h * w]);
-        lap("bn flatten");
-        let mean = flat.clone().mean_dim(1);
-        let centered = flat - mean;
-        lap("bn mean+center");
-        let var = centered.clone().powf_scalar(2.0).mean_dim(1);
-        let norm = centered / (var + BN_EPS).sqrt();
-        lap("bn var+norm");
-        let out = norm * self.bn_w.clone().reshape([ch, 1]) + self.bn_b.clone().reshape([ch, 1]);
-        let out = out.reshape([ch, n, h, w]).swap_dims(0, 1);
-        lap("bn affine");
-        out
+    /// 近傍 (dy, dx) の平らな配列上のずらし量
+    fn taps(&self, wp: usize) -> Vec<usize> {
+        let base = 1 - self.pad;
+        (0..self.k).flat_map(|dy| (0..self.k).map(move |dx| (dy + base) * wp + dx + base)).collect()
+    }
+
+    /// `x`: 縁取り付きの平らな活性 `[Cin, buf_len]` → 同じ形式の `[Cout, buf_len]`。
+    /// BatchNorm は学習モード(この入力の全有効位置でチャネルごとに平均・偏分散を取る)。
+    fn forward(&self, x: &Tensor<2>, g: &Geometry) -> Tensor<2> {
+        let co = self.out_ch;
+        let taps = self.taps(g.wp);
+        let mut ys = Vec::with_capacity(g.nchunks);
+        let mut sum = Tensor::<2>::zeros([co, 1], &x.device());
+        for ci in 0..g.nchunks {
+            let base = ci * CHUNK;
+            let mut parts: Vec<Tensor<2>> = taps.iter().map(|&o| x.clone().narrow(1, base + o, CHUNK)).collect();
+            let cols = if parts.len() == 1 { parts.pop().unwrap() } else { Tensor::cat(parts, 0) };
+            let cg = self.w2.clone().matmul(cols) + self.b.clone();
+            let y = cg.clone().narrow(0, 0, co) * sigmoid(cg.narrow(0, co, co));
+            let m = g.mask.clone().narrow(1, base, CHUNK);
+            sum = sum + (y.clone() * m).sum_dim(1);
+            ys.push(y);
+        }
+        let mean = sum.div_scalar(g.n_valid);
+        let mut sq = Tensor::<2>::zeros([co, 1], &x.device());
+        for (ci, y) in ys.iter().enumerate() {
+            let m = g.mask.clone().narrow(1, ci * CHUNK, CHUNK);
+            let d = (y.clone() - mean.clone()) * m;
+            sq = sq + (d.clone() * d).sum_dim(1);
+        }
+        let inv = (sq.div_scalar(g.n_valid) + BN_EPS).sqrt().recip();
+        let a = self.bn_w.clone() * inv;
+        let shift = self.bn_b.clone() - mean * a.clone();
+        let pieces: Vec<Tensor<2>> = ys
+            .into_iter()
+            .enumerate()
+            .map(|(ci, y)| (y * a.clone() + shift.clone()) * g.mask.clone().narrow(1, ci * CHUNK, CHUNK))
+            .collect();
+        let o = if pieces.len() == 1 { pieces.into_iter().next().unwrap() } else { Tensor::cat(pieces, 1) };
+        let z = Tensor::<2>::zeros([co, g.wp + 1], &x.device());
+        Tensor::cat(vec![z.clone(), o, z], 1)
     }
 }
 
@@ -246,17 +255,8 @@ impl Watermarker {
         if audio.is_empty() {
             return Ok(audio.to_vec());
         }
-        let trace = std::env::var_os("IRODORI_TRACE_WM").is_some();
-        let mut t0 = std::time::Instant::now();
-        let mut lap = |name: &str| {
-            if trace {
-                eprintln!("[wm] {name}: {:.3}s", t0.elapsed().as_secs_f64());
-            }
-            t0 = std::time::Instant::now();
-        };
         let sr = self.cfg.sample_rate;
         let y: Vec<f32> = if sample_rate != sr { resample(audio, sample_rate, sr) } else { audio.to_vec() };
-        lap("resample in");
         let n = y.len();
         let power = (y.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>() / n as f64) as f32;
         if power == 0.0 {
@@ -268,7 +268,6 @@ impl Watermarker {
         let (n_fft, hop) = (self.cfg.n_fft, self.cfg.hop);
         let nb = n_fft / 2 + 1;
         let (mag, phase, frames) = stft(&y, n_fft, hop);
-        lap("stft");
 
         // メッセージ(one-hot をフレーム方向へタイル)
         let msg_syms = encode_symbols(payload, self.cfg.message_len);
@@ -283,30 +282,23 @@ impl Watermarker {
         }
 
         let dev = &self.device;
-        let carrier = Tensor::<4>::from_data(TensorData::new(mag.clone(), [1, 1, nb, frames]), dev);
+        let geo = Geometry::new(nb, frames, dev);
+        let carrier = geo.place(&mag, dev);
         let mut h = carrier.clone();
         for l in &self.enc {
-            h = l.forward(h);
+            h = l.forward(&h, &geo);
         }
-        if trace {
-            let _ = self.device.sync();
-            lap("encoder");
-        }
-        let msg_t = Tensor::<4>::from_data(TensorData::new(msg, [1, 1, nb, frames]), dev);
+        let msg_t = geo.place(&msg, dev);
         let merged = Tensor::cat(
-            vec![h, carrier.clone().expand([1, 32, nb, frames]), msg_t.expand([1, 32, nb, frames])],
-            1,
+            vec![h, carrier.expand([32, geo.buf_len]), msg_t.expand([32, geo.buf_len])],
+            0,
         );
         let mut d = merged;
         for l in &self.dec {
-            d = l.forward(d);
+            d = l.forward(&d, &geo);
         }
-        if trace {
-            let _ = self.device.sync();
-            lap("decoder");
-        }
-        let mut info = d.into_data().convert::<f32>().try_to_vec::<f32>().map_err(|e| anyhow!("{e:?}"))?;
-        lap("  readback");
+        let flat = d.into_data().convert::<f32>().try_to_vec::<f32>().map_err(|e| anyhow!("{e:?}"))?;
+        let mut info = geo.extract(&flat);
         ensure!(info.len() == nb * frames, "unexpected decoder output size");
 
         // CarrierDecoder.forward の後処理
@@ -328,7 +320,6 @@ impl Watermarker {
                 info[f * frames + t] = info[f * frames + t] / rms / scale;
             }
         }
-        lap("  post: rms loops");
         // utterance_level_normalization
         let car_rms = (mag.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>() / mag.len() as f64).sqrt() as f32;
         let new_mag: Vec<f32> = mag
@@ -337,9 +328,7 @@ impl Watermarker {
             .map(|(&c, &i)| ((-(i * car_rms)) + c).max(0.0)) // ensure_negative_message: relu(-info + carrier)
             .collect();
 
-        lap("readback+post");
         let mut out = istft(&new_mag, &phase, frames, n_fft, hop);
-        lap("istft");
         // STFT 前のゼロ詰めを除去
         out.truncate(n);
         let back = (power / AVERAGE_ENERGY_VCTK as f32).sqrt();

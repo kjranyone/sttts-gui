@@ -32,13 +32,13 @@ struct Linear {
 
 impl Linear {
     fn load(w: &Weights, prefix: &str, bias: bool, dev: &Device) -> Result<Self> {
-        let wt = crate::ops::store(w.tensor::<2>(&format!("{prefix}.weight"), dev)?.transpose());
+        let wt = w.tensor::<2>(&format!("{prefix}.weight"), dev)?.transpose();
         let b = if bias { Some(w.tensor::<1>(&format!("{prefix}.bias"), dev)?) } else { None };
         Ok(Self { wt, b })
     }
 
     fn forward2(&self, x: Tensor<2>) -> Tensor<2> {
-        let y = crate::ops::matmul(x, self.wt.clone());
+        let y = x.matmul(self.wt.clone());
         match &self.b {
             Some(b) => {
                 let n = b.dims()[0];

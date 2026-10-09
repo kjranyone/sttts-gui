@@ -2,7 +2,7 @@
 //! 既定はケース A と C。`IRODORI_CASES=A,B,C,D` で変更。CPU(flex)は遅いので `--release` で。
 
 use burn::tensor::{Tensor, TensorData};
-use irodori::pipeline::{LoadOptions, SamplingRequest, Trace, Tts, TtsPaths};
+use irodori::pipeline::{SamplingRequest, Trace, Tts, TtsPaths};
 use irodori::testing::{self, assert_close, device, refs, to_vec};
 
 fn case_request(case: &str) -> SamplingRequest {
@@ -45,10 +45,7 @@ fn end_to_end_matches_pytorch() {
         return;
     };
     let dev = device();
-    let half = std::env::var("IRODORI_F16").as_deref() == Ok("1");
-    let tts = Tts::load_with(&paths, &dev, LoadOptions { half_matmul: half }).unwrap();
-    // f16 の行列積は誤差が大きくなる(許容を緩める)
-    let tol = if half { 5.0 } else { 1.0 };
+    let tts = Tts::load(&paths, &dev).unwrap();
     assert!(tts.has_watermark(), "透かしモデルが必要です");
     let cases = std::env::var("IRODORI_CASES").unwrap_or_else(|_| "A,C".into());
     for case in cases.split(',') {
@@ -67,15 +64,15 @@ fn end_to_end_matches_pytorch() {
 
         // 最終潜在(= codec_decode.in.0)
         let (_, want_z) = r.f32_vec(&format!("{case}.codec_decode.in.0")).unwrap();
-        assert_close(&format!("{case} latent"), &to_vec(trace.latent.clone().unwrap()), &want_z, 2e-3 * tol);
+        assert_close(&format!("{case} latent"), &to_vec(trace.latent.clone().unwrap()), &want_z, 2e-3);
 
         // 透かし前の音声(codec_decode.out.0 の先頭)と、最終音声
         let (_, dec) = r.f32_vec(&format!("{case}.codec_decode.out.0")).unwrap();
         let (_, wm_in) = r.f32_vec(&format!("{case}.watermark.in0.0")).unwrap();
         assert_eq!(trace.raw_audio.len(), wm_in.len(), "{case}: trimmed length");
-        assert_close(&format!("{case} decoded"), &trace.raw_audio, &dec[..wm_in.len()], 5e-3 * tol);
+        assert_close(&format!("{case} decoded"), &trace.raw_audio, &dec[..wm_in.len()], 5e-3);
         let (_, want) = r.f32_vec(&format!("{case}.final_audio.0")).unwrap();
         assert_eq!(out.audio.len(), want.len(), "{case}: final length");
-        assert_close(&format!("{case} final audio"), &out.audio, &want, 5e-3 * tol);
+        assert_close(&format!("{case} final audio"), &out.audio, &want, 5e-3);
     }
 }
