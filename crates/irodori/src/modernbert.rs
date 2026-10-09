@@ -52,7 +52,7 @@ pub struct ModernBert {
 pub(crate) fn linear(x: Tensor<3>, w: &Tensor<2>) -> Tensor<3> {
     let [b, s, i] = x.dims();
     let o = w.dims()[1];
-    x.reshape([b * s, i]).matmul(w.clone()).reshape([b, s, o])
+    crate::ops::matmul(x.reshape([b * s, i]), w.clone()).reshape([b, s, o])
 }
 
 /// バイアスなし LayerNorm(最終軸)。
@@ -132,7 +132,7 @@ impl ModernBert {
 
         let t1 = |name: &str| w.tensor::<1>(&format!("{PREFIX}.{name}"), dev);
         let t2t = |name: &str| -> Result<Tensor<2>> {
-            Ok(w.tensor::<2>(&format!("{PREFIX}.{name}"), dev)?.transpose())
+            Ok(crate::ops::store(w.tensor::<2>(&format!("{PREFIX}.{name}"), dev)?.transpose()))
         };
         let mut layers = Vec::with_capacity(n_layers);
         for (i, ty) in layer_types.iter().enumerate() {

@@ -62,10 +62,12 @@ fn prof(label: &str, x: &Tensor<3>) {
 }
 
 /// im2col を作る出力列数の上限(1 回の行列積あたり)。`[k*C, 列]` が数十 MB に収まる大きさ
-const CHUNK_COLS: usize = 8192;
+const CHUNK_COLS: usize = 49152;
 
 struct Conv {
     w: Tensor<3>,
+    /// `[Cout, k*C]`(im2col 用に並べ替え済み。f16 モードでは f16)
+    w2: Tensor<2>,
     b: Option<Tensor<1>>,
     opts: ConvOptions<1>,
     stride: usize,
@@ -75,8 +77,12 @@ struct Conv {
 
 impl Conv {
     fn load(p: &Pth, name: &str, stride: usize, pad: usize, dil: usize, dev: &Device) -> Result<Self> {
+        let w = p.tensor::<3>(&format!("{name}.weight"), dev)?;
+        let [co, c, k] = w.dims();
+        let w2 = crate::ops::store(w.clone().swap_dims(1, 2).reshape([co, k * c]));
         Ok(Self {
-            w: p.tensor::<3>(&format!("{name}.weight"), dev)?,
+            w,
+            w2,
             b: if p.contains(&format!("{name}.bias")) {
                 Some(p.tensor::<1>(&format!("{name}.bias"), dev)?)
             } else {
@@ -100,9 +106,9 @@ impl Conv {
         // それ以外も行列積より 2〜5 倍遅い。stride 1・batch 1(デコーダ・エンコーダの全層)は
         // im2col + 行列積で計算する: ずらしたスライスを積んで [Cout, k*C] x [k*C, L] にする。
         let lout = l + 2 * pad - dil * (k - 1);
-        let w2 = self.w.clone().swap_dims(1, 2).reshape([co, k * c]);
+        let w2 = self.w2.clone();
         if k == 1 {
-            let y = w2.matmul(x.reshape([c, l])).reshape([1, co, lout]);
+            let y = crate::ops::matmul_lw(w2.clone(), x.reshape([c, l])).reshape([1, co, lout]);
             return match &self.b {
                 Some(b) => y + b.clone().reshape([1, co, 1]),
                 None => y,
@@ -122,7 +128,7 @@ impl Conv {
             let n = CHUNK_COLS.min(lout - t0);
             let parts: Vec<Tensor<3>> = (0..k).map(|j| xp.clone().narrow(2, t0 + j * dil, n)).collect();
             let cols = Tensor::cat(parts, 1).reshape([k * c, n]);
-            pieces.push(w2.clone().matmul(cols).reshape([1, co, n]));
+            pieces.push(crate::ops::matmul_lw(w2.clone(), cols).reshape([1, co, n]));
             t0 += n;
         }
         let y = if pieces.len() == 1 { pieces.pop().unwrap() } else { Tensor::cat(pieces, 2) };

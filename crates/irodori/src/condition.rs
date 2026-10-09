@@ -51,7 +51,7 @@ pub struct ConditionProjector {
 impl ConditionProjector {
     /// `prefix` は `text_encoder` / `caption_encoder`
     pub fn load(w: &Weights, prefix: &str, eps: f64, dev: &Device) -> Result<Self> {
-        let t2 = |n: &str| -> Result<Tensor<2>> { Ok(w.tensor::<2>(&format!("{prefix}.{n}"), dev)?.transpose()) };
+        let t2 = |n: &str| -> Result<Tensor<2>> { Ok(crate::ops::store(w.tensor::<2>(&format!("{prefix}.{n}"), dev)?.transpose())) };
         let t1 = |n: &str| w.tensor::<1>(&format!("{prefix}.{n}"), dev);
         Ok(Self {
             proj_w: t2("projector.weight")?,

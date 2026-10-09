@@ -1,36 +1,44 @@
-//! 形状が変わるたびに GPU のカーネルが作り直されるか(= 初回コストが形状ごとに発生するか)を測る。
+//! 4D テンソルの零パディングの方法ごとの GPU 時間(device.sync で完了を待つ)。性能調査用。
 use std::time::Instant;
 
 use burn::tensor::{Distribution, Tensor};
 
+fn bench<const D: usize>(name: &str, dev: &burn::tensor::Device, mut f: impl FnMut() -> Tensor<D>) {
+    let _ = f();
+    let _ = dev.sync();
+    let reps = 3;
+    let t0 = Instant::now();
+    let mut keep = Vec::new();
+    for _ in 0..reps {
+        keep.push(f());
+    }
+    let _ = dev.sync();
+    println!("{name:<64} {:8.2} ms", t0.elapsed().as_secs_f64() * 1e3 / reps as f64);
+}
+
 fn main() {
     let dev = irodori::gpu_device();
-    let w = Tensor::<2>::random([96, 672], Distribution::Default, &dev);
-    let sync = |t: Tensor<2>| t.into_data().convert::<f32>().try_to_vec::<f32>().unwrap()[0];
-    println!("--- matmul [96,672] x [672,n]: n を毎回変える");
-    for n in [8192usize, 8192, 8000, 7000, 6000, 5000, 4097, 4096, 3000, 2999, 1000, 999, 8192] {
-        let x = Tensor::<2>::random([672, n], Distribution::Default, &dev);
-        let t = Instant::now();
-        let _ = sync(w.clone().matmul(x));
-        println!("n={n:5}: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
-    }
-    println!("--- 要素ごとの演算 [1,384,n]: sin(x*a)^2 + x");
-    for n in [3000usize, 3000, 2999, 2500, 2000, 1999, 1500, 3000] {
-        let x = Tensor::<3>::random([1, 384, n], Distribution::Default, &dev);
-        let t = Instant::now();
-        let s = (x.clone() * 2.0).sin();
-        let y = x + s.clone() * s;
-        let _ = y.into_data().convert::<f32>().try_to_vec::<f32>().unwrap()[0];
-        println!("n={n:5}: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
-    }
-    println!("--- attention [1,20,S,64] x ctx 30: S を変える");
-    for s in [72usize, 72, 73, 100, 150, 188, 188, 72] {
-        let q = Tensor::<4>::random([1, 20, s, 64], Distribution::Default, &dev);
-        let k = Tensor::<4>::random([1, 20, s + 30, 64], Distribution::Default, &dev);
-        let v = Tensor::<4>::random([1, 20, s + 30, 64], Distribution::Default, &dev);
-        let t = Instant::now();
-        let o = burn::tensor::module::attention(q, k, v, None, None, Default::default());
-        let _ = o.into_data().convert::<f32>().try_to_vec::<f32>().unwrap()[0];
-        println!("S={s:4}: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
-    }
+    let (c, h, w) = (96usize, 2049usize, 310usize);
+    let x = Tensor::<4>::random([1, c, h, w], Distribution::Default, &dev);
+    bench("cat rows(dim2) then cols(dim3)  [現行]", &dev, || {
+        let zr = Tensor::<4>::zeros([1, c, 1, w], &dev);
+        let y = Tensor::cat(vec![zr.clone(), x.clone(), zr], 2);
+        let zc = Tensor::<4>::zeros([1, c, h + 2, 1], &dev);
+        Tensor::cat(vec![zc.clone(), y, zc], 3)
+    });
+    bench("burn pad((1,1,1,1))", &dev, || x.clone().pad((1, 1, 1, 1), 0.0));
+    bench("zeros + slice_assign", &dev, || {
+        Tensor::<4>::zeros([1, c, h + 2, w + 2], &dev).slice_assign([0..1, 0..c, 1..h + 1, 1..w + 1], x.clone())
+    });
+    bench("reshape [c, h*w] only", &dev, || x.clone().reshape([c, h * w]) + 0.0);
+    let flat = x.clone().reshape([c, h * w]);
+    bench("pad flat [c, h*w] by (left=wp+1, right=wp+1+tail) via cat", &dev, || {
+        let z = Tensor::<2>::zeros([c, 400], &dev);
+        Tensor::cat(vec![z.clone(), flat.clone(), z], 1)
+    });
+    let big = Tensor::<2>::random([c, 2051 * 312 + 1000], Distribution::Default, &dev);
+    bench("narrow 9 taps of big + cat(dim0) one chunk 65536", &dev, || {
+        let parts: Vec<Tensor<2>> = (0..9).map(|i| big.clone().narrow(1, 1000 + i * 313, 65536)).collect();
+        Tensor::cat(parts, 0)
+    });
 }

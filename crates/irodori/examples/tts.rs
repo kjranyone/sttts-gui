@@ -10,13 +10,14 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use irodori::Device;
-use irodori::pipeline::{SamplingRequest, Tts, TtsPaths};
+use irodori::pipeline::{LoadOptions, SamplingRequest, Tts, TtsPaths};
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let mut req = SamplingRequest::default();
     let mut device_kind = "gpu".to_string();
     let mut repeat = 1usize;
+    let mut half = false;
     let mut warmup = false;
     let mut texts: Vec<String> = Vec::new();
     let mut out: Option<PathBuf> = None;
@@ -37,6 +38,7 @@ fn main() -> Result<()> {
             "--repeat" => repeat = val("--repeat")?.parse()?,
             "--out" => out = Some(PathBuf::from(val("--out")?)),
             "--no-watermark" => req.watermark = false,
+            "--f16" => half = true,
             "--warmup" => warmup = true,
             other => bail!("unknown argument {other}"),
         }
@@ -55,7 +57,7 @@ fn main() -> Result<()> {
 
     let t0 = std::time::Instant::now();
     let paths = TtsPaths::from_hf_cache()?;
-    let tts = Tts::load(&paths, &device)?;
+    let tts = Tts::load_with(&paths, &device, LoadOptions { half_matmul: half })?;
     eprintln!("load: {:.1}s (watermark: {})", t0.elapsed().as_secs_f64(), tts.has_watermark());
 
     if warmup {

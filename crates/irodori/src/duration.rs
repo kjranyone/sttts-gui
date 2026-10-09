@@ -190,12 +190,12 @@ impl Linear {
     fn load(w: &Weights, prefix: &str, bias: bool, dev: &Device) -> Result<Self> {
         let wt: Tensor<2> = w.tensor(&format!("{prefix}.weight"), dev)?;
         let b = if bias { Some(w.tensor::<1>(&format!("{prefix}.bias"), dev)?) } else { None };
-        Ok(Self { w: wt.transpose().unsqueeze_dim::<3>(0), b })
+        Ok(Self { w: crate::ops::store(wt.transpose().unsqueeze_dim::<3>(0)), b })
     }
 
     /// x: [B, S, in] → [B, S, out]
     fn forward(&self, x: Tensor<3>) -> Tensor<3> {
-        let y = x.matmul(self.w.clone());
+        let y = crate::ops::matmul(x, self.w.clone());
         match &self.b {
             Some(b) => y + b.clone().unsqueeze::<3>(),
             None => y,

@@ -130,6 +130,13 @@ const WARMUP_TEXTS: &[&str] = &[
     "これは少し長めの文章で、途中に読点を含みながら最後まで読み上げられるかを確認します。",
 ];
 
+/// ロード時の選択
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LoadOptions {
+    /// 行列積を f16 で行う(重みも f16 で保持して GPU メモリを約半分にする)。既定は f32
+    pub half_matmul: bool,
+}
+
 pub struct Tts {
     pub cfg: ModelConfig,
     tokenizer: Tokenizer,
@@ -143,6 +150,11 @@ pub struct Tts {
 
 impl Tts {
     pub fn load(paths: &TtsPaths, device: &Device) -> Result<Self> {
+        Self::load_with(paths, device, LoadOptions::default())
+    }
+
+    pub fn load_with(paths: &TtsPaths, device: &Device, opts: LoadOptions) -> Result<Self> {
+        crate::ops::set_half_matmul(opts.half_matmul);
         let w = Weights::open(paths.model_dir.join("model.safetensors"))?;
         let cond = TextConditioner::load(&w, device)?;
         let cfg = cond.cfg.clone();

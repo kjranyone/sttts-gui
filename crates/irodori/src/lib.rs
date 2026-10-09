@@ -23,6 +23,7 @@ pub mod device;
 pub mod dit;
 pub mod duration;
 pub mod modernbert;
+pub mod ops;
 pub mod pipeline;
 pub mod pth;
 pub mod sampler;
