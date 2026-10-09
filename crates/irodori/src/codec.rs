@@ -42,25 +42,6 @@ pub fn default_weights_path() -> Option<PathBuf> {
 // ---------------------------------------------------------------------------------------------
 
 
-/// `IRODORI_TRACE_CODEC=1` のときだけ、層ごとに GPU の完了を待って所要時間を表示する(性能調査用)
-fn prof(label: &str, x: &Tensor<3>) {
-    use std::cell::Cell;
-    use std::sync::OnceLock;
-    use std::time::Instant;
-    static ON: OnceLock<bool> = OnceLock::new();
-    thread_local!(static LAST: Cell<Option<Instant>> = const { Cell::new(None) });
-    if !*ON.get_or_init(|| std::env::var_os("IRODORI_TRACE_CODEC").is_some()) {
-        return;
-    }
-    let _ = x.clone().narrow(2, 0, 1).into_data();
-    let now = Instant::now();
-    LAST.with(|l| {
-        let dt = l.get().map(|t| now.duration_since(t).as_secs_f64()).unwrap_or(0.0);
-        eprintln!("[codec] {label:<28} {:?} {dt:.3}s", x.dims());
-        l.set(Some(now));
-    });
-}
-
 /// im2col を作る出力列数の上限(1 回の行列積あたり)。`[k*C, 列]` が数十 MB に収まる大きさ
 const CHUNK_COLS: usize = 8192;
 
@@ -195,9 +176,7 @@ impl ResUnit {
 
     fn forward(&self, x: Tensor<3>) -> Tensor<3> {
         let a = self.c0.forward(self.s0.forward(x.clone()));
-        prof("  resunit conv0", &a);
         let y = self.c1.forward(self.s1.forward(a));
-        prof("  resunit conv1", &y);
         y + x
     }
 }
@@ -225,7 +204,6 @@ impl DecoderBlock {
 
     fn forward(&self, x: Tensor<3>) -> Tensor<3> {
         let mut x = self.up.forward(self.snake.forward(x));
-        prof("up (convT)", &x);
         for u in &self.units {
             x = u.forward(x);
         }
@@ -258,7 +236,6 @@ impl Decoder {
 
     fn forward(&self, x: Tensor<3>) -> Tensor<3> {
         let mut x = self.first.forward(x);
-        prof("decoder.first", &x);
         for b in &self.blocks {
             x = b.forward(x);
         }

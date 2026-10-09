@@ -508,8 +508,8 @@ fn host_vec(t: Tensor<1>) -> Result<Vec<f32>> {
 impl Dit {
     pub fn load(w: &Weights, cfg: &ModelConfig, device: &Device) -> Result<Self> {
         ensure!(cfg.is_meanflow(), "only MeanFlow checkpoints are supported");
-        ensure!(cfg.model_dim % cfg.num_heads == 0 && (cfg.model_dim / cfg.num_heads) % 2 == 0, "bad head dim");
-        ensure!((cfg.num_heads % 2) == 0, "num_heads must be even for half-head RoPE");
+        ensure!(cfg.model_dim.is_multiple_of(cfg.num_heads) && (cfg.model_dim / cfg.num_heads).is_multiple_of(2), "bad head dim");
+        ensure!(cfg.num_heads.is_multiple_of(2), "num_heads must be even for half-head RoPE");
         let eps = cfg.norm_eps;
         let mut blocks = Vec::with_capacity(cfg.num_layers);
         for i in 0..cfg.num_layers {

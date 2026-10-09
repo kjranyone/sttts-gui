@@ -11,6 +11,9 @@
 //! - [`watermark`]: SilentCipher 透かし
 //! - [`pipeline`]: 上記をつないだ `synthesize`
 
+// バイト列 → 数値の変換は `chunks_exact` + `from_le_bytes` と書いたほうが読みやすい(速度は同じ)
+#![allow(clippy::chunks_exact_to_as_chunks)]
+
 pub use burn::tensor::{Device, Tensor};
 
 #[cfg(feature = "_gpu")]

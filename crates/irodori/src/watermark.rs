@@ -19,13 +19,14 @@
 
 use std::collections::HashMap;
 use std::f64::consts::PI;
-use std::io::Read;
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use burn::tensor::activation::sigmoid;
 use burn::tensor::{Device, Tensor, TensorData};
 use realfft::RealFftPlanner;
+
+use crate::pth::Pth;
 
 /// Irodori が埋め込むペイロード("IRDTS")
 pub const IRODORI_PAYLOAD: [u8; 5] = [73, 82, 68, 84, 83];
@@ -483,244 +484,28 @@ pub fn resample(x: &[f32], orig_sr: u32, new_sr: u32) -> Vec<f32> {
 // 最小の PyTorch ckpt(zip + pickle)リーダ。state_dict(OrderedDict[str, Tensor])のみ対応。
 // `pth.rs` と統合する際に差し替える。
 // ---------------------------------------------------------------------------
+// チェックポイント(`.ckpt` = PyTorch の zip + pickle。`pth` の読み取りを使う)
+// ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-enum Val {
-    None,
-    Int(i64),
-    Str(String),
-    Tuple(Vec<Val>),
-    List(Vec<Val>),
-    Global(String),
-    Dict(Vec<(Val, Val)>),
-    Storage { key: String, dtype: String },
-    Tensor { key: String, dtype: String, offset: usize, size: Vec<usize> },
-    Mark,
-}
-
-struct TensorInfo {
-    key: String,
-    dtype: String,
-    offset: usize,
-    size: Vec<usize>,
-}
-
-struct StateDict {
-    /// zip 内のディレクトリ名(`enc_c` など)
-    prefix: String,
-    zip: std::cell::RefCell<zip::ZipArchive<std::io::BufReader<std::fs::File>>>,
-    tensors: HashMap<String, TensorInfo>,
-}
+/// SilentCipher の ckpt。キーには DataParallel 由来の `module.` が付いている。
+struct StateDict(Pth);
 
 impl StateDict {
     fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        let file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-        let mut zip = zip::ZipArchive::new(std::io::BufReader::new(file))?;
-        let pkl_name = (0..zip.len())
-            .filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_string()))
-            .find(|n| n.ends_with("data.pkl"))
-            .ok_or_else(|| anyhow!("data.pkl not found in {}", path.display()))?;
-        let prefix = pkl_name.trim_end_matches("data.pkl").trim_end_matches('/').to_string();
-        let mut pkl = Vec::new();
-        zip.by_name(&pkl_name)?.read_to_end(&mut pkl)?;
-        let root = unpickle(&pkl)?;
-        let Val::Dict(items) = root else { bail!("checkpoint root is not a dict") };
-        let mut tensors = HashMap::new();
-        for (k, v) in items {
-            if let (Val::Str(k), Val::Tensor { key, dtype, offset, size }) = (k, v) {
-                let k = k.strip_prefix("module.").unwrap_or(&k).to_string();
-                tensors.insert(k, TensorInfo { key, dtype, offset, size });
-            }
-        }
-        Ok(Self { prefix, zip: std::cell::RefCell::new(zip), tensors })
+        Ok(Self(Pth::load(path)?))
+    }
+
+    fn key(&self, name: &str) -> String {
+        let prefixed = format!("module.{name}");
+        if self.0.contains(&prefixed) { prefixed } else { name.to_string() }
     }
 
     fn f32_vec(&self, name: &str) -> Result<(Vec<usize>, Vec<f32>)> {
-        let t = self.tensors.get(name).ok_or_else(|| anyhow!("tensor not found: {name}"))?;
-        ensure!(t.dtype == "FloatStorage", "{name}: unsupported storage {}", t.dtype);
-        let numel: usize = t.size.iter().product();
-        let mut z = self.zip.borrow_mut();
-        let mut f = z.by_name(&format!("{}/data/{}", self.prefix, t.key))?;
-        let mut bytes = Vec::new();
-        f.read_to_end(&mut bytes)?;
-        let start = t.offset * 4;
-        ensure!(bytes.len() >= start + numel * 4, "{name}: storage too small");
-        let v = bytes[start..start + numel * 4]
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
-        Ok((t.size.clone(), v))
+        let t = self.0.get(&self.key(name))?;
+        Ok((t.shape.clone(), t.data.clone()))
     }
 
     fn tensor<const D: usize>(&self, name: &str, device: &Device) -> Result<Tensor<D>> {
-        let (shape, data) = self.f32_vec(name)?;
-        ensure!(shape.len() == D, "{name}: expected {D} dims, got {shape:?}");
-        Ok(Tensor::<D>::from_data(TensorData::new(data, shape), device))
+        self.0.tensor::<D>(&self.key(name), device)
     }
-}
-
-fn unpickle(data: &[u8]) -> Result<Val> {
-    let mut stack: Vec<Val> = Vec::new();
-    let mut memo: HashMap<u32, Val> = HashMap::new();
-    let mut p = 0usize;
-    macro_rules! take {
-        ($n:expr) => {{
-            let n = $n;
-            ensure!(p + n <= data.len(), "pickle truncated");
-            let s = &data[p..p + n];
-            p += n;
-            s
-        }};
-    }
-    fn pop_mark(stack: &mut Vec<Val>) -> Result<Vec<Val>> {
-        let i = stack.iter().rposition(|v| matches!(v, Val::Mark)).ok_or_else(|| anyhow!("no MARK"))?;
-        let items = stack.split_off(i + 1);
-        stack.pop();
-        Ok(items)
-    }
-    loop {
-        let op = *data.get(p).ok_or_else(|| anyhow!("pickle: unexpected end"))?;
-        p += 1;
-        match op {
-            0x80 => {
-                take!(1);
-            } // PROTO
-            b'.' => break,
-            b'N' => stack.push(Val::None),
-            0x88 | 0x89 => stack.push(Val::None), // NEWTRUE / NEWFALSE(値は使わない)
-            b'(' => stack.push(Val::Mark),
-            b')' => stack.push(Val::Tuple(vec![])),
-            b']' => stack.push(Val::List(vec![])),
-            b'}' => stack.push(Val::Dict(vec![])),
-            b'K' => stack.push(Val::Int(take!(1)[0] as i64)),
-            b'M' => stack.push(Val::Int(u16::from_le_bytes(take!(2).try_into().unwrap()) as i64)),
-            b'J' => stack.push(Val::Int(i32::from_le_bytes(take!(4).try_into().unwrap()) as i64)),
-            0x8a => {
-                let n = take!(1)[0] as usize; // LONG1
-                let b = take!(n);
-                let mut v: i64 = 0;
-                for (i, x) in b.iter().enumerate().take(8) {
-                    v |= (*x as i64) << (8 * i);
-                }
-                stack.push(Val::Int(v));
-            }
-            b'X' => {
-                let n = u32::from_le_bytes(take!(4).try_into().unwrap()) as usize;
-                stack.push(Val::Str(String::from_utf8(take!(n).to_vec())?));
-            }
-            0x8c => {
-                let n = take!(1)[0] as usize; // SHORT_BINUNICODE
-                stack.push(Val::Str(String::from_utf8(take!(n).to_vec())?));
-            }
-            b'c' => {
-                let rest = &data[p..];
-                let nl1 = rest.iter().position(|&b| b == b'\n').ok_or_else(|| anyhow!("GLOBAL"))?;
-                let nl2 = rest[nl1 + 1..].iter().position(|&b| b == b'\n').ok_or_else(|| anyhow!("GLOBAL"))?;
-                let module = std::str::from_utf8(&rest[..nl1])?;
-                let name = std::str::from_utf8(&rest[nl1 + 1..nl1 + 1 + nl2])?;
-                stack.push(Val::Global(format!("{module} {name}")));
-                p += nl1 + 1 + nl2 + 1;
-            }
-            b'q' => {
-                let k = take!(1)[0] as u32;
-                memo.insert(k, stack.last().cloned().ok_or_else(|| anyhow!("BINPUT"))?);
-            }
-            b'r' => {
-                let k = u32::from_le_bytes(take!(4).try_into().unwrap());
-                memo.insert(k, stack.last().cloned().ok_or_else(|| anyhow!("LONG_BINPUT"))?);
-            }
-            0x94 => {
-                let k = memo.len() as u32; // MEMOIZE
-                memo.insert(k, stack.last().cloned().ok_or_else(|| anyhow!("MEMOIZE"))?);
-            }
-            b'h' => {
-                let k = take!(1)[0] as u32;
-                stack.push(memo.get(&k).cloned().ok_or_else(|| anyhow!("BINGET {k}"))?);
-            }
-            b'j' => {
-                let k = u32::from_le_bytes(take!(4).try_into().unwrap());
-                stack.push(memo.get(&k).cloned().ok_or_else(|| anyhow!("LONG_BINGET {k}"))?);
-            }
-            b't' => {
-                let items = pop_mark(&mut stack)?;
-                stack.push(Val::Tuple(items));
-            }
-            0x85 | 0x86 | 0x87 => {
-                let n = (op - 0x84) as usize;
-                let items = stack.split_off(stack.len() - n);
-                stack.push(Val::Tuple(items));
-            }
-            b'a' => {
-                let v = stack.pop().ok_or_else(|| anyhow!("APPEND"))?;
-                if let Some(Val::List(l)) = stack.last_mut() {
-                    l.push(v);
-                }
-            }
-            b'e' => {
-                let items = pop_mark(&mut stack)?;
-                if let Some(Val::List(l)) = stack.last_mut() {
-                    l.extend(items);
-                }
-            }
-            b's' => {
-                let v = stack.pop().ok_or_else(|| anyhow!("SETITEM"))?;
-                let k = stack.pop().ok_or_else(|| anyhow!("SETITEM"))?;
-                if let Some(Val::Dict(d)) = stack.last_mut() {
-                    d.push((k, v));
-                }
-            }
-            b'u' => {
-                let items = pop_mark(&mut stack)?;
-                if let Some(Val::Dict(d)) = stack.last_mut() {
-                    for kv in items.chunks_exact(2) {
-                        d.push((kv[0].clone(), kv[1].clone()));
-                    }
-                }
-            }
-            b'b' => {
-                stack.pop(); // BUILD: 状態(OrderedDict の _metadata など)は無視
-            }
-            b'Q' => {
-                // BINPERSID: ('storage', <Global FloatStorage>, key, location, numel)
-                let pid = stack.pop().ok_or_else(|| anyhow!("BINPERSID"))?;
-                let Val::Tuple(t) = pid else { bail!("unexpected persistent id") };
-                match (t.first(), t.get(1), t.get(2)) {
-                    (Some(Val::Str(s)), Some(Val::Global(g)), Some(Val::Str(key))) if s == "storage" => {
-                        let dtype = g.split(' ').nth(1).unwrap_or("").to_string();
-                        stack.push(Val::Storage { key: key.clone(), dtype });
-                    }
-                    _ => bail!("unsupported persistent id {t:?}"),
-                }
-            }
-            b'R' => {
-                let args = stack.pop().ok_or_else(|| anyhow!("REDUCE"))?;
-                let f = stack.pop().ok_or_else(|| anyhow!("REDUCE"))?;
-                let (Val::Global(g), Val::Tuple(a)) = (f, args) else { bail!("unsupported REDUCE") };
-                match g.as_str() {
-                    "collections OrderedDict" => stack.push(Val::Dict(vec![])),
-                    "torch._utils _rebuild_tensor_v2" => {
-                        let (Some(Val::Storage { key, dtype }), Some(Val::Int(off)), Some(Val::Tuple(size))) =
-                            (a.first(), a.get(1), a.get(2))
-                        else {
-                            bail!("bad _rebuild_tensor_v2 args");
-                        };
-                        let size = size
-                            .iter()
-                            .map(|v| if let Val::Int(i) = v { *i as usize } else { 0 })
-                            .collect();
-                        stack.push(Val::Tensor {
-                            key: key.clone(),
-                            dtype: dtype.clone(),
-                            offset: *off as usize,
-                            size,
-                        });
-                    }
-                    other => bail!("unsupported pickle callable {other}"),
-                }
-            }
-            other => bail!("unsupported pickle opcode 0x{other:02x}"),
-        }
-    }
-    stack.pop().ok_or_else(|| anyhow!("empty pickle"))
 }

@@ -74,8 +74,8 @@ fn main() -> Result<()> {
         for m in &res.messages {
             eprintln!("   {m}");
         }
-        if i + 1 == repeat {
-            if let Some(path) = &out {
+        if i + 1 == repeat
+            && let Some(path) = &out {
                 let spec = hound::WavSpec { channels: 1, sample_rate: res.sample_rate, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
                 let mut w = hound::WavWriter::create(path, spec)?;
                 for s in &res.audio {
@@ -84,7 +84,6 @@ fn main() -> Result<()> {
                 w.finalize()?;
                 eprintln!("wrote {}", path.display());
             }
-        }
     }
     Ok(())
 }

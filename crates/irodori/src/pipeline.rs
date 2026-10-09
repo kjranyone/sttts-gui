@@ -207,7 +207,7 @@ impl Tts {
         // --- テキスト・キャプション
         let text = normalize_text(&req.text).trim().to_string();
         ensure!(!text.is_empty(), "text became empty after normalization.");
-        let (ids, mask) = self.tokenizer.batch_encode(&[text.clone()], self.cfg.max_text_len, self.cfg.text_add_bos)?;
+        let (ids, mask) = self.tokenizer.batch_encode(std::slice::from_ref(&text), self.cfg.max_text_len, self.cfg.text_add_bos)?;
         // パディングは右詰めで、無効トークンは注意から完全に除外される(マスク -1e9 → 確率 0)ので、
         // 有効な先頭部分だけで計算しても結果は同じ。256 トークン固定のまま回すより桁違いに速い。
         // ただし長さは段階(バケット)に揃えてパディングする。GPU のカーネルは形状ごとに作られ、初回は
@@ -260,10 +260,8 @@ impl Tts {
         } else {
             (None, None, false)
         };
-        if trace_stages {
-            if let Some(sp) = &speaker_state {
-                let _ = sp.clone().into_data();
-            }
+        if let (true, Some(sp)) = (trace_stages, &speaker_state) {
+            let _ = sp.clone().into_data();
         }
         lap("prepare_reference", &mut t0);
 
@@ -361,7 +359,7 @@ impl Tts {
         audio.truncate(max_samples);
         lap("decode_latent", &mut t0);
 
-        if let Some(t) = trace.as_deref_mut() {
+        if let Some(t) = trace {
             t.text_state = Some(text_state);
             t.speaker_state = speaker_state;
             t.caption_state = caption_state;
