@@ -883,88 +883,6 @@ impl Render for StttsApp {
             });
         }
 
-        // マイク開始/停止の遷移中は画面全体をモーダルに差し替える
-        // (absolute 重ねは gpui のスタッキング解釈に依存するため、確実に見える方式)。
-        if self.mic_transition != MicTransition::None {
-            let (title, sub) = match self.mic_transition {
-                MicTransition::Stopping => (
-                    "マイクを停止中…",
-                    "デバイスの解放を待っています(直後の再開はしばらく受け付けません)".to_string(),
-                ),
-                _ => (
-                    "マイクを準備中…",
-                    format!(
-                        "TTS {} / ASR {}",
-                        Self::phase_label(&self.tts_state),
-                        Self::phase_label(&self.asr_state)
-                    ),
-                ),
-            };
-            // 下のUI(最後の会話2件)を薄く透かして描き、「画面が生きてる」感を保つ
-            let ghost: Vec<_> = self
-                .conversation
-                .iter()
-                .rev()
-                .take(2)
-                .rev()
-                .map(|e| {
-                    div()
-                        .max_w(px(420.))
-                        .px_3()
-                        .py_2()
-                        .rounded_lg()
-                        .bg(rgba(0xffffff0d))
-                        .border_1()
-                        .border_color(rgba(0xffffff14))
-                        .text_sm()
-                        .text_color(rgba(0x8d86ad80))
-                        .child(truncate_short(&e.text, 36))
-                })
-                .collect();
-            return div()
-                .id("mic-transition")
-                .size_full()
-                .bg(linear_gradient(160., linear_color_stop(rgba(0x2b1e4fff), 0.), linear_color_stop(rgba(0x0f1633ff), 1.)))
-                .child(
-                    v_flex()
-                        .size_full()
-                        .items_center()
-                        .justify_center()
-                        .gap_3()
-                        .children(ghost),
-                )
-                .flex()
-                .items_center()
-                .justify_center()
-                .with_animation(
-                    "mic-transition-fade",
-                    Animation::new(std::time::Duration::from_millis(200)).with_easing(ease_in_out),
-                    |el, delta| el.opacity(0.6 + 0.4 * delta),
-                )
-                .child(
-                    v_flex()
-                        .id("mic-transition-card")
-                        .gap_2()
-                        .px_10()
-                        .py_8()
-                        .rounded_lg()
-                        .bg(rgba(0xffffff12))
-                        .border_1()
-                        .border_color(rgba(0xffffff2b))
-                        .shadow_lg()
-                        .items_center()
-                        .child(
-                            div()
-                                .text_xl()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(0xfff2fa))
-                                .child(title),
-                        )
-                        .child(div().text_sm().text_color(rgb(0xb9b1d6)).child(sub)),
-                )
-                .into_any_element();
-        }
-
         // 入力レベルメータ(-60..0dB を 0..1 へマップ)
         let level_frac = ((self.mic_level_db + 60.0) / 60.0).clamp(0.0, 1.0);
 
@@ -1216,7 +1134,9 @@ impl Render for StttsApp {
             );
 
         // ---- レイアウト
-        div()
+        // 通常UI(の全体)を relative ラッパーの中に置き、遷移中は同じラッパー内の
+        // absolute 兄弟として全画面オーバーレイを重ねる(CSS と同じ意味論)。
+        let app_ui = div()
             .size_full()
             .bg(linear_gradient(160., linear_color_stop(rgba(0x2b1e4fff), 0.), linear_color_stop(rgba(0x0f1633ff), 1.)))
             .text_color(rgb(0xf4f1ff))
@@ -1441,21 +1361,73 @@ impl Render for StttsApp {
                             .child(div().flex_1())
                             .child(format!("会話: {} 件", self.conversation.len())),
                     ),
-            )
+            );
+
+        // 遷移中は通常UIの上に全画面の半透明スクリーン+中央カードを absolute で重ねる
+        let overlay = (self.mic_transition != MicTransition::None).then(|| {
+            let (title, sub) = match self.mic_transition {
+                MicTransition::Stopping => (
+                    "マイクを停止中…",
+                    "デバイスの解放を待っています(直後の再開はしばらく受け付けません)".to_string(),
+                ),
+                _ => (
+                    "マイクを準備中…",
+                    format!(
+                        "TTS {} / ASR {}",
+                        Self::phase_label(&self.tts_state),
+                        Self::phase_label(&self.asr_state)
+                    ),
+                ),
+            };
+            div()
+                .id("mic-transition-overlay")
+                .occlude()
+                .absolute()
+                .left_0()
+                .top_0()
+                .w_full()
+                .h_full()
+                .bg(rgba(0x0f0a1e99))
+                .flex()
+                .items_center()
+                .justify_center()
+                .with_animation(
+                    "mic-transition-fade",
+                    Animation::new(std::time::Duration::from_millis(180)).with_easing(ease_in_out),
+                    |el, delta| el.opacity(0.5 + 0.5 * delta),
+                )
+                .child(
+                    v_flex()
+                        .id("mic-transition-card")
+                        .gap_2()
+                        .px_10()
+                        .py_8()
+                        .rounded_lg()
+                        .bg(rgba(0x2b2d31ee))
+                        .border_1()
+                        .border_color(rgba(0xffffff2b))
+                        .shadow_lg()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_xl()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(0xfff2fa))
+                                .child(title),
+                        )
+                        .child(div().text_sm().text_color(rgb(0xb9b1d6)).child(sub)),
+                )
+        });
+
+        div()
+            .relative()
+            .size_full()
+            .child(app_ui)
+            .children(overlay)
             .into_any_element()
     }
 }
 
-
-/// モーダルの透かし用の短縮(会話テキスト)。
-fn truncate_short(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(max_chars).collect();
-        format!("{cut}…")
-    }
-}
 
 /// data/voices の wav を声バンクとして読み込む(ファイル名=話者名)。
 fn scan_voice_bank(root: &std::path::Path) -> Vec<(String, PathBuf)> {
