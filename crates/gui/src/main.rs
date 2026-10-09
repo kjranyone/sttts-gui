@@ -468,10 +468,19 @@ impl StttsApp {
             }
             BackendMessage::State { tts, asr, mic_running } => {
                 self.tts_state = tts;
-                self.asr_state = asr;
+                self.asr_state = asr.clone();
                 self.mic_running = mic_running;
-                // 開始/停止いずれかの応答が届いたら遷移中状態を解除する
-                self.mic_transition = MicTransition::None;
+                // 停止中は State 応答で解除。開始中は ASR が ready/error になるまで
+                // モーダルを維持し、ロードの様子を見せる(モーダル内に進捗も出す)。
+                match self.mic_transition {
+                    MicTransition::Stopping => self.mic_transition = MicTransition::None,
+                    MicTransition::Starting => {
+                        if matches!(asr.phase.as_str(), "ready" | "error") {
+                            self.mic_transition = MicTransition::None;
+                        }
+                    }
+                    MicTransition::None => {}
+                }
             }
             BackendMessage::Log { level, message } => {
                 self.push_log(format!("[{level}] {message}"));
@@ -880,25 +889,57 @@ impl Render for StttsApp {
             let (title, sub) = match self.mic_transition {
                 MicTransition::Stopping => (
                     "マイクを停止中…",
-                    "デバイスの解放を待っています(直後の再開はしばらく受け付けません)",
+                    "デバイスの解放を待っています(直後の再開はしばらく受け付けません)".to_string(),
                 ),
                 _ => (
                     "マイクを準備中…",
-                    "入力デバイスと認識エンジンの起動を待っています",
+                    format!(
+                        "TTS {} / ASR {}",
+                        Self::phase_label(&self.tts_state),
+                        Self::phase_label(&self.asr_state)
+                    ),
                 ),
             };
+            // 下のUI(最後の会話2件)を薄く透かして描き、「画面が生きてる」感を保つ
+            let ghost: Vec<_> = self
+                .conversation
+                .iter()
+                .rev()
+                .take(2)
+                .rev()
+                .map(|e| {
+                    div()
+                        .max_w(px(420.))
+                        .px_3()
+                        .py_2()
+                        .rounded_lg()
+                        .bg(rgba(0xffffff0d))
+                        .border_1()
+                        .border_color(rgba(0xffffff14))
+                        .text_sm()
+                        .text_color(rgba(0x8d86ad80))
+                        .child(truncate_short(&e.text, 36))
+                })
+                .collect();
             return div()
                 .id("mic-transition")
                 .size_full()
-                // 半透明の暗幕(下のUIが透けて見える)。フェードの対象は暗幕のみ。
-                .bg(rgba(0x0f0a1eaa))
+                .bg(linear_gradient(160., linear_color_stop(rgba(0x2b1e4fff), 0.), linear_color_stop(rgba(0x0f1633ff), 1.)))
+                .child(
+                    v_flex()
+                        .size_full()
+                        .items_center()
+                        .justify_center()
+                        .gap_3()
+                        .children(ghost),
+                )
                 .flex()
                 .items_center()
                 .justify_center()
                 .with_animation(
                     "mic-transition-fade",
                     Animation::new(std::time::Duration::from_millis(200)).with_easing(ease_in_out),
-                    |el, delta| el.opacity(0.25 + 0.75 * delta),
+                    |el, delta| el.opacity(0.6 + 0.4 * delta),
                 )
                 .child(
                     v_flex()
@@ -1405,6 +1446,16 @@ impl Render for StttsApp {
     }
 }
 
+
+/// モーダルの透かし用の短縮(会話テキスト)。
+fn truncate_short(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max_chars).collect();
+        format!("{cut}…")
+    }
+}
 
 /// data/voices の wav を声バンクとして読み込む(ファイル名=話者名)。
 fn scan_voice_bank(root: &std::path::Path) -> Vec<(String, PathBuf)> {
