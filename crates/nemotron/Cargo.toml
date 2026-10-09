@@ -1,0 +1,8 @@
+[package]
+name = "sttts-nemotron"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }

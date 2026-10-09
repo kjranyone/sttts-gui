@@ -9729,6 +9729,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "sttts-audio"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
+name = "sttts-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
+name = "sttts-gemini"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "sttts-gui"
 version = "0.1.0"
 dependencies = [
@@ -9745,11 +9766,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "sttts-nemotron"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "sttts-protocol"
 version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "sttts-whisper"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
 ]
 
 [[package]]
