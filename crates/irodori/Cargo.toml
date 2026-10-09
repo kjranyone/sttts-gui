@@ -13,10 +13,17 @@ gpu = ["burn/wgpu", "burn/vulkan", "burn/fusion", "burn/autotune"]
 [dependencies]
 # flex = 純 Rust の CPU バックエンド(参照・テスト用)
 burn = { version = "0.22", default-features = false, features = ["std", "flex"] }
-safetensors = "0.6"
-tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+tokenizers = { version = "0.22", default-features = false, features = ["unstable_wasm"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 half = "2"
 hound = "3"
+memmap2 = "0.9"
+unicode-normalization = "0.1"
+realfft = "3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+rand = "0.9"
+rand_distr = "0.5"
+thiserror = "2"
+regex = "1"
