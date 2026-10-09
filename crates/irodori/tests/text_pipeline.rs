@@ -48,7 +48,7 @@ fn text_and_caption_conditions_match_pytorch() {
     };
     let tok = Tokenizer::load(dir.join("tokenizer")).unwrap();
     let w = Weights::open(dir.join("model.safetensors")).unwrap();
-    let dev = testing::cpu();
+    let dev = testing::device();
     let t0 = Instant::now();
     let cond = TextConditioner::load(&w, &dev).unwrap();
     eprintln!("load: {:.1}s", t0.elapsed().as_secs_f32());

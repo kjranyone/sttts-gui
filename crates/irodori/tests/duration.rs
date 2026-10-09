@@ -1,6 +1,6 @@
 use irodori::config::ModelConfig;
 use irodori::duration::*;
-use irodori::testing::{self, cpu};
+use irodori::testing::{self, device};
 use irodori::weights::Weights;
 use irodori::Tensor;
 
@@ -10,13 +10,13 @@ fn meta() -> Option<serde_json::Value> {
 }
 
 fn f32t<const D: usize>(r: &Weights, name: &str) -> Tensor<D> {
-    r.tensor::<D>(name, &cpu()).unwrap()
+    r.tensor::<D>(name, &device()).unwrap()
 }
 
 fn mask_f<const D: usize>(r: &Weights, name: &str) -> Tensor<D> {
     let (shape, v) = r.i64_vec(name).unwrap();
     let v: Vec<f32> = v.into_iter().map(|x| x as f32).collect();
-    Tensor::<D>::from_data(burn::tensor::TensorData::new(v, shape), &cpu())
+    Tensor::<D>::from_data(burn::tensor::TensorData::new(v, shape), &device())
 }
 
 #[test]
@@ -31,7 +31,7 @@ fn features_and_duration_match_reference() {
     };
     let w = Weights::open(ckpt.join("model.safetensors")).unwrap();
     let cfg = ModelConfig::from_weights(&w).unwrap();
-    let model = DurationPredictor::load(&w, &cfg, &cpu()).unwrap();
+    let model = DurationPredictor::load(&w, &cfg, &device()).unwrap();
 
     let expected_frames = [("A", 72usize), ("B", 106), ("C", 100), ("D", 196)];
     for (case, want_frames) in expected_frames {

@@ -1,4 +1,4 @@
-use irodori::testing::{cpu, hf_snapshot, refs};
+use irodori::testing::{device, hf_snapshot, refs};
 use irodori::watermark::{IRODORI_PAYLOAD, Watermarker};
 
 fn sdr(orig: &[f32], recon: &[f32]) -> f64 {
@@ -31,7 +31,7 @@ fn watermark_matches_reference() {
         eprintln!("no silentcipher weights; skipping");
         return;
     };
-    let wm = Watermarker::load(snap.join("44_1_khz/73999_iteration"), &cpu()).unwrap();
+    let wm = Watermarker::load(snap.join("44_1_khz/73999_iteration"), &device()).unwrap();
     let mut checked = 0;
     for case in ["A", "B", "C", "D"] {
         let (kin, kout) = (format!("{case}.watermark.in0.0"), format!("{case}.watermark.out0.0"));

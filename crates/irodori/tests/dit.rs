@@ -6,7 +6,7 @@ use burn::tensor::{Device, Tensor, TensorData};
 use irodori::config::ModelConfig;
 use irodori::dit::{Conditions, Dit};
 use irodori::sampler::{find_flattening_point, sample_euler_meanflow, unpatchify_latent};
-use irodori::testing::{self, assert_close, cpu, to_vec};
+use irodori::testing::{self, assert_close, device, to_vec};
 use irodori::weights::Weights;
 
 struct Ctx {
@@ -24,7 +24,7 @@ fn setup() -> Option<Ctx> {
         eprintln!("skip: checkpoint not found");
         return None;
     };
-    let dev = cpu();
+    let dev = device();
     let w = Weights::open(dir.join("model.safetensors")).unwrap();
     let cfg = ModelConfig::from_weights(&w).unwrap();
     let t0 = Instant::now();
@@ -179,7 +179,7 @@ fn flattening_point() {
 
 #[test]
 fn schedule_and_noise() {
-    let dev = cpu();
+    let dev = device();
     let a = irodori::sampler::initial_noise(1, 8, 32, 7, &dev);
     let b = irodori::sampler::initial_noise(1, 8, 32, 7, &dev);
     assert_eq!(to_vec(a.clone()), to_vec(b));
