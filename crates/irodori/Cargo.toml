@@ -1,0 +1,22 @@
+[package]
+name = "irodori"
+description = "Pure-Rust inference for Irodori-TTS (burn: ndarray for reference, wgpu/Vulkan for GPU)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# GPU(Vulkan / DX12 / Metal)。Intel Arc を含む。wgpu 経由なので Level Zero / PyTorch に依存しない
+gpu = ["burn/wgpu", "burn/vulkan", "burn/fusion", "burn/autotune"]
+
+[dependencies]
+# flex = 純 Rust の CPU バックエンド(参照・テスト用)
+burn = { version = "0.22", default-features = false, features = ["std", "flex"] }
+safetensors = "0.6"
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+half = "2"
+hound = "3"
