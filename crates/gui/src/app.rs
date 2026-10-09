@@ -6,15 +6,16 @@
 //!
 //! - **何を話したか** — ストリーム(中央)。1ターン = 入力1件と、それを届けた声の対応
 //! - **どう伝えるか** — 右レールの「音声キュー」(自動再生 ON/OFF、テンポと間の再現)
-//! - **どの声で届けるか** — 右レールの「声」
+//! - **どの声で届けるか** — 右レールの「声」(Irodori の声・話し方・seed)
 //!
-//! 環境で一度決まる設定(入出力デバイス、TTS モデル、seed)は「詳細設定」シート
-//! (既定は閉)に置き、主画面に出さない(AGENTS.md「設計の前提」)。
+//! 環境で一度決まる設定(入出力デバイス、TTS モデル)は「詳細設定」シート
+//! (既定は閉。入口はタイトルバーの歯車のみ)に置き、主画面に出さない(AGENTS.md「設計の前提」)。
 
 mod chrome;
 mod help;
 mod kit;
 mod rail;
+mod sampling;
 mod sheet;
 mod stream;
 mod title_bar;
@@ -35,7 +36,7 @@ use sttts_protocol::{
     PipelineConfig, TtsConfig, VoiceConfig,
 };
 
-use crate::turns::{Turns, tag_for};
+use crate::turns::{Playback, Turns, tag_for};
 use crate::{audio, backend, secret, settings, sysmon};
 
 pub(crate) const DEFAULT_INPUT_LABEL: &str = "既定の入力デバイス";
@@ -51,6 +52,8 @@ pub(crate) const ASR_PROVIDERS: &[(&str, &str)] = &[
 
 /// Gemini API キーの発行ページ(Google AI Studio)
 pub(crate) const GEMINI_KEY_URL: &str = "https://aistudio.google.com/apikey";
+/// Gemini API キー入力が止まってから適用するまでの待ち時間
+const GEMINI_KEY_APPLY_DELAY: Duration = Duration::from_millis(800);
 
 /// マイク開始/停止要求の応答待ちの上限。超えたら遷移中表示を解除する。
 const MIC_TRANSITION_TIMEOUT: Duration = Duration::from_secs(15);
@@ -80,6 +83,8 @@ pub struct StttsApp {
 
     // ---- ストリーム(何を話したか → 届けた声)
     turns: Turns,
+    /// 再生キュー上の (ターン, チャンク)。カードの「再生中」表示に使う
+    playback: Playback,
     stream_scroll: gpui::ScrollHandle,
     composer: Entity<TextareaState>,
 
@@ -106,12 +111,14 @@ pub struct StttsApp {
     // ---- 認識
     asr_select: Entity<SelectState<Vec<String>>>,
     selected_asr_engine: String,
-    /// Gemini API キー入力欄(伏せ字)。確定は Enter / フォーカスアウト
+    /// Gemini API キー入力欄(伏せ字)。確定は Enter / フォーカスアウト / 入力が止まって少し経ったとき
     gemini_key_input: Entity<InputState>,
     /// backend へ送ったキー(空 = GUI では未設定)
     gemini_api_key: String,
     /// 保存用の暗号化済みキー(secret::protect の出力)
     gemini_key_protected: Option<String>,
+    /// キー入力の変更ごとに増やす。待ち時間後も同じなら(入力が止まった)適用する
+    gemini_key_edit_seq: u64,
 
     // ---- 詳細設定(環境で一度決まるもの)
     settings_open: bool,
@@ -127,6 +134,8 @@ pub struct StttsApp {
     saved_input_device: Option<String>,
     seed_input: Entity<InputState>,
     random_seed: bool,
+    /// 合成パラメータ(Irodori の tts.sampling)の編集欄
+    sampling: sampling::SamplingEditor,
 
     // ---- 診断
     log_open: bool,
@@ -176,6 +185,7 @@ impl StttsApp {
             state
         });
         let seed_input = cx.new(|cx| InputState::new(window, cx).placeholder("seed"));
+        let sampling = sampling::SamplingEditor::new(&root, window, cx);
 
         // --- 入出力デバイス選択
         let saved_input_device = saved.input_device.clone();
@@ -254,6 +264,7 @@ impl StttsApp {
             mic_transition: MicTransition::None,
             mic_level_db: -100.0,
             turns: Turns::default(),
+            playback: Playback::default(),
             stream_scroll: gpui::ScrollHandle::new(),
             composer,
             auto_speak,
@@ -272,6 +283,7 @@ impl StttsApp {
             gemini_key_input,
             gemini_api_key,
             gemini_key_protected,
+            gemini_key_edit_seq: 0,
             settings_open: false,
             help_topic: None,
             input_select,
@@ -283,6 +295,7 @@ impl StttsApp {
             saved_input_device,
             seed_input,
             random_seed,
+            sampling,
             log_open: false,
             log_scroll: gpui::ScrollHandle::new(),
             logs: VecDeque::new(),
@@ -366,10 +379,16 @@ impl StttsApp {
             window.subscribe(&self.asr_select, cx, on_confirm(weak.clone(), |a, n, _, cx| a.apply_asr_provider(n, cx))),
             window.subscribe(&self.gemini_key_input, cx, {
                 let weak = weak.clone();
-                move |_, event: &InputEvent, _window, cx| {
-                    if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                move |_, event: &InputEvent, _window, cx| match event {
+                    InputEvent::PressEnter { .. } | InputEvent::Blur => {
                         let _ = weak.update(cx, |app, cx| app.apply_gemini_key(cx));
                     }
+                    // 右クリックメニューで貼り付け・余白クリックでは Enter も Blur も来ない。
+                    // 入力が止まったら適用する(1文字ごとにエンジンを作り直さない)
+                    InputEvent::Change => {
+                        let _ = weak.update(cx, |app, cx| app.schedule_gemini_key_apply(cx));
+                    }
+                    _ => {}
                 }
             }),
             window.subscribe(&self.caption_input, cx, {
@@ -390,6 +409,7 @@ impl StttsApp {
             }),
         ];
         self.subscriptions.extend(subs);
+        self.subscribe_sampling_inputs(window, cx);
     }
 
     // ---------- backend ----------
@@ -402,6 +422,27 @@ impl StttsApp {
                 .update(cx, |app, cx| {
                     let (queued, speaking) = app.turns.queue_counts();
                     if queued + speaking > 0 || app.tts_loading_since.is_some() || app.asr_loading_since.is_some() {
+                        cx.notify();
+                    }
+                })
+                .is_err()
+            {
+                break;
+            }
+        })
+        .detach();
+
+        // 再生位置の追従: Sink は残数しか通知しないので短い間隔で突き合わせ、
+        // 鳴っているチャンクが変わったときだけ再描画する
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_millis(60)).await;
+            if this
+                .update(cx, |app, cx| {
+                    if app.playback.is_empty() {
+                        return;
+                    }
+                    let remaining = app.audio.as_ref().map_or(0, |a| a.pending_chunks());
+                    if app.playback.sync(remaining) {
                         cx.notify();
                     }
                 })
@@ -592,8 +633,10 @@ impl StttsApp {
                     return;
                 }
                 if let Some(audio) = &self.audio {
-                    if let Err(e) = audio.enqueue_wav_base64(&wav_base64) {
-                        self.push_log(format!("音声キュー追加失敗: {e}"));
+                    match audio.enqueue_wav_base64(&wav_base64) {
+                        // ターン不明でも Sink の残数と揃えるため積む(id 0 はどのターンにも一致しない)
+                        Ok(()) => self.playback.push(self.turns.id_for_request(request).unwrap_or(0), chunk),
+                        Err(e) => self.push_log(format!("音声キュー追加失敗: {e}")),
                     }
                 }
                 let mut total_e2e = None;
@@ -778,19 +821,19 @@ impl StttsApp {
     /// 届けた音声(保存済み WAV)を再生し直す。
     fn replay_turn(&mut self, id: u64) {
         let Some(turn) = self.turns.get(id) else { return };
-        let paths: Vec<String> = turn.audio_paths().into_iter().map(String::from).collect();
+        let paths: Vec<(u32, String)> =
+            turn.chunks.iter().filter_map(|c| Some((c.index, c.path.clone()?))).collect();
         let Some(audio) = &self.audio else {
             self.push_log("出力デバイスが開かれていません".into());
             return;
         };
         let mut errors = Vec::new();
-        for path in &paths {
+        for (chunk, path) in &paths {
             match std::fs::read(path) {
-                Ok(bytes) => {
-                    if let Err(e) = audio.enqueue_wav_bytes(bytes) {
-                        errors.push(format!("再生失敗: {e}"));
-                    }
-                }
+                Ok(bytes) => match audio.enqueue_wav_bytes(bytes) {
+                    Ok(()) => self.playback.push(id, *chunk),
+                    Err(e) => errors.push(format!("再生失敗: {e}")),
+                },
                 Err(e) => errors.push(format!("ファイル読込失敗 {path}: {e}")),
             }
         }
@@ -806,6 +849,7 @@ impl StttsApp {
             // clear() は内部で play() し直す(rodio の clear は Sink を pause するため)
             audio.clear();
         }
+        self.playback.clear();
         self.turns.cancel_active();
         cx.notify();
     }
@@ -1014,7 +1058,22 @@ impl StttsApp {
         cx.notify();
     }
 
-    /// Gemini API キー入力欄の確定(Enter / フォーカスアウト)。変更があれば暗号化して
+    /// キー入力の変更から少し待って、その間に次の変更が無ければ確定する。
+    fn schedule_gemini_key_apply(&mut self, cx: &mut Context<Self>) {
+        self.gemini_key_edit_seq += 1;
+        let seq = self.gemini_key_edit_seq;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(GEMINI_KEY_APPLY_DELAY).await;
+            let _ = this.update(cx, |app, cx| {
+                if app.gemini_key_edit_seq == seq {
+                    app.apply_gemini_key(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Gemini API キー入力欄の確定(Enter / フォーカスアウト / 入力停止)。変更があれば暗号化して
     /// data/config.json に保存し、backend へ送る(backend はエンジンを作り直す)。
     fn apply_gemini_key(&mut self, cx: &mut Context<Self>) {
         let key = self.gemini_key_input.read(cx).value().trim().to_string();
@@ -1108,6 +1167,7 @@ impl StttsApp {
                 if let Some(old) = self.audio.as_ref() {
                     old.clear();
                 }
+                self.playback.clear();
                 self.audio = Some(out);
                 self.selected_output_name = preferred;
                 self.push_log(format!("出力デバイスを切替: {name}"));

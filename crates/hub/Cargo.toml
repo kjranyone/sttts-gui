@@ -3,6 +3,7 @@ name = "sttts-hub"
 description = "HuggingFace Hub の最小実装(キャッシュ探索とダウンロード)"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 
 [dependencies]

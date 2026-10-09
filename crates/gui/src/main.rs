@@ -1,6 +1,6 @@
 //! sttts-gui — GPUI(gpui-kit)クライアントのエントリポイント。
 //!
-//! - バックエンド(Python)を子プロセス起動し stdio NDJSON で往復
+//! - エンジン(`sttts-engine`)を同じプロセスで起動し、チャネルで往復
 //! - マイク → ASR → 確定文を選んだ声で合成 → rodio で逐次再生(疑似ストリーミング)
 //! - 画面の責務と構成は app.rs 冒頭を参照
 
@@ -17,14 +17,14 @@ use gpui_kit::component::TitleBar;
 use gpui_kit::*;
 
 fn main() {
-    // --mock / --real で明示。無指定なら設定ファイルの mock を踏襲(既定 true)。
+    // --mock / --real で明示。無指定なら設定ファイルの mock を踏襲(初回は実エンジン)。
     let args: Vec<String> = std::env::args().collect();
     let mock = if args.iter().any(|a| a == "--mock") {
         true
     } else if args.iter().any(|a| a == "--real") {
         false
     } else {
-        settings::AppSettings::load(&backend::repo_root()).mock.unwrap_or(true)
+        settings::AppSettings::load(&backend::repo_root()).mock.unwrap_or(false)
     };
 
     // コンポーネントのアイコン(タイトルバーのウィンドウ操作ボタン等)は SVG アセットとして同梱する

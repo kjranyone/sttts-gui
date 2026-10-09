@@ -164,4 +164,7 @@ impl AsrEngine for NemotronAsr {
     fn transcribe_partial(&self, audio: &[f32]) -> Result<String> {
         self.nemotron.transcribe(audio)
     }
+    fn max_partial_seconds(&self) -> Option<f64> {
+        None // 直前の続きから再開するので、長い発話でも partial は伸びた分しか計算しない
+    }
 }

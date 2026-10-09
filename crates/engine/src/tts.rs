@@ -62,6 +62,59 @@ pub fn check_sampling_overrides(sampling: &Map<String, Value>) -> Result<()> {
     Ok(())
 }
 
+/// `tts.sampling` の値の型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SamplingKind {
+    Int,
+    Float,
+    Bool,
+}
+
+/// `tts.sampling` で指定できる Irodori の項目(GUI はこの一覧から編集欄を作る)。
+/// [`apply_sampling`] が受け付ける項目と一致させる(テストで検査)。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SamplingField {
+    /// Irodori の `SamplingRequest` の項目名
+    pub key: &'static str,
+    pub label: &'static str,
+    pub help: &'static str,
+    pub kind: SamplingKind,
+    /// Irodori の既定値(`SamplingRequest::default()`)。null は「なし」
+    pub default: Value,
+    /// null を明示指定できる項目で、null の意味(例: 正規化しない)。既定が null の項目は None
+    pub null_label: Option<&'static str>,
+}
+
+/// `tts.sampling` で指定できる全項目と Irodori の既定値
+pub fn sampling_fields() -> Vec<SamplingField> {
+    let d = irodori::pipeline::SamplingRequest::default();
+    let f = |key, label, help, kind, default: Value| SamplingField { key, label, help, kind, default, null_label: None };
+    use SamplingKind::*;
+    vec![
+        f("num_steps", "ステップ数", "多いほど丁寧だが遅い(MeanFlow は少数で足りる)", Int, d.num_steps.into()),
+        f("duration_scale", "長さの倍率", "1 より大きいとゆっくり、小さいと速く読む", Float, d.duration_scale.into()),
+        f("seconds", "長さ(秒、固定)", "指定すると長さ予測を使わずこの長さで合成する", Float, d.seconds.into()),
+        f("min_seconds", "最短(秒)", "予測した長さの下限", Float, d.min_seconds.into()),
+        f("max_seconds", "最長(秒)", "予測した長さの上限", Float, d.max_seconds.into()),
+        f("max_ref_seconds", "参照音声の上限(秒)", "長い参照音声はこの長さで切る(空 = 切らない)", Float, d.max_ref_seconds.into()),
+        SamplingField {
+            null_label: Some("正規化しない"),
+            ..f("ref_normalize_db", "参照音声の音量(LUFS)", "参照音声をこの音量にそろえてから使う", Float, d.ref_normalize_db.map(f32_value).into())
+        },
+        f("ref_ensure_max", "参照音声の音割れ防止", "正規化しないとき、ピークが 1.0 を超えたら縮める", Bool, d.ref_ensure_max.into()),
+        f("trim_tail", "末尾の無音を削る", "生成音声の末尾にある無音・ノイズを切る", Bool, d.trim_tail.into()),
+        f("tail_window_size", "末尾判定の窓", "末尾判定に使う潜在フレーム数", Int, d.tail_window_size.into()),
+        f("tail_std_threshold", "末尾判定の std 閾値", "これより小さい揺れを無音とみなす", Float, f32_value(d.tail_std_threshold).into()),
+        f("tail_mean_threshold", "末尾判定の mean 閾値", "これより小さい平均を無音とみなす", Float, f32_value(d.tail_mean_threshold).into()),
+        f("watermark", "透かし(SilentCipher)", "生成音声に聞こえない透かしを入れる(使えるときのみ)", Bool, d.watermark.into()),
+    ]
+}
+
+/// f32 の既定値を JSON へ(0.05f32 → 0.05。f64 へ広げたときの端数を見せない)
+fn f32_value(x: f32) -> f64 {
+    (f64::from(x) * 1e6).round() / 1e6
+}
+
 // ---------------------------------------------------------------- Irodori
 
 /// 実エンジン
@@ -152,9 +205,8 @@ pub fn apply_sampling(req: &mut irodori::pipeline::SamplingRequest, sampling: &M
             "watermark" => req.watermark = bool_of(k, v)?,
             "num_steps" => {}
             other => bail!(
-                "tts.sampling の項目 {other:?} は Rust 版 Irodori が対応していません(MeanFlow で意味のある項目: \
-                 num_steps, duration_scale, seconds, min_seconds, max_seconds, max_ref_seconds, ref_normalize_db, \
-                 ref_ensure_max, trim_tail, tail_window_size, tail_std_threshold, tail_mean_threshold, watermark)"
+                "tts.sampling の項目 {other:?} は Rust 版 Irodori が対応していません(MeanFlow で意味のある項目: {})",
+                sampling_fields().iter().map(|f| f.key).collect::<Vec<_>>().join(", ")
             ),
         }
     }
@@ -323,6 +375,34 @@ mod tests {
         assert!(err.contains("cfg_scale_text"), "{err}");
         let err = apply_sampling(&mut req, &map(json!({"duration_scale": "fast"}))).unwrap_err().to_string();
         assert!(err.contains("duration_scale"), "{err}");
+    }
+
+    /// GUI の編集欄はこの一覧から作る。全項目が apply_sampling に通り、既定値を入れても何も変わらないこと
+    #[test]
+    fn sampling_fields_match_apply_sampling() {
+        let fields = sampling_fields();
+        let defaults: Map<String, Value> = fields.iter().map(|f| (f.key.to_string(), f.default.clone())).collect();
+        let mut req = irodori::pipeline::SamplingRequest::default();
+        apply_sampling(&mut req, &defaults).unwrap();
+        let d = irodori::pipeline::SamplingRequest::default();
+        assert_eq!(
+            (req.num_steps, req.duration_scale, req.seconds, req.max_ref_seconds, req.ref_normalize_db, req.watermark),
+            (d.num_steps, d.duration_scale, d.seconds, d.max_ref_seconds, d.ref_normalize_db, d.watermark)
+        );
+        assert_eq!((req.tail_std_threshold, req.tail_mean_threshold), (d.tail_std_threshold, d.tail_mean_threshold));
+        for f in &fields {
+            let value = match f.kind {
+                SamplingKind::Int => json!(7),
+                SamplingKind::Float => json!(1.5),
+                SamplingKind::Bool => json!(!f.default.as_bool().unwrap()),
+            };
+            apply_sampling(&mut req, &map(json!({ f.key: value }))).unwrap_or_else(|e| panic!("{}: {e}", f.key));
+            if f.null_label.is_some() {
+                apply_sampling(&mut req, &map(json!({ f.key: null }))).unwrap_or_else(|e| panic!("{}: {e}", f.key));
+            }
+            assert!(!RESERVED_SAMPLING_KEYS.contains(&f.key), "{}", f.key);
+        }
+        assert_eq!(req.ref_normalize_db, None);
     }
 
     #[test]

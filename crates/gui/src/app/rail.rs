@@ -1,4 +1,4 @@
-//! 右レール: ライブ / 音声キュー / 声 / 認識。主画面に常に出す設定はここだけに置く。
+//! 右レール: ライブ / 音声キュー / 声(Irodori の声・話し方・seed)/ 認識。主画面に常に出す設定はここだけに置く。
 
 use gpui_kit::component::button::*;
 use gpui_kit::component::input::Input;
@@ -97,30 +97,14 @@ impl StttsApp {
                 .child(button)
                 .child(meter)
                 .child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .whitespace_nowrap()
-                                .text_xs()
-                                .text_color(c(theme::TEXT_FAINT))
-                                .child(format!("入力: {input_name}")),
-                        )
-                        .child(
-                            Button::new("change-input")
-                                .xsmall()
-                                .ghost()
-                                .label("変更")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.settings_open = true;
-                                    cx.notify();
-                                })),
-                        ),
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .text_xs()
+                        .text_color(c(theme::TEXT_FAINT))
+                        .child(format!("入力: {input_name}")),
                 ),
         )
     }
@@ -202,7 +186,29 @@ impl StttsApp {
                     "話し方",
                     self.help_icon(HelpTopic::Style, cx),
                     Input::new(&self.caption_input).small(),
-                )),
+                ))
+                .child(self.render_seed(cx))
+                .child(self.render_sampling(cx)),
+        )
+    }
+
+    fn render_seed(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let weak = cx.weak_entity();
+        kit::field_with_help(
+            "乱数(seed)",
+            self.help_icon(HelpTopic::Seed, cx),
+            h_flex()
+                .gap_3()
+                .items_center()
+                .child(
+                    Switch::new("random-seed")
+                        .checked(self.random_seed)
+                        .label("ランダム")
+                        .on_click(move |checked, _, cx| {
+                            let _ = weak.update(cx, |this, cx| this.set_random_seed(*checked, cx));
+                        }),
+                )
+                .when(!self.random_seed, |row| row.child(div().flex_1().child(Input::new(&self.seed_input).small()))),
         )
     }
 

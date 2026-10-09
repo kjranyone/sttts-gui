@@ -22,7 +22,7 @@ use serde_json::{Map, Value, json};
 use sttts_protocol::{AudioDeviceInfo, BackendMessage, EngineState, GuiMessage, ModelInfo, PROTOCOL_VERSION};
 
 use crate::asr::{AsrEngine, Progress};
-use crate::chunker::{ChunkOptions, count_mora, split_chunks};
+use crate::chunker::{ChunkOptions, count_mora, settled_prefix_len, split_chunks};
 use crate::config::{default_config, default_user_config_path, get, get_bool, get_f64, get_i64, load_user_config, merge_config};
 use crate::performance::{AcousticObservation, Delivery, observe, plan_delivery};
 use crate::session::{AsrSource, AudioSource, LiveSession, OnBlock, SessionConfig, SessionHost, Timing, Vad};
@@ -147,6 +147,33 @@ struct SpecState {
     next_id: u64,
 }
 
+/// 話し続けている発話の逐次読み上げ(1 発話 = 1 リクエストを確定まで開いておく)
+#[derive(Default)]
+struct IncrState {
+    utterances: HashMap<u64, IncrUtterance>,
+    /// 確定済みの発話 id(これ以下の partial は無視する)
+    finalized_upto: u64,
+}
+
+#[derive(Default)]
+struct IncrUtterance {
+    /// ASR 文字列のうち、読み上げに回した先頭部分
+    committed: String,
+    /// 直前の partial の未読部分(2 回連続で一致した範囲だけ読み上げる)
+    prev_rest: String,
+    /// partial が既読部分と食い違った(以降は確定を待つ)
+    diverged: bool,
+    open: Option<OpenRequest>,
+}
+
+struct OpenRequest {
+    request: u64,
+    next_chunk: u32,
+    seed: u64,
+    caption: Option<String>,
+    ref_wavs: Vec<String>,
+}
+
 struct TtsJob {
     request: u64,
     chunk: u32,
@@ -211,6 +238,8 @@ struct PendingInfo {
     failed: bool,
     accepted: f64,
     speech_end: Option<f64>,
+    /// 話している途中の発話で、まだチャンクが追加される(確定までは speak_done を送らない)
+    open: bool,
 }
 
 #[derive(Default)]
@@ -277,6 +306,7 @@ pub(crate) struct Inner {
     utterance_seq: AtomicU64,
     last_session_stop: Mutex<Option<Instant>>,
     spec: Mutex<SpecState>,
+    incr: Mutex<IncrState>,
     warmup_model: Mutex<Option<String>>,
     asr: Mutex<AsrCache>,
     stop: AtomicBool,
@@ -391,6 +421,7 @@ impl Inner {
             utterance_seq: AtomicU64::new(0),
             last_session_stop: Mutex::new(None),
             spec: Mutex::new(SpecState::default()),
+            incr: Mutex::new(IncrState::default()),
             warmup_model: Mutex::new(None),
             asr: Mutex::new(AsrCache::default()),
             stop: AtomicBool::new(false),
@@ -495,6 +526,11 @@ impl Inner {
         {
             let mut cfg = lock(&self.config);
             *cfg = merge_config(&cfg, patch);
+            // tts.sampling は「既定からの上書きの組」なので丸ごと置き換える(深いマージだと、
+            // GUI で既定に戻した項目が残り続ける)
+            if let Some(sampling) = patch.get("tts").and_then(|t| t.get("sampling")).filter(|s| s.is_object()) {
+                cfg["tts"]["sampling"] = sampling.clone();
+            }
         }
         let keys: Vec<&String> = patch.as_object().map(|o| o.keys().collect()).unwrap_or_default();
         self.sink.debug(format!("configure 適用: {keys:?}"));
@@ -693,7 +729,15 @@ impl Inner {
             let request = pend.seq;
             pend.map.insert(
                 request,
-                PendingInfo { total: chunks.len() as u32, done: 0, cancelled: false, failed: false, accepted: now(), speech_end: p.speech_end },
+                PendingInfo {
+                    total: chunks.len() as u32,
+                    done: 0,
+                    cancelled: false,
+                    failed: false,
+                    accepted: now(),
+                    speech_end: p.speech_end,
+                    open: false,
+                },
             );
             request
         };
@@ -862,6 +906,149 @@ impl Inner {
         st.track.clear();
     }
 
+    // ---------- 逐次読み上げ(話し続けている間の TTS) ----------
+    //
+    // VAD の発話終了を待たず、partial に出た「後続の音声で変わらない文」から読み上げを始める。
+    // 1 発話 = 1 リクエストとし、確定までリクエストを開いたままチャンクを足していく
+    // (GUI のターンは 1 リクエストに対応するため)。確定時は既読分を除いた残りを足して閉じる。
+
+    /// partial の安定した文を開いたリクエストへ追加する。まだ何も読み上げていなければ true(投機してよい)。
+    fn commit_partial(&self, utterance: u64, text: &str) -> bool {
+        if !get_bool(&self.cfg(), "pipeline", "auto_speak", true) {
+            return true;
+        }
+        let max_chars = self.chunk_options().max_chars;
+        let commit = {
+            let mut st = lock(&self.incr);
+            if utterance <= st.finalized_upto {
+                return false;
+            }
+            let u = st.utterances.entry(utterance).or_default();
+            if u.diverged {
+                return false;
+            }
+            let Some(rest) = text.strip_prefix(u.committed.as_str()) else {
+                u.diverged = true; // ASR が既読部分を書き換えた: 以降は確定を待つ
+                return false;
+            };
+            let agreed = common_prefix_len(rest, &u.prev_rest);
+            let cut = settled_prefix_len(rest, agreed, max_chars);
+            u.prev_rest = rest[cut.unwrap_or(0)..].to_string();
+            let Some(cut) = cut else { return u.committed.is_empty() };
+            let commit = rest[..cut].to_string();
+            u.committed.push_str(&commit);
+            commit
+        };
+        self.discard_specs(); // 先頭は逐次読み上げで出すので、投機結果は使わない
+        self.append_utterance(utterance, &commit, None, true);
+        false
+    }
+
+    /// 発話のリクエスト(無い・取り消し済みなら新たに開く)へ `text` のチャンクを足す。`keep_open` が false なら閉じる。
+    fn append_utterance(&self, utterance: u64, text: &str, delivery: Option<&Delivery>, keep_open: bool) {
+        let chunks = if text.trim().is_empty() { Vec::new() } else { self.split(text.trim()) };
+        let mut st = lock(&self.incr);
+        let Some(u) = st.utterances.get_mut(&utterance) else { return };
+        let alive = u.open.as_ref().is_some_and(|o| lock(&self.pending).map.get(&o.request).is_some_and(|i| !i.cancelled));
+        if !alive {
+            u.open = None;
+            if chunks.is_empty() {
+                return;
+            }
+            let (caption, ref_wavs) = self.resolve_voice(None, None);
+            let request = {
+                let mut pend = lock(&self.pending);
+                pend.seq += 1;
+                let request = pend.seq;
+                pend.map.insert(
+                    request,
+                    PendingInfo { total: 0, done: 0, cancelled: false, failed: false, accepted: now(), speech_end: None, open: true },
+                );
+                request
+            };
+            self.sink.send(BackendMessage::SpeakAccepted {
+                request,
+                origin: "auto".into(),
+                tag: None,
+                utterance: Some(utterance),
+                speech_end_ms: None,
+                delivery: None,
+            });
+            u.open = Some(OpenRequest { request, next_chunk: 0, seed: Self::request_seed(None), caption, ref_wavs });
+        }
+        let o = u.open.as_mut().expect("opened above");
+        let mut caption = o.caption.clone();
+        let mut sampling: Map<String, Value> = get(&self.cfg(), "tts", "sampling").as_object().cloned().unwrap_or_default();
+        if let Some(d) = delivery {
+            caption = d.caption(caption.as_deref());
+            if let Some(scale) = d.duration_scale {
+                sampling.insert("duration_scale".into(), json!(scale));
+            }
+        }
+        {
+            let mut pend = lock(&self.pending);
+            if let Some(info) = pend.map.get_mut(&o.request) {
+                info.total += chunks.len() as u32;
+                info.open = keep_open;
+            }
+        }
+        for chunk_text in &chunks {
+            self.queue.push(TtsJob {
+                request: o.request,
+                chunk: o.next_chunk,
+                text: delivery.map_or_else(|| chunk_text.clone(), |d| d.annotated_text(chunk_text)),
+                caption: caption.clone(),
+                ref_wavs: o.ref_wavs.clone(),
+                seed: Some(o.seed),
+                spec: None,
+                warmup: false,
+                enqueued: Some(Instant::now()),
+                sampling: Some(sampling.clone()),
+            });
+            o.next_chunk += 1;
+        }
+        let request = o.request;
+        if !keep_open {
+            u.open = None;
+            drop(st);
+            let mut pend = lock(&self.pending);
+            self.send_speak_done_locked(&mut pend, request); // 全チャンク合成済みなら、ここで完了
+        }
+    }
+
+    /// 確定時に呼ぶ。この発話で読み上げ済みの先頭部分を返す(逐次読み上げしていなければ None)。
+    /// これより前の発話で開いたままのリクエストは閉じる。
+    fn finalize_incremental(&self, utterance: u64) -> Option<String> {
+        let (committed, stale) = {
+            let mut st = lock(&self.incr);
+            st.finalized_upto = st.finalized_upto.max(utterance);
+            let committed = st.utterances.get(&utterance).map(|u| u.committed.clone()).filter(|c| !c.is_empty());
+            if committed.is_none() {
+                st.utterances.remove(&utterance);
+            }
+            let stale: Vec<u64> = st.utterances.keys().copied().filter(|&k| k < utterance).collect();
+            (committed, stale)
+        };
+        for k in stale {
+            self.close_incremental(k);
+        }
+        committed
+    }
+
+    /// 開いたままのリクエストを、チャンクを足さずに閉じる。
+    fn close_incremental(&self, utterance: u64) {
+        self.append_utterance(utterance, "", None, false);
+        lock(&self.incr).utterances.remove(&utterance);
+    }
+
+    /// セッション終了時: 確定が来なかった発話のリクエストを閉じる。
+    fn close_all_incremental(&self) {
+        let ids: Vec<u64> = lock(&self.incr).utterances.keys().copied().collect();
+        for k in ids {
+            self.close_incremental(k);
+        }
+    }
+
     fn save_wav(&self, wav: &[u8]) -> Option<String> {
         if !self.opts.save_wavs {
             return None;
@@ -911,7 +1098,7 @@ impl Inner {
     /// `pending` ロック保持中に呼ぶこと。done==total か cancelled で speak_done を送る。
     fn send_speak_done_locked(&self, pend: &mut Pending, request: u64) {
         let Some(info) = pend.map.get(&request) else { return };
-        if info.done >= info.total || info.cancelled {
+        if (info.done >= info.total && !info.open) || info.cancelled {
             let info = pend.map.remove(&request).expect("checked above");
             self.sink.send(BackendMessage::SpeakDone { request, chunks: info.done, cancelled: info.cancelled, failed: info.failed });
         }
@@ -1269,6 +1456,7 @@ impl Inner {
         let Some(session) = lock(&self.session).take() else { return };
         session.stop();
         self.cancel_performance();
+        self.close_all_incremental();
         *lock(&self.last_session_stop) = Some(Instant::now());
         let (loaded, ()) = {
             let mut st = lock(&self.state);
@@ -1408,6 +1596,16 @@ impl Inner {
     }
 }
 
+/// 2 つの文字列の共通の先頭の長さ(バイト、文字境界)
+fn common_prefix_len(a: &str, b: &str) -> usize {
+    a.char_indices().zip(b.chars()).find(|&((_, x), y)| x != y).map_or_else(|| a.len().min(b.len()), |((i, _), _)| i)
+}
+
+/// 確定文のうち、まだ読み上げていない部分。ASR が既読部分を書き換えていたら文字数で読み飛ばす。
+fn unread_rest<'a>(committed: &str, text: &'a str) -> &'a str {
+    text.strip_prefix(committed).unwrap_or_else(|| text.char_indices().nth(committed.chars().count()).map_or("", |(i, _)| &text[i..]))
+}
+
 /// `speak` の引数(GUI からの手動発話と、ASR 確定からの自動発話で共通)
 pub(crate) struct SpeakParams {
     pub text: String,
@@ -1451,6 +1649,7 @@ impl SessionHost for Inner {
             st.asr_loaded_model.is_some()
         };
         self.cancel_performance();
+        self.close_all_incremental();
         if lock(&self.state).asr_phase != ERROR {
             self.set_asr(if loaded { READY } else { IDLE }, None, None);
         } else {
@@ -1468,7 +1667,9 @@ impl SessionHost for Inner {
 
     fn on_asr_partial(&self, utterance: u64, text: &str, asr_ms: Option<u64>) {
         self.sink.send(BackendMessage::AsrPartial { utterance, text: text.to_string(), asr_ms });
-        self.maybe_speculate(utterance, text);
+        if self.commit_partial(utterance, text) {
+            self.maybe_speculate(utterance, text);
+        }
     }
 
     fn on_asr_final(&self, utterance: u64, text: &str, timing: Timing) {
@@ -1494,7 +1695,16 @@ impl SessionHost for Inner {
             delivery: delivery.as_ref().map(Delivery::summary),
             pause_ms: observation.map(|o| o.pause_ms),
         });
-        if get_bool(&self.cfg(), "pipeline", "auto_speak", true) && !text.trim().is_empty() {
+        let auto = get_bool(&self.cfg(), "pipeline", "auto_speak", true) && !text.trim().is_empty();
+        if let Some(committed) = self.finalize_incremental(utterance) {
+            // 逐次読み上げ済み: 残りだけを同じリクエストへ足して閉じる
+            let rest = unread_rest(&committed, text);
+            if !text.starts_with(&committed) {
+                self.sink.debug(format!("incremental TTS: final differs from spoken prefix {committed:?}; speaking {rest:?}"));
+            }
+            self.append_utterance(utterance, if auto { rest } else { "" }, delivery.as_ref(), false);
+            lock(&self.incr).utterances.remove(&utterance);
+        } else if auto {
             self.speak(SpeakParams {
                 text: text.to_string(),
                 origin: "auto".into(),

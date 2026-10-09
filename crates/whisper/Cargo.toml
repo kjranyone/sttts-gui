@@ -3,6 +3,7 @@ name = "sttts-whisper"
 description = "Pure-Rust inference for kotoba-whisper-v2.0 (burn: flex for reference, wgpu for GPU)"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 
 [features]

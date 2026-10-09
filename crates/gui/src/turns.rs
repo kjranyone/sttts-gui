@@ -130,6 +130,11 @@ impl Turns {
         self.items.iter().find(|t| t.id == id)
     }
 
+    /// 合成 request に対応するターンの id
+    pub fn id_for_request(&self, request: u64) -> Option<u64> {
+        self.items.iter().rev().find(|t| t.request == Some(request)).map(|t| t.id)
+    }
+
     fn get_mut(&mut self, id: u64) -> Option<&mut Turn> {
         self.items.iter_mut().find(|t| t.id == id)
     }
@@ -345,9 +350,76 @@ impl Turns {
     }
 }
 
+/// 再生キューの中身(どのターンのどのチャンクか)を、Sink に積んだ順に覚える。
+///
+/// rodio の Sink は「残り何個か」しか教えてくれないため、積んだ順の記録と
+/// 残数([`Playback::sync`])を突き合わせて、いま鳴っているチャンクを割り出す。
+#[derive(Debug, Default)]
+pub struct Playback {
+    /// Sink に積んだ順。先頭が再生中(または再生済みで未同期)
+    queue: VecDeque<(u64, u32)>,
+}
+
+impl Playback {
+    pub fn push(&mut self, turn: u64, chunk: u32) {
+        self.queue.push_back((turn, chunk));
+    }
+
+    /// Sink の残数(再生中を含む)に合わせて再生済みを捨てる。いま鳴っているものが変わったら true。
+    pub fn sync(&mut self, remaining: usize) -> bool {
+        let before = self.current();
+        while self.queue.len() > remaining {
+            self.queue.pop_front();
+        }
+        self.current() != before
+    }
+
+    /// いま鳴っている (ターン, チャンク)
+    pub fn current(&self) -> Option<(u64, u32)> {
+        self.queue.front().copied()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    /// Sink を空にしたとき(キャンセル・出力デバイス切替)
+    pub fn clear(&mut self) {
+        self.queue.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playback_follows_sink_remaining_count() {
+        let mut p = Playback::default();
+        assert_eq!(p.current(), None);
+        p.push(1, 0);
+        p.push(1, 1);
+        p.push(2, 0);
+        assert!(!p.sync(3));
+        assert_eq!(p.current(), Some((1, 0)));
+        assert!(p.sync(2));
+        assert_eq!(p.current(), Some((1, 1)));
+        // 再生中に後続が積まれても先頭は変わらない
+        p.push(2, 1);
+        assert!(!p.sync(3));
+        assert_eq!(p.current(), Some((1, 1)));
+        assert!(p.sync(0));
+        assert_eq!(p.current(), None);
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn playback_clear_forgets_queue() {
+        let mut p = Playback::default();
+        p.push(3, 0);
+        p.clear();
+        assert_eq!(p.current(), None);
+    }
 
     #[test]
     fn mic_utterance_flows_from_partial_to_done() {

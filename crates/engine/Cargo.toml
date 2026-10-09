@@ -3,6 +3,7 @@ name = "sttts-engine"
 description = "sttts-gui backend in Rust: mic -> VAD -> ASR -> chunking -> Irodori-TTS (in-process)"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 
 [features]

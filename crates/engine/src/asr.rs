@@ -28,6 +28,13 @@ pub trait AsrEngine: Send + Sync {
     /// 発話途中の部分デコード(表示用)
     fn transcribe_partial(&self, audio: &[f32]) -> Result<String>;
 
+    /// partial に渡す音声の上限(秒、発話の末尾から)。None なら発話の先頭から全部渡す。
+    /// 先頭からの全音声を渡すと partial の文字列が確定と同じく発話の先頭から伸びていき、
+    /// 話している途中の逐次読み上げに使える。
+    fn max_partial_seconds(&self) -> Option<f64> {
+        Some(12.0)
+    }
+
     /// 使い終わったエンジンの解放(モデル・接続)
     fn unload(&self) {}
 

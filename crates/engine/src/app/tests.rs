@@ -414,6 +414,127 @@ fn voice_change_between_spec_and_final_discards() {
     assert_eq!(eng.texts(), ["こんにちは、", "こんにちは、", "今日はいい天気ですね。"]);
 }
 
+// ---------------------------------------------------------------- 逐次読み上げ(話し続けている間の TTS)
+
+const S1: &str = "一文目を話しています。";
+const S2: &str = "二文目も続けて話しています。";
+
+fn requests_of(h: &Harness, t: &str) -> Vec<u64> {
+    h.rec.of_type(t).iter().map(|m| m["request"].as_u64().unwrap()).collect()
+}
+
+#[test]
+fn continuous_speech_starts_speaking_before_final() {
+    let (h, eng) = gate_harness();
+    partial(&h, 1, &format!("{S1}二文"));
+    partial(&h, 1, &format!("{S1}二文目も"));
+    // 確定(=話し終わり)を待たずに、安定した 1 文目の合成・送出が始まる
+    assert!(wait3(|| !h.rec.of_type("tts_audio").is_empty()));
+    assert!(h.done().is_empty()); // 発話の途中ではリクエストを閉じない
+    partial(&h, 1, &format!("{S1}{S2}三"));
+    partial(&h, 1, &format!("{S1}{S2}三文目"));
+    final_(&h, 1, &format!("{S1}{S2}三文目で終わります。"));
+    assert!(wait3(|| h.done().len() == 1));
+    // 1 発話 = 1 リクエスト。既読分は二度読まない
+    assert_eq!(requests_of(&h, "speak_accepted"), [1]);
+    assert_eq!(h.rec.texts_of("tts_chunk_start", "text").concat(), format!("{S1}{S2}三文目で終わります。"));
+    assert_eq!(eng.texts().concat(), format!("{S1}{S2}三文目で終わります。"));
+    let audio = h.rec.of_type("tts_audio");
+    let chunks: Vec<u64> = audio.iter().map(|a| a["chunk"].as_u64().unwrap()).collect();
+    assert_eq!(chunks, (0..audio.len() as u64).collect::<Vec<_>>());
+    assert!(audio.iter().all(|a| a["seed"] == audio[0]["seed"])); // 声質が途中で変わらない
+    assert_eq!(h.done()[0]["chunks"], audio.len());
+    assert_eq!(h.done()[0]["cancelled"], false);
+}
+
+#[test]
+fn single_unconfirmed_partial_is_not_spoken() {
+    let (h, eng) = gate_harness();
+    partial(&h, 1, &format!("{S1}二文"));
+    partial(&h, 1, &format!("一文目を離しています。二文目")); // 前回と食い違う
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(eng.texts().is_empty());
+    assert!(h.rec.of_type("speak_accepted").is_empty());
+}
+
+#[test]
+fn sentence_end_at_tail_waits_for_following_speech() {
+    let (h, eng) = gate_harness();
+    for _ in 0..3 {
+        partial(&h, 1, S1); // 末尾の「。」は後続の音声で変わりうる
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(eng.texts().is_empty());
+    final_(&h, 1, S1);
+    assert!(wait3(|| h.done().len() == 1));
+    assert_eq!(eng.texts().concat(), S1);
+    assert_eq!(requests_of(&h, "speak_accepted"), [1]);
+}
+
+#[test]
+fn final_rewriting_spoken_prefix_does_not_repeat_it() {
+    let (h, _eng) = gate_harness();
+    partial(&h, 1, &format!("{S1}二"));
+    partial(&h, 1, &format!("{S1}二文"));
+    assert!(wait3(|| !h.rec.of_type("tts_audio").is_empty()));
+    final_(&h, 1, &format!("一文目を離しています。{S2}"));
+    assert!(wait3(|| h.done().len() == 1));
+    assert_eq!(h.rec.texts_of("tts_chunk_start", "text").concat(), format!("{S1}{S2}"));
+}
+
+#[test]
+fn auto_speak_off_does_not_speak_while_talking() {
+    let (h, eng) = gate_harness();
+    h.set("pipeline", "auto_speak", json!(false));
+    partial(&h, 1, &format!("{S1}二"));
+    partial(&h, 1, &format!("{S1}二文"));
+    final_(&h, 1, &format!("{S1}{S2}"));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(eng.texts().is_empty());
+    assert!(h.rec.of_type("speak_accepted").is_empty());
+}
+
+#[test]
+fn session_end_without_final_closes_open_request() {
+    let (h, _eng) = gate_harness();
+    partial(&h, 1, &format!("{S1}二"));
+    partial(&h, 1, &format!("{S1}二文"));
+    assert!(wait3(|| !h.rec.of_type("tts_audio").is_empty()));
+    h.app.close_all_incremental();
+    assert!(wait3(|| h.done().len() == 1));
+    assert_eq!(h.done()[0]["cancelled"], false);
+    partial(&h, 2, &format!("{S2}三")); // 次の発話は新しいリクエスト
+    partial(&h, 2, &format!("{S2}三文"));
+    final_(&h, 2, &format!("{S2}三文目。"));
+    assert!(wait3(|| h.done().len() == 2));
+    assert_eq!(requests_of(&h, "speak_accepted"), [1, 2]);
+}
+
+#[test]
+fn cancel_while_talking_then_rest_is_spoken_as_new_request() {
+    let (h, eng) = gate_harness();
+    eng.close_gate();
+    partial(&h, 1, &format!("{S1}二"));
+    partial(&h, 1, &format!("{S1}二文"));
+    assert!(eng.wait_started());
+    h.app.cancel_speak();
+    eng.open_gate();
+    assert!(wait3(|| h.done().len() == 1));
+    final_(&h, 1, &format!("{S1}{S2}"));
+    assert!(wait3(|| h.done().len() == 2));
+    assert_eq!(requests_of(&h, "speak_accepted"), [1, 2]);
+    assert_eq!(h.rec.texts_of("tts_chunk_start", "text").concat(), S2); // 取り消した分は読み直さない
+}
+
+#[test]
+fn next_utterance_final_closes_previous_open_request() {
+    let (h, _eng) = gate_harness();
+    partial(&h, 1, &format!("{S1}二"));
+    partial(&h, 1, &format!("{S1}二文"));
+    final_(&h, 2, S2); // 発話 1 の確定が来なかった
+    assert!(wait3(|| h.done().len() == 2));
+}
+
 // ---------------------------------------------------------------- キャンセル
 
 fn gate_harness() -> (Harness, Arc<GateTts>) {
@@ -726,6 +847,21 @@ fn configure_via_gui_message_reaches_config() {
     // auto_speak 無効なら確定しても発話しない
     final_(&h, 1, "こんにちは。");
     assert!(h.rec.of_type("speak_accepted").is_empty());
+}
+
+/// GUI は tts.sampling を丸ごと送る。消した項目(= Irodori の既定に戻す)が残らないこと
+#[test]
+fn configure_replaces_tts_sampling_as_a_whole() {
+    let h = Harness::new(true);
+    let send = |sampling: Value| {
+        let tts = sttts_protocol::TtsConfig { sampling: sampling.as_object().cloned(), ..Default::default() };
+        h.app.dispatch(GuiMessage::Configure { tts: Some(tts), asr: None, audio: None, voice: None, pipeline: None });
+    };
+    send(json!({"duration_scale": 1.2, "trim_tail": false}));
+    assert_eq!(get(&h.app.cfg(), "tts", "sampling"), &json!({"duration_scale": 1.2, "trim_tail": false}));
+    send(json!({"trim_tail": false}));
+    assert_eq!(get(&h.app.cfg(), "tts", "sampling"), &json!({"trim_tail": false}));
+    assert_eq!(get(&h.app.cfg(), "tts", "model"), &json!("v4.1-small-mf")); // 他キーは保持
 }
 
 #[test]

@@ -1,20 +1,18 @@
 //! 詳細設定シート(既定は閉)。環境で一度決まり、普段は触らない設定を置く:
-//! 入出力デバイス、音声合成モデル、seed。Irodori の細かな sampling 項目は
-//! data/backend.json の tts.sampling で指定する(GUI が塞がない。AGENTS.md「設計の前提」)。
+//! 入出力デバイス、音声合成モデル。末尾にリポジトリとクレジット。
+//! seed と合成パラメータ(tts.sampling)は Irodori の設定として右レールの「声」に置く。
 
 use gpui_kit::component::button::*;
-use gpui_kit::component::input::Input;
 use gpui_kit::component::select::Select;
-use gpui_kit::component::switch::Switch;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::help::HelpTopic;
 use super::{StttsApp, kit, phase_label};
 use crate::theme::{self, c, ca};
 
 const SHEET_W: f32 = 420.;
+const REPO_URL: &str = "https://github.com/kjranyone/sttts-gui";
 
 impl StttsApp {
     pub(super) fn render_settings_sheet(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -88,8 +86,7 @@ impl StttsApp {
                             .overflow_y_scroll()
                             .child(self.render_devices())
                             .child(self.render_models(cx))
-                            .child(self.render_seed(cx))
-                            .child(self.render_advanced(cx)),
+                            .child(self.render_about(cx)),
                     ),
             )
     }
@@ -163,35 +160,36 @@ impl StttsApp {
         )
     }
 
-    fn render_seed(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let weak = cx.weak_entity();
-        kit::section_with_help(
-            "乱数(seed)",
-            self.help_icon(HelpTopic::Seed, cx),
-            v_flex()
-                .gap_2()
-                .child(
-                    Switch::new("random-seed")
-                        .checked(self.random_seed)
-                        .label("ランダム")
-                        .on_click(move |checked, _, cx| {
-                            let _ = weak.update(cx, |this, cx| this.set_random_seed(*checked, cx));
-                        }),
-                )
-                .when(!self.random_seed, |col| col.child(Input::new(&self.seed_input).small())),
-        )
-    }
-
-    fn render_advanced(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // tts.sampling / tts.codec_*(data/backend.json)と gui.log の置き場所
-        kit::section(
-            "ファイル",
-            Button::new("open-data")
-                .small()
-                .outline()
-                .icon(IconName::FolderOpen)
-                .label("data")
-                .on_click(cx.listener(|this, _, _, _| this.open_data_folder())),
-        )
+    /// 末尾: リポジトリと軽いクレジット
+    fn render_about(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_1()
+            .px_4()
+            .py_4()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(c(theme::TEXT_MUTED))
+                            .child(concat!("sttts-gui ", env!("CARGO_PKG_VERSION"))),
+                    )
+                    .child(
+                        Button::new("open-github")
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::Github)
+                            .label("GitHub")
+                            .tooltip(REPO_URL)
+                            .on_click(cx.listener(|_, _, _, cx| cx.open_url(REPO_URL))),
+                    ),
+            )
+            .child(kit::hint(REPO_URL))
+            .child(kit::hint("音声合成 Irodori-TTS(Aratako)· 認識 Nemotron / kotoba-whisper / Gemini"))
+            .child(kit::hint("UI GPUI · 推論 burn"))
+            .child(kit::hint("© 2026 Kojiro Tanaka · MIT License"))
     }
 }

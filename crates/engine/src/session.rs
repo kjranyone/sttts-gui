@@ -31,7 +31,6 @@ pub const SAMPLE_RATE: usize = 16000;
 pub const FRAME: usize = 512;
 const MIN_UTTERANCE_SECONDS: f64 = 0.25;
 const MIN_PARTIAL_SECONDS: f64 = 0.6;
-const MAX_PARTIAL_SECONDS: f64 = 12.0;
 const LEVEL_INTERVAL: f64 = 0.1;
 /// Silero の start 判定直前 160ms もストリーミング ASR に送る
 const PREROLL_FRAMES: usize = 5;
@@ -335,6 +334,8 @@ pub struct VadSegmenter {
     sink: Box<dyn JobSink>,
     /// <=0 で partial 無効
     partial_interval: f64,
+    /// partial に渡す音声の上限(秒)。None で発話の先頭から全部
+    max_partial: Option<f64>,
     on_level: Option<Box<dyn Fn(f32, f32) + Send>>,
     on_utterance: Option<UtteranceHook>,
     stream_asr: Option<Arc<dyn AsrEngine>>,
@@ -360,6 +361,7 @@ impl VadSegmenter {
             vad,
             sink,
             partial_interval,
+            max_partial: Some(12.0),
             on_level: None,
             on_utterance: None,
             stream_asr: None,
@@ -389,6 +391,11 @@ impl VadSegmenter {
 
     pub fn with_stream_asr(mut self, asr: Arc<dyn AsrEngine>) -> Self {
         self.stream_asr = Some(asr);
+        self
+    }
+
+    pub fn with_max_partial(mut self, seconds: Option<f64>) -> Self {
+        self.max_partial = seconds;
         self
     }
 
@@ -458,8 +465,7 @@ impl VadSegmenter {
             } else if self.speaking && self.partial_interval > 0.0 && now - self.last_partial > self.partial_interval {
                 let buffered: usize = self.utterance.iter().map(Vec::len).sum();
                 if buffered as f64 >= SAMPLE_RATE as f64 * MIN_PARTIAL_SECONDS {
-                    let max = (SAMPLE_RATE as f64 * MAX_PARTIAL_SECONDS) as usize;
-                    let skip = buffered.saturating_sub(max);
+                    let skip = self.max_partial.map_or(0, |s| buffered.saturating_sub((SAMPLE_RATE as f64 * s) as usize));
                     let audio: Vec<f32> = self.utterance.iter().flatten().skip(skip).copied().collect();
                     self.sink.submit_partial(PartialJob { utterance: self.utterance_id, audio });
                 }
@@ -760,6 +766,7 @@ fn run_session_inner(p: SessionParts) {
                             let host = Arc::clone(&host);
                             move |u, a| host.on_utterance_audio(u, a)
                         })
+                        .with_max_partial(engine.max_partial_seconds())
                         .with_utterance_start(cfg.utterance_start.max(1));
                     if streaming {
                         s = s.with_stream_asr(Arc::clone(&engine));

@@ -198,6 +198,42 @@ fn sentences(text: &[char]) -> Vec<String> {
     out
 }
 
+/// 話している途中の文字列のうち、先に読み上げてよい先頭部分の長さ(バイト)。
+///
+/// `text[..limit]` の中で最後の文末(区切り文字+閉じ括弧等)を切れ目とし、その後ろに文字が続いている
+/// (=文末の後に次の文が始まっている)ことを条件にする。文末が無いまま `max_chars` を超えたら読点で切る
+/// (句読点の少ない ASR 出力でも、話し続けている間に読み上げを始めるため)。切れ目が無ければ None。
+pub fn settled_prefix_len(text: &str, limit: usize, max_chars: usize) -> Option<usize> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let followed_by_letter = |from: usize| chars[from..].iter().any(|&(_, c)| is_letter(c));
+    let (mut sentence, mut comma) = (None, None);
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i].1;
+        let mut j = i + 1;
+        if DELIMITERS.contains(c) {
+            while j < chars.len() && (TRAILERS.contains(chars[j].1) || DELIMITERS.contains(chars[j].1)) {
+                j += 1;
+            }
+        }
+        let end = chars.get(j).map_or(text.len(), |&(b, _)| b);
+        if end > limit {
+            break;
+        }
+        if DELIMITERS.contains(c) && followed_by_letter(j) {
+            sentence = Some(end);
+        } else if COMMAS.contains(c) && followed_by_letter(j) {
+            comma = Some(end);
+        }
+        i = j;
+    }
+    if sentence.is_some() {
+        return sentence;
+    }
+    let settled: Vec<char> = text[..limit.min(text.len())].chars().collect();
+    comma.filter(|_| max_chars > 0 && letters(&settled) > max_chars)
+}
+
 /// テキストを発話チャンクに分割する(詳細はモジュール docs)。
 ///
 /// `first_mora_max <= 0` で先頭チャンクの短縮を無効化、`max_chars == 0` で長さ分割を無効化。
@@ -264,6 +300,28 @@ mod tests {
 
     fn joined(chunks: &[String]) -> String {
         chunks.concat().replace(' ', "")
+    }
+
+    #[test]
+    fn settled_prefix_needs_following_speech() {
+        let t = "一文目です。二文目";
+        assert_eq!(settled_prefix_len(t, t.len(), 80), Some("一文目です。".len()));
+        assert_eq!(settled_prefix_len("一文目です。", 99, 80), None); // 末尾の文末は未確定
+        assert_eq!(settled_prefix_len("一文目です。」", 99, 80), None);
+        assert_eq!(settled_prefix_len(t, "一文目です".len(), 80), None); // 一致範囲の外
+        let t = "一。二。三";
+        assert_eq!(settled_prefix_len(t, t.len(), 80), Some("一。二。".len()));
+        assert_eq!(settled_prefix_len(t, "一。二".len(), 80), Some("一。".len()));
+        let t = "「はい。」と言った";
+        assert_eq!(settled_prefix_len(t, t.len(), 80), Some("「はい。」".len()));
+    }
+
+    #[test]
+    fn settled_prefix_falls_back_to_comma_only_when_long() {
+        let t = "ええと、それでですね";
+        assert_eq!(settled_prefix_len(t, t.len(), 80), None);
+        assert_eq!(settled_prefix_len(t, t.len(), 5), Some("ええと、".len()));
+        assert_eq!(settled_prefix_len(t, t.len(), 0), None);
     }
 
     #[test]

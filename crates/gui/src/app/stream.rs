@@ -68,7 +68,49 @@ const ANNOTATION_CHOICES: &[(&str, &str)] = &[
 ];
 const _: () = assert!(ANNOTATION_CHOICES.len() == 45);
 
-fn status_label(turn: &Turn, tts_ready: bool) -> (String, u32) {
+/// 再生中のチャンクに合わせた本文の色分け(カラオケ風): 再生済み → 藤、再生中 → 地に藤、
+/// これから → 控えめ。チャンク文が本文中に見つからなければ None(色分けしない)。
+fn playing_highlights(turn: &Turn, playing: u32) -> Option<Vec<(std::ops::Range<usize>, HighlightStyle)>> {
+    let mut cursor = 0;
+    let mut current = None;
+    for ch in &turn.chunks {
+        let needle = ch.text.trim();
+        if needle.is_empty() {
+            continue;
+        }
+        let Some(pos) = turn.text[cursor..].find(needle) else { continue };
+        let range = cursor + pos..cursor + pos + needle.len();
+        cursor = range.end;
+        if ch.index == playing {
+            current = Some(range);
+            break;
+        }
+    }
+    let current = current?;
+    let style = |color: u32| HighlightStyle { color: Some(c(color).into()), ..Default::default() };
+    let mut out = Vec::new();
+    if current.start > 0 {
+        out.push((0..current.start, style(theme::VOICE)));
+    }
+    out.push((
+        current.clone(),
+        HighlightStyle {
+            color: Some(c(theme::TEXT).into()),
+            background_color: Some(ca(theme::VOICE, 0x55).into()),
+            ..Default::default()
+        },
+    ));
+    if current.end < turn.text.len() {
+        out.push((current.end..turn.text.len(), style(theme::TEXT_MUTED)));
+    }
+    Some(out)
+}
+
+fn status_label(turn: &Turn, tts_ready: bool, playing: Option<u32>) -> (String, u32) {
+    if let Some(index) = playing {
+        let position = turn.chunks.iter().position(|ch| ch.index == index).map_or(1, |p| p + 1);
+        return (format!("再生中 {position}/{}", turn.chunks.len().max(position)), theme::VOICE);
+    }
     match turn.status {
         TurnStatus::Listening => ("聞き取り中…".into(), theme::INPUT),
         TurnStatus::AwaitingConfirm => ("確認待ち".into(), theme::WARN),
@@ -77,7 +119,7 @@ fn status_label(turn: &Turn, tts_ready: bool) -> (String, u32) {
         TurnStatus::Speaking => {
             let (ready, total) = (turn.ready_chunks(), turn.chunks.len());
             if total > 0 && ready == total {
-                ("再生中".into(), theme::VOICE)
+                ("再生待ち".into(), theme::VOICE)
             } else {
                 (format!("合成中 {ready}/{} · {}秒", total.max(1), turn.waited_secs()), theme::VOICE)
             }
@@ -118,9 +160,11 @@ impl StttsApp {
             .child(self.render_composer(cx))
     }
 
-    fn render_turn(&self, turn: &Turn, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_turn(&self, turn: &Turn, cx: &mut Context<Self>) -> AnyElement {
         let id = turn.id;
-        let (status, status_color) = status_label(turn, self.tts_state.phase == "ready");
+        // いま鳴っているチャンク(このターンのものなら)
+        let playing = self.playback.current().filter(|(t, _)| *t == id).map(|(_, chunk)| chunk);
+        let (status, status_color) = status_label(turn, self.tts_state.phase == "ready", playing);
         let is_mic = matches!(turn.source, TurnSource::Mic { .. });
         let speaking = turn.status == TurnStatus::Speaking;
         let quiet = matches!(
@@ -196,10 +240,15 @@ impl StttsApp {
                         _ if quiet => theme::TEXT_FAINT,
                         _ => theme::TEXT,
                     }))
-                    .child(if turn.text.is_empty() {
-                        "…".to_string()
-                    } else {
-                        turn.text.clone()
+                    .map(|text| match playing.and_then(|p| playing_highlights(turn, p)) {
+                        Some(highlights) => text.child(
+                            StyledText::new(turn.text.clone()).with_highlights(highlights),
+                        ),
+                        None => text.child(if turn.text.is_empty() {
+                            "…".to_string()
+                        } else {
+                            turn.text.clone()
+                        }),
                     }),
             )
             .when_some(expression, |col, label| {
@@ -263,12 +312,26 @@ impl StttsApp {
                 )
                 .child(div().text_xs().text_color(c(theme::VOICE)).child(voice))
                 .when(!turn.chunks.is_empty(), |row| {
-                    row.child(h_flex().gap_1().children(turn.chunks.iter().map(|ch| {
-                        div().w(px(14.)).h(px(4.)).rounded_full().bg(c(if ch.ready {
-                            theme::VOICE
+                    row.child(h_flex().gap_1().items_center().children(turn.chunks.iter().map(|ch| {
+                        let pill = div().h(px(4.)).rounded_full();
+                        if playing == Some(ch.index) {
+                            // 再生中のチャンクは太く明るく脈打たせる
+                            pill.w(px(24.))
+                                .h(px(6.))
+                                .bg(c(theme::TEXT))
+                                .with_animation(
+                                    SharedString::from(format!("pill-{id}-{}", ch.index)),
+                                    Animation::new(std::time::Duration::from_millis(900))
+                                        .repeat()
+                                        .with_easing(pulsating_between(0.45, 1.0)),
+                                    |el, delta| el.opacity(delta),
+                                )
+                                .into_any_element()
                         } else {
-                            theme::BORDER_STRONG
-                        }))
+                            pill.w(px(14.))
+                                .bg(c(if ch.ready { theme::VOICE } else { theme::BORDER_STRONG }))
+                                .into_any_element()
+                        }
                     })))
                 })
                 .when_some(turn.e2e_ms, |row, ms| {
@@ -321,7 +384,7 @@ impl StttsApp {
                 })
         });
 
-        v_flex()
+        let card = v_flex()
             .w_full()
             .max_w(px(CARD_MAX_W))
             .flex_shrink_0()
@@ -337,7 +400,28 @@ impl StttsApp {
             .when(quiet, |card| card.opacity(0.7))
             .child(said)
             .children(confirm)
-            .children(delivery)
+            .children(delivery);
+        if playing.is_none() {
+            return card.into_any_element();
+        }
+        // 再生中: 藤の枠が呼吸するように明滅し、カードがわずかに浮く
+        card
+            .bg(c(theme::ELEVATED))
+            .shadow(vec![BoxShadow {
+                color: ca(theme::VOICE, 0x40).into(),
+                offset: point(px(0.), px(0.)),
+                blur_radius: px(18.),
+                spread_radius: px(1.),
+                inset: false,
+            }])
+            .with_animation(
+                SharedString::from(format!("playing-{id}")),
+                Animation::new(std::time::Duration::from_millis(1400))
+                    .repeat()
+                    .with_easing(pulsating_between(0.0, 1.0)),
+                |card, delta| card.border_color(ca(theme::VOICE, (0x70 as f32 + 0x8f as f32 * delta) as u8)),
+            )
+            .into_any_element()
     }
 
     fn render_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {

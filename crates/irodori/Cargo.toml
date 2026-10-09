@@ -3,6 +3,7 @@ name = "irodori"
 description = "Pure-Rust inference for Irodori-TTS (burn: ndarray for reference, wgpu/Vulkan for GPU)"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 
 [features]

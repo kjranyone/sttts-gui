@@ -340,6 +340,24 @@ fn segmenter_submits_partials_on_interval_and_handles_unaligned_blocks() {
     assert_eq!(seg.buffered_samples(), 100 * 480);
 }
 
+#[test]
+fn segmenter_partial_window_is_per_engine() {
+    let run = |max: Option<f64>| {
+        let (vad, _) = ScriptVad::boxed(&[((0, 0), VadEvent::Start(0))]);
+        let rec = Arc::new(Recorder::default());
+        let t = Arc::new(Mutex::new(0.0));
+        let mut seg = VadSegmenter::new(vad, Box::new(RecSink(rec.clone())), 0.5).with_max_partial(max).with_clock(clock_at(t.clone()));
+        for i in 0..20 {
+            *t.lock().unwrap() = i as f64;
+            seg.feed(&vec![1.0; 16000], None); // 1 秒ずつ
+        }
+        let longest = rec.partials.lock().unwrap().iter().map(|p| p.1).max().unwrap();
+        longest
+    };
+    assert_eq!(run(Some(12.0)), 12 * 16000); // 末尾 12 秒だけ
+    assert!(run(None) > 18 * 16000); // 発話の先頭から全部(partial の文字列が先頭から伸びる)
+}
+
 // ---------------------------------------------------------------- LiveSession
 
 #[derive(Default)]

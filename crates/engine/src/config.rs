@@ -1,9 +1,10 @@
 //! 設定の既定値とマージ。
 //!
 //! 設定の永続化は GUI 側が担い、エンジンは `configure` で受ける。GUI に UI が無い上級設定
-//! (ASR エンジン・VAD・投機的 TTS・Irodori のサンプリング項目 等)は、任意の JSON ファイル
+//! (VAD・投機的 TTS 等)は、任意の JSON ファイル
 //! `<root>/data/backend.json`(環境変数 `STTTS_CONFIG` で変更可)に書くと起動時に既定値へ
-//! マージされる。GUI からの configure はその上に適用される。
+//! マージされる。GUI からの configure はその上に適用される。`tts.sampling` は GUI の
+//! 「合成パラメータ」欄からも編集でき、このファイルへ書き戻される([`set_user_config_value`])。
 //!
 //! 設定は JSON のまま持つ(セクション単位の深いマージ)。Irodori の項目名は Irodori と同じで、
 //! GUI が未対応の項目も `tts.sampling` から必ず指定できる。
@@ -133,6 +134,33 @@ pub fn load_user_config(path: &Path, warn: &dyn Fn(&str)) -> Value {
     Value::Object(obj.into_iter().filter(|(k, v)| SECTIONS.contains(&k.as_str()) && v.is_object()).collect())
 }
 
+/// ユーザー設定ファイルの `section.key` だけを書き換える(他の内容はそのまま残す)。
+/// GUI から編集した上級設定(`tts.sampling` 等)を、手で書いた設定と同じ場所に記録するため。
+/// 読めない・壊れたファイルは上書きせずエラーにする(手書きの設定を消さない)。
+pub fn set_user_config_value(path: &Path, section: &str, key: &str, value: Value) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    let mut root = if path.is_file() {
+        let text = std::fs::read_to_string(path).with_context(|| format!("{} を読めません", path.display()))?;
+        serde_json::from_str::<Value>(&text).with_context(|| format!("{} の JSON が不正です", path.display()))?
+    } else {
+        json!({})
+    };
+    let Value::Object(obj) = &mut root else {
+        anyhow::bail!("{} の形式が不正です(オブジェクトではない)", path.display());
+    };
+    let sec = obj.entry(section).or_insert_with(|| json!({}));
+    if !sec.is_object() {
+        *sec = json!({});
+    }
+    sec[key] = value;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(&root)? + "
+").with_context(|| format!("{} に書けません", path.display()))?;
+    Ok(())
+}
+
 /// `cfg[section][key]` を取り出す(無ければ Null)。
 pub fn get<'a>(cfg: &'a Value, section: &str, key: &str) -> &'a Value {
     cfg.get(section).and_then(|s| s.get(key)).unwrap_or(&Value::Null)
@@ -191,6 +219,26 @@ mod tests {
         let cfg = merge_config(&default_config(), &json!({"tts": {"sampling": {"duration_scale": 1.1, "seconds": 3.0}}}));
         let cfg = merge_config(&cfg, &json!({"tts": {"sampling": {"duration_scale": 1.2}}}));
         assert_eq!(cfg["tts"]["sampling"], json!({"duration_scale": 1.2, "seconds": 3.0}));
+    }
+
+    #[test]
+    fn set_user_config_value_keeps_other_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("data").join("backend.json");
+        set_user_config_value(&p, "tts", "sampling", json!({"trim_tail": false})).unwrap();
+        assert_eq!(load_user_config(&p, &|_| {}), json!({"tts": {"sampling": {"trim_tail": false}}}));
+
+        std::fs::write(&p, r#"{"asr": {"engine": "nemotron"}, "tts": {"warmup": false, "sampling": {"seconds": 3.0}}}"#).unwrap();
+        set_user_config_value(&p, "tts", "sampling", json!({"duration_scale": 1.2})).unwrap();
+        let cfg = load_user_config(&p, &|_| {});
+        assert_eq!(cfg["asr"]["engine"], "nemotron");
+        assert_eq!(cfg["tts"]["warmup"], false);
+        assert_eq!(cfg["tts"]["sampling"], json!({"duration_scale": 1.2}));
+
+        // 壊れたファイルは上書きしない
+        std::fs::write(&p, "{ broken").unwrap();
+        assert!(set_user_config_value(&p, "tts", "sampling", json!({})).is_err());
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "{ broken");
     }
 
     #[test]

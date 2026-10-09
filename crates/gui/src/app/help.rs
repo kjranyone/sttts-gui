@@ -98,18 +98,27 @@ impl StttsApp {
 
     pub(super) fn render_help_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let topic = self.help_topic?;
-        let paragraphs = topic
-            .body()
-            .iter()
-            .map(|line| match line.strip_prefix('・') {
-                Some(item) => h_flex()
-                    .gap_2()
-                    .items_start()
-                    .child(div().text_color(c(theme::TEXT_FAINT)).child("・"))
-                    .child(div().flex_1().child(item))
-                    .into_any_element(),
-                None => div().child(*line).into_any_element(),
-            });
+        let mut lines: Vec<String> = topic.body().iter().map(|s| s.to_string()).collect();
+        if topic == HelpTopic::Recognition {
+            // Gemini の段落の直後に、実際に使うモデル名を添える
+            lines.insert(
+                1,
+                format!(
+                    "・使用モデル: {}(data/backend.json の asr.gemini_model で変更できます)",
+                    self.gemini_model_name()
+                ),
+            );
+        }
+        let paragraphs = lines.into_iter().map(|line| match line.strip_prefix('・') {
+            Some(item) => h_flex()
+                .gap_2()
+                .items_start()
+                .child(div().text_color(c(theme::TEXT_FAINT)).child("・"))
+                // min_w_0 が無いと flex 子が内容幅より縮まず、長い行が折り返さずにはみ出す
+                .child(div().flex_1().min_w_0().child(item.to_string()))
+                .into_any_element(),
+            None => div().child(line).into_any_element(),
+        });
         Some(
             div()
                 .absolute()
@@ -178,6 +187,21 @@ impl StttsApp {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// Gemini のモデル名。読み込み済みならエンジンが報告した名前、まだなら設定
+    /// (data/backend.json → 既定値)から引く。
+    fn gemini_model_name(&self) -> String {
+        if self.selected_asr_engine == "gemini" {
+            // 切替直後は前のエンジン(ローカル)の名前が残っていることがあるので Gemini のものだけ使う
+            if let Some(model) = self.asr_state.model.as_deref().filter(|m| m.contains("gemini")) {
+                return model.to_string();
+            }
+        }
+        use sttts_engine::config;
+        let user = config::load_user_config(&config::default_user_config_path(&self.root), &|_| {});
+        let cfg = config::merge_config(&config::default_config(), &user);
+        config::get_str(&cfg, "asr", "gemini_model").unwrap_or("不明").to_string()
     }
 
     fn close_help(&mut self, cx: &mut Context<Self>) {
