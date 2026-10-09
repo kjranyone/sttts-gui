@@ -24,8 +24,6 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use burn::tensor::activation::sigmoid;
-use burn::tensor::module::conv2d;
-use burn::tensor::ops::ConvOptions;
 use burn::tensor::{Device, Tensor, TensorData};
 use realfft::RealFftPlanner;
 
@@ -78,24 +76,67 @@ impl WatermarkConfig {
 
 /// ゲート付き畳み込み + BatchNorm(`silentcipher.model.Layer`)
 struct Layer {
-    conv_w: Tensor<4>,
-    conv_b: Tensor<1>,
-    gate_w: Tensor<4>,
-    gate_b: Tensor<1>,
+    /// conv と gate を出力チャネル方向に連結した重み `[2*Cout, Cin, k, k]` と偏り(1 回の行列積で両方を計算する)
+    w: Tensor<4>,
+    b: Tensor<1>,
+    out_ch: usize,
     bn_w: Tensor<1>,
     bn_b: Tensor<1>,
     pad: usize,
 }
 
+/// im2col を作る出力列数の上限(1 回の行列積あたり)
+const CONV_CHUNK_COLS: usize = 16384;
+
+/// 3x3 などの 2D 畳み込み(stride 1・batch 1)を im2col + 行列積で計算する。
+/// burn の conv2d は GPU(wgpu)でカーネルの探索・コンパイルが極端に遅いことがあり、行列積は速い。
+fn conv2d_mm(x: Tensor<4>, w: Tensor<4>, b: Tensor<1>, pad: usize) -> Tensor<4> {
+    let [n, c, h, wd] = x.dims();
+    let [co, _, kh, kw] = w.dims();
+    assert_eq!(n, 1, "conv2d_mm は batch 1 のみ");
+    let dev = x.device();
+    let xp = if pad > 0 {
+        let zr = Tensor::<4>::zeros([1, c, pad, wd], &dev);
+        let x = Tensor::cat(vec![zr.clone(), x, zr], 2);
+        let zc = Tensor::<4>::zeros([1, c, h + 2 * pad, pad], &dev);
+        Tensor::cat(vec![zc.clone(), x, zc], 3)
+    } else {
+        x
+    };
+    let (ho, wo) = (h + 2 * pad - (kh - 1), wd + 2 * pad - (kw - 1));
+    let w2 = w.permute([0, 2, 3, 1]).reshape([co, kh * kw * c]); // 並びは (dy, dx, c)
+    // 全体の im2col は数百 MB になるので、出力の行(周波数フレーム)ごとの塊に分けて行列積にする
+    let rows_per_chunk = (CONV_CHUNK_COLS / wo).max(1);
+    let mut pieces = Vec::new();
+    let mut r0 = 0;
+    while r0 < ho {
+        let nr = rows_per_chunk.min(ho - r0);
+        let mut parts = Vec::with_capacity(kh * kw);
+        for dy in 0..kh {
+            for dx in 0..kw {
+                parts.push(xp.clone().narrow(2, r0 + dy, nr).narrow(3, dx, wo).reshape([c, nr * wo]));
+            }
+        }
+        let cols = Tensor::cat(parts, 0); // [(dy,dx) * c, nr*wo]
+        pieces.push(w2.clone().matmul(cols).reshape([co, nr, wo]));
+        r0 += nr;
+    }
+    let y = if pieces.len() == 1 { pieces.pop().unwrap() } else { Tensor::cat(pieces, 1) };
+    (y + b.reshape([co, 1, 1])).reshape([1, co, ho, wo])
+}
+
 impl Layer {
     fn load(sd: &StateDict, prefix: &str, device: &Device) -> Result<Self> {
         let conv_w = sd.tensor::<4>(&format!("{prefix}.conv.weight"), device)?;
+        let gate_w = sd.tensor::<4>(&format!("{prefix}.gate.weight"), device)?;
+        let conv_b = sd.tensor::<1>(&format!("{prefix}.conv.bias"), device)?;
+        let gate_b = sd.tensor::<1>(&format!("{prefix}.gate.bias"), device)?;
         let k = conv_w.dims()[2];
+        let out_ch = conv_w.dims()[0];
         Ok(Self {
-            conv_w,
-            conv_b: sd.tensor(&format!("{prefix}.conv.bias"), device)?,
-            gate_w: sd.tensor(&format!("{prefix}.gate.weight"), device)?,
-            gate_b: sd.tensor(&format!("{prefix}.gate.bias"), device)?,
+            w: Tensor::cat(vec![conv_w, gate_w], 0),
+            b: Tensor::cat(vec![conv_b, gate_b], 0),
+            out_ch,
             bn_w: sd.tensor(&format!("{prefix}.bn.weight"), device)?,
             bn_b: sd.tensor(&format!("{prefix}.bn.bias"), device)?,
             pad: k / 2,
@@ -103,9 +144,9 @@ impl Layer {
     }
 
     fn forward(&self, x: Tensor<4>) -> Tensor<4> {
-        let opts = ConvOptions::new([1, 1], [self.pad, self.pad], [1, 1], 1);
-        let c = conv2d(x.clone(), self.conv_w.clone(), Some(self.conv_b.clone()), opts.clone());
-        let g = conv2d(x, self.gate_w.clone(), Some(self.gate_b.clone()), opts);
+        let cg = conv2d_mm(x, self.w.clone(), self.b.clone(), self.pad);
+        let c = cg.clone().narrow(1, 0, self.out_ch);
+        let g = cg.narrow(1, self.out_ch, self.out_ch);
         let y = c * sigmoid(g);
         // BatchNorm2d(学習モード): チャネル毎に (N,H,W) で平均・偏分散
         let [n, ch, h, w] = y.dims();

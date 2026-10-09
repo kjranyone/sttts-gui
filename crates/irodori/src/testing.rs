@@ -61,7 +61,7 @@ pub fn assert_close(what: &str, got: &[f32], want: &[f32], rtol: f32) {
 /// テストで使うデバイス。既定は純 Rust の CPU(flex)。`IRODORI_DEVICE=gpu`(`gpu` feature 時)で
 /// wgpu(Vulkan の独立 GPU)にして、同じ参照との一致を GPU でも確かめられる。
 pub fn device() -> Device {
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "_gpu")]
     if std::env::var("IRODORI_DEVICE").as_deref() == Ok("gpu") {
         return gpu_device();
     }
@@ -69,7 +69,7 @@ pub fn device() -> Device {
 }
 
 /// wgpu の独立 GPU(プロセスで 1 回だけ初期化する)
-#[cfg(feature = "gpu")]
+#[cfg(feature = "_gpu")]
 pub fn gpu_device() -> Device {
     use std::sync::OnceLock;
     static DEV: OnceLock<Device> = OnceLock::new();

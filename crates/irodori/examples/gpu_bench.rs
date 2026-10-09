@@ -39,7 +39,7 @@ fn main() {
     // DiT の MLP 相当を 8 回つないで 1 回だけ読み戻す(読み戻しの固定費を薄める)
     use burn::tensor::FloatDType;
     for (m, k, n) in [(100usize, 1280usize, 1280usize), (256, 1280, 1280), (512, 1280, 1280), (1024, 1024, 1024)] {
-        for (label, dt) in [("f32", FloatDType::F32), ("f16", FloatDType::F16), ("bf16", FloatDType::BF16)] {
+        for (label, dt) in [("f32", FloatDType::F32), ("f16", FloatDType::F16)] {
             let a = Tensor::<2>::random([m, k], burn::tensor::Distribution::Default, &device).cast(dt);
             let b = Tensor::<2>::random([k, n], burn::tensor::Distribution::Default, &device).cast(dt) * 0.02;
             bench(&format!("matmul x8 {label} [{m},{k}]x[{k},{n}]"), 8.0 * 2.0 * (m * k * n) as f64, 10, || {

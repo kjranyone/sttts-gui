@@ -417,14 +417,13 @@ impl JointAttention {
         };
         let (k, v) = proj(&self.wk_text, &self.wv_text, &c.text_state);
         let (mut ks, mut vs) = (vec![k], vec![v]);
-        if let (Some(lk), Some(lv)) = (&self.wk_speaker, &self.wv_speaker) {
-            let s = c.speaker_state.as_ref().context("speaker_state is required (model has speaker conditioning)")?;
+        // 話者・キャプションの状態が None のときは、その条件を使わない(全トークンが無効マスクなのと同じ結果)
+        if let (Some(lk), Some(lv), Some(s)) = (&self.wk_speaker, &self.wv_speaker, &c.speaker_state) {
             let (k, v) = proj(lk, lv, s);
             ks.push(k);
             vs.push(v);
         }
-        if let (Some(lk), Some(lv)) = (&self.wk_caption, &self.wv_caption) {
-            let s = c.caption_state.as_ref().context("caption_state is required (model has caption conditioning)")?;
+        if let (Some(lk), Some(lv), Some(s)) = (&self.wk_caption, &self.wv_caption, &c.caption_state) {
             let (k, v) = proj(lk, lv, s);
             ks.push(k);
             vs.push(v);

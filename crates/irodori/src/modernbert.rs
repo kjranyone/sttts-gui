@@ -8,7 +8,7 @@
 
 use anyhow::{Context, Result, bail};
 use burn::tensor::activation::{gelu, softmax};
-use burn::tensor::{Device, Int, Tensor, TensorData};
+use burn::tensor::{Device, Tensor, TensorData};
 use serde_json::Value;
 
 use crate::weights::Weights;
@@ -39,7 +39,9 @@ pub struct ModernBert {
     half_window: usize,
     theta_full: f64,
     theta_sliding: f64,
-    tok_embeddings: Tensor<2>,
+    /// 埋め込み表 `[vocab, hidden]`。GPU に置かない(約 300MB。引く行は数百行だけなので CPU で引いて送る)
+    tok_embeddings: Vec<f32>,
+    vocab: usize,
     emb_norm: Tensor<1>,
     layers: Vec<Layer>,
     final_norm: Tensor<1>,
@@ -148,6 +150,8 @@ impl ModernBert {
                 },
             });
         }
+        let (emb_shape, emb) = w.f32_vec(&format!("{PREFIX}.embeddings.tok_embeddings.weight"))?;
+        let vocab = emb_shape[0];
         Ok(Self {
             hidden,
             heads,
@@ -156,7 +160,8 @@ impl ModernBert {
             half_window: local_attention / 2,
             theta_full: theta("full_attention")?,
             theta_sliding: theta("sliding_attention")?,
-            tok_embeddings: w.tensor::<2>(&format!("{PREFIX}.embeddings.tok_embeddings.weight"), dev)?,
+            tok_embeddings: emb,
+            vocab,
             emb_norm: t1("embeddings.norm.weight")?,
             layers,
             final_norm: t1("final_norm.weight")?,
@@ -175,9 +180,12 @@ impl ModernBert {
         let dev = &self.device;
         let hd = self.hidden / self.heads;
 
-        let flat: Vec<i64> = ids.iter().flatten().copied().collect();
-        let id_t = Tensor::<1, Int>::from_data(TensorData::new(flat, [b * s]), dev);
-        let x = self.tok_embeddings.clone().select(0, id_t).reshape([b, s, self.hidden]);
+        let mut rows = Vec::with_capacity(b * s * self.hidden);
+        for &id in ids.iter().flatten() {
+            let id = (id.max(0) as usize).min(self.vocab - 1);
+            rows.extend_from_slice(&self.tok_embeddings[id * self.hidden..(id + 1) * self.hidden]);
+        }
+        let x = Tensor::<3>::from_data(TensorData::new(rows, [b, s, self.hidden]), dev);
         let mut x = layer_norm(x, &self.emb_norm, self.eps);
 
         // 加算マスク [B,1,S,S](全注意 / 窓付き)

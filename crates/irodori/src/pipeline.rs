@@ -117,6 +117,10 @@ pub struct Trace {
     pub raw_audio: Vec<f32>,
 }
 
+/// コーデックの 1 窓の長さ(潜在フレーム。25 フレーム = 1 秒)と、前後に付ける文脈(受容野の確保に 8 以上が必要)
+const DECODE_WINDOW: usize = 25;
+const DECODE_CONTEXT: usize = 8;
+
 pub struct Tts {
     pub cfg: ModelConfig,
     tokenizer: Tokenizer,
@@ -166,8 +170,13 @@ impl Tts {
     ) -> Result<SynthResult> {
         let mut messages = Vec::new();
         let mut timings: Vec<(String, f64)> = Vec::new();
+        let trace_stages = std::env::var_os("IRODORI_TRACE").is_some();
         let mut lap = |name: &str, t0: &mut Instant| {
-            timings.push((name.to_string(), t0.elapsed().as_secs_f64()));
+            let sec = t0.elapsed().as_secs_f64();
+            if trace_stages {
+                eprintln!("[irodori] {name}: {sec:.3}s");
+            }
+            timings.push((name.to_string(), sec));
             *t0 = Instant::now();
         };
         ensure!(req.num_steps > 0, "num_steps must be > 0");
@@ -179,25 +188,42 @@ impl Tts {
         let text = normalize_text(&req.text).trim().to_string();
         ensure!(!text.is_empty(), "text became empty after normalization.");
         let (ids, mask) = self.tokenizer.batch_encode(&[text.clone()], self.cfg.max_text_len, self.cfg.text_add_bos)?;
+        // パディングは右詰めで、無効トークンは注意から完全に除外される(マスク -1e9 → 確率 0)ので、
+        // 有効な先頭部分だけで計算しても結果は同じ。256 トークン固定のまま回すより桁違いに速い。
+        let n_text = mask[0].iter().filter(|&&b| b).count().max(1);
+        let ids = vec![ids[0][..n_text].to_vec()];
+        let mask = vec![vec![true; n_text]];
         let has_caption_text = self.cfg.use_caption_condition && req.caption.as_deref().is_some_and(|c| !c.trim().is_empty());
-        let (cids, cmask) = caption_inputs(
-            &self.tokenizer,
-            req.caption.as_deref(),
-            1,
-            self.cond.max_caption_len(),
-            self.cond.caption_add_bos(),
-        )?;
         let text_state = self.cond.encode_text(&ids, &mask);
-        let caption_state = self.cond.encode_caption(&cids, &cmask);
         let text_mask = mask_tensor(&mask, &self.device);
-        let caption_mask = mask_tensor(&cmask, &self.device);
+        // キャプションが空なら、原典では全無効マスクで 0 になる(参照の encode_conditions.out4 は 0)ので計算を省く
+        let (caption_state, caption_mask) = if has_caption_text {
+            let (cids, cmask) = caption_inputs(&self.tokenizer, req.caption.as_deref(), 1, self.cond.max_caption_len(), self.cond.caption_add_bos())?;
+            let n = cmask[0].iter().filter(|&&b| b).count().max(1);
+            let cids = vec![cids[0][..n].to_vec()];
+            let cmask = vec![vec![true; n]];
+            let state = self.cond.encode_caption(&cids, &cmask);
+            let mask_t = mask_tensor(&cmask, &self.device);
+            (state, Some(mask_t))
+        } else {
+            (None, None)
+        };
+        if trace_stages {
+            // burn は遅延実行。段階ごとの時間を測るため、トレース時だけ読み戻して実行を完了させる
+            let _ = text_state.clone().into_data();
+            lap("text_encode", &mut t0);
+            if let Some(c) = &caption_state {
+                let _ = c.clone().into_data();
+                lap("caption_encode", &mut t0);
+            }
+        }
         lap("text_conditions", &mut t0);
 
         // --- 話者(参照音声)
         let (speaker_state, speaker_mask, has_speaker) = if self.dit.has_speaker_condition() {
             if req.no_ref {
-                let (s, m) = self.dit.encode_speaker(None, 1)?;
-                (Some(s), Some(m), false)
+                // 全無効の話者トークンは注意から除外されるので、DiT には渡さない(結果は同じ)
+                (None, None, false)
             } else {
                 let path = req.ref_wav.as_deref().context("参照音声(ref_wav)を指定するか、no_ref を true にしてください")?;
                 let latent = self.encode_reference(path, req, &mut messages)?;
@@ -210,6 +236,11 @@ impl Tts {
         } else {
             (None, None, false)
         };
+        if trace_stages {
+            if let Some(sp) = &speaker_state {
+                let _ = sp.clone().into_data();
+            }
+        }
         lap("prepare_reference", &mut t0);
 
         // --- 長さ
@@ -224,18 +255,34 @@ impl Tts {
             let target = ((clamped * sr as f64) as usize).max(1);
             (target.div_ceil(hop), target)
         } else if let Some(dp) = &self.duration {
-            let speaker = speaker_state.clone().unwrap_or_else(|| Tensor::<3>::zeros([1, 1, 768], &self.device));
-            let caption = caption_state.clone().unwrap_or_else(|| Tensor::<3>::zeros([1, 1, self.cfg.caption_dim.unwrap_or(512)], &self.device));
+            let speaker = speaker_state
+                .clone()
+                .unwrap_or_else(|| Tensor::<3>::zeros([1, 1, self.cfg.speaker_dim.unwrap_or(768)], &self.device));
+            let (caption, dur_caption_mask) = match (&caption_state, &caption_mask) {
+                (Some(c), Some(m)) => (c.clone(), m.clone()),
+                _ => (
+                    Tensor::<3>::zeros([1, 1, self.cfg.caption_dim.unwrap_or(512)], &self.device),
+                    Tensor::<2>::zeros([1, 1], &self.device),
+                ),
+            };
             let inputs = DurationInputs {
                 text_state: text_state.clone(),
                 text_mask: text_mask.clone(),
                 speaker_state: speaker,
                 has_speaker: Tensor::<1>::from_data(TensorData::new(vec![if has_speaker { 1.0f32 } else { 0.0 }], vec![1]), &self.device),
                 caption_state: caption,
-                caption_mask: caption_mask.clone(),
+                caption_mask: dur_caption_mask,
                 has_caption: Tensor::<1>::from_data(TensorData::new(vec![if has_caption_text { 1.0f32 } else { 0.0 }], vec![1]), &self.device),
             };
-            let pred = dp.predict_log_frames(&inputs).into_data().convert::<f32>().try_to_vec::<f32>().unwrap()[0];
+            if trace_stages {
+                let _ = inputs.has_caption.clone().into_data();
+                lap("  duration inputs upload", &mut t0);
+            }
+            let pred_t = dp.predict_log_frames(&inputs);
+            if trace_stages {
+                lap("  duration graph build", &mut t0);
+            }
+            let pred = pred_t.into_data().convert::<f32>().try_to_vec::<f32>().unwrap()[0];
             if let Some(t) = trace.as_deref_mut() {
                 t.duration_log_frames = Some(pred);
             }
@@ -256,7 +303,7 @@ impl Tts {
             speaker_state: speaker_state.clone(),
             speaker_mask,
             caption_state: caption_state.clone(),
-            caption_mask: if caption_state.is_some() { Some(caption_mask) } else { None },
+            caption_mask,
         };
         let patch = self.cfg.latent_patch_size;
         let patched_steps = latent_steps.div_ceil(patch);
@@ -267,7 +314,8 @@ impl Tts {
         lap("sample_meanflow", &mut t0);
 
         // --- デコード・末尾トリム
-        let audio_t = self.codec.decode_latent(z.clone());
+        // 窓ごとにデコードする(ピークメモリが一定になり、同じ形状のカーネルを使い回せる。全体版との差は 1e-7 級)
+        let audio_t = self.codec.decode_latent_windowed(z.clone(), DECODE_WINDOW, DECODE_CONTEXT);
         let mut audio: Vec<f32> = audio_t.into_data().convert::<f32>().try_to_vec::<f32>().unwrap();
         let mut max_samples = target_samples.min(audio.len());
         if req.trim_tail {

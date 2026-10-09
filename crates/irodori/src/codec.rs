@@ -41,10 +41,36 @@ pub fn default_weights_path() -> Option<PathBuf> {
 // 層
 // ---------------------------------------------------------------------------------------------
 
+
+/// `IRODORI_TRACE_CODEC=1` のときだけ、層ごとに GPU の完了を待って所要時間を表示する(性能調査用)
+fn prof(label: &str, x: &Tensor<3>) {
+    use std::cell::Cell;
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static ON: OnceLock<bool> = OnceLock::new();
+    thread_local!(static LAST: Cell<Option<Instant>> = const { Cell::new(None) });
+    if !*ON.get_or_init(|| std::env::var_os("IRODORI_TRACE_CODEC").is_some()) {
+        return;
+    }
+    let _ = x.clone().narrow(2, 0, 1).into_data();
+    let now = Instant::now();
+    LAST.with(|l| {
+        let dt = l.get().map(|t| now.duration_since(t).as_secs_f64()).unwrap_or(0.0);
+        eprintln!("[codec] {label:<28} {:?} {dt:.3}s", x.dims());
+        l.set(Some(now));
+    });
+}
+
+/// im2col を作る出力列数の上限(1 回の行列積あたり)。`[k*C, 列]` が数十 MB に収まる大きさ
+const CHUNK_COLS: usize = 8192;
+
 struct Conv {
     w: Tensor<3>,
     b: Option<Tensor<1>>,
     opts: ConvOptions<1>,
+    stride: usize,
+    pad: usize,
+    dil: usize,
 }
 
 impl Conv {
@@ -57,11 +83,53 @@ impl Conv {
                 None
             },
             opts: ConvOptions::new([stride], [pad], [dil], 1),
+            stride,
+            pad,
+            dil,
         })
     }
 
     fn forward(&self, x: Tensor<3>) -> Tensor<3> {
-        conv1d(x, self.w.clone(), self.b.clone(), self.opts.clone())
+        let [batch, c, l] = x.dims();
+        let [co, _, k] = self.w.dims();
+        let (stride, pad, dil) = (self.stride, self.pad, self.dil);
+        if batch != 1 || stride != 1 {
+            return conv1d(x, self.w.clone(), self.b.clone(), self.opts.clone());
+        }
+        // burn の conv1d は、カーネル幅 1 の畳み込みで GPU(wgpu)のカーネル探索が終わらないことがあり、
+        // それ以外も行列積より 2〜5 倍遅い。stride 1・batch 1(デコーダ・エンコーダの全層)は
+        // im2col + 行列積で計算する: ずらしたスライスを積んで [Cout, k*C] x [k*C, L] にする。
+        let lout = l + 2 * pad - dil * (k - 1);
+        let w2 = self.w.clone().swap_dims(1, 2).reshape([co, k * c]);
+        if k == 1 {
+            let y = w2.matmul(x.reshape([c, l])).reshape([1, co, lout]);
+            return match &self.b {
+                Some(b) => y + b.clone().reshape([1, co, 1]),
+                None => y,
+            };
+        }
+        let dev = x.device();
+        let xp = if pad > 0 {
+            Tensor::cat(vec![Tensor::<3>::zeros([1, c, pad], &dev), x, Tensor::<3>::zeros([1, c, pad], &dev)], 2)
+        } else {
+            x
+        };
+        // im2col の列を一度に作ると数百 MB になり、GPU のメモリプールが肥大して以降の処理が遅くなる。
+        // 出力を CHUNK_COLS 列ずつに分けて、小さな行列積にする。
+        let mut pieces = Vec::new();
+        let mut t0 = 0;
+        while t0 < lout {
+            let n = CHUNK_COLS.min(lout - t0);
+            let parts: Vec<Tensor<3>> = (0..k).map(|j| xp.clone().narrow(2, t0 + j * dil, n)).collect();
+            let cols = Tensor::cat(parts, 1).reshape([k * c, n]);
+            pieces.push(w2.clone().matmul(cols).reshape([1, co, n]));
+            t0 += n;
+        }
+        let y = if pieces.len() == 1 { pieces.pop().unwrap() } else { Tensor::cat(pieces, 2) };
+        match &self.b {
+            Some(b) => y + b.clone().reshape([1, co, 1]),
+            None => y,
+        }
     }
 }
 
@@ -126,7 +194,10 @@ impl ResUnit {
     }
 
     fn forward(&self, x: Tensor<3>) -> Tensor<3> {
-        let y = self.c1.forward(self.s1.forward(self.c0.forward(self.s0.forward(x.clone()))));
+        let a = self.c0.forward(self.s0.forward(x.clone()));
+        prof("  resunit conv0", &a);
+        let y = self.c1.forward(self.s1.forward(a));
+        prof("  resunit conv1", &y);
         y + x
     }
 }
@@ -154,6 +225,7 @@ impl DecoderBlock {
 
     fn forward(&self, x: Tensor<3>) -> Tensor<3> {
         let mut x = self.up.forward(self.snake.forward(x));
+        prof("up (convT)", &x);
         for u in &self.units {
             x = u.forward(x);
         }
@@ -186,6 +258,7 @@ impl Decoder {
 
     fn forward(&self, x: Tensor<3>) -> Tensor<3> {
         let mut x = self.first.forward(x);
+        prof("decoder.first", &x);
         for b in &self.blocks {
             x = b.forward(x);
         }
