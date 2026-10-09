@@ -467,7 +467,7 @@ impl StttsApp {
                 };
             }
             BackendMessage::State { tts, asr, mic_running } => {
-                self.tts_state = tts;
+                self.tts_state = tts.clone();
                 self.asr_state = asr.clone();
                 self.mic_running = mic_running;
                 // 停止中は State 応答で解除。開始中は ASR が ready/error になるまで
@@ -475,7 +475,11 @@ impl StttsApp {
                 match self.mic_transition {
                     MicTransition::Stopping => self.mic_transition = MicTransition::None,
                     MicTransition::Starting => {
-                        if matches!(asr.phase.as_str(), "ready" | "error") {
+                        // TTS と ASR の両方が準備完了/エラーになるまでモーダルを維持する
+                        // (ASR だけ見ると TTS ロード中にモーダルが閉じる)。
+                        let tts_settled = matches!(tts.phase.as_str(), "ready" | "error");
+                        let asr_settled = matches!(asr.phase.as_str(), "ready" | "error");
+                        if tts_settled && asr_settled {
                             self.mic_transition = MicTransition::None;
                         }
                     }
