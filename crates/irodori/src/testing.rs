@@ -21,17 +21,14 @@ pub fn refs() -> Option<Weights> {
     p.is_file().then(|| Weights::open(p).ok()).flatten()
 }
 
-/// HF キャッシュ内のスナップショット(最初に見つかったもの)
+/// HF キャッシュ内のスナップショット(ディレクトリそのものがあるもの。最新)
 pub fn hf_snapshot(repo_dir: &str) -> Option<PathBuf> {
-    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
-    let base = PathBuf::from(home).join(".cache/huggingface/hub").join(repo_dir).join("snapshots");
-    std::fs::read_dir(base).ok()?.flatten().map(|e| e.path()).next()
+    crate::hub::find_snapshot(repo_dir, "")
 }
 
 /// Irodori-TTS v4.1 Small MF のスナップショットディレクトリ(`model.safetensors` と `tokenizer/`)
 pub fn checkpoint_dir() -> Option<PathBuf> {
-    let d = hf_snapshot("models--Aratako--Irodori-TTS-v4.1-Small-MF")?;
-    d.join("model.safetensors").is_file().then_some(d)
+    crate::hub::find_snapshot("models--Aratako--Irodori-TTS-v4.1-Small-MF", "model.safetensors")
 }
 
 /// f32 の平坦なベクトルへ

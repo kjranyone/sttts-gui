@@ -56,7 +56,7 @@ fn resample_and_loudness_sanity() {
     // 24k → 48k の 1 kHz 正弦波:中央部は解析解と一致
     let n = 24000;
     let x: Vec<f32> = (0..n).map(|i| (2.0 * std::f64::consts::PI * 1000.0 * i as f64 / 24000.0).sin() as f32).collect();
-    let y = codec::resample(&x, 24000, 48000);
+    let y = codec::resample(&x, 24000, 48000).unwrap();
     assert_eq!(y.len(), 48000);
     let mut worst = 0f32;
     for (i, &v) in y.iter().enumerate().skip(200).take(47600) {

@@ -25,6 +25,7 @@ pub mod config;
 pub mod device;
 pub mod dit;
 pub mod duration;
+pub mod hub;
 pub mod modernbert;
 pub mod pipeline;
 pub mod pth;

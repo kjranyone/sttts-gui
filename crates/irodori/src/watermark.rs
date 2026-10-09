@@ -26,6 +26,7 @@ use burn::tensor::activation::sigmoid;
 use burn::tensor::{Device, Tensor, TensorData};
 use realfft::RealFftPlanner;
 
+use crate::codec::resample;
 use crate::pth::Pth;
 
 /// Irodori が埋め込むペイロード("IRDTS")
@@ -257,7 +258,7 @@ impl Watermarker {
             return Ok(audio.to_vec());
         }
         let sr = self.cfg.sample_rate;
-        let y: Vec<f32> = if sample_rate != sr { resample(audio, sample_rate, sr) } else { audio.to_vec() };
+        let y: Vec<f32> = if sample_rate != sr { resample(audio, sample_rate, sr)? } else { audio.to_vec() };
         let n = y.len();
         let power = (y.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>() / n as f64) as f32;
         if power == 0.0 {
@@ -337,7 +338,7 @@ impl Watermarker {
             *v *= back;
         }
         if sample_rate != sr {
-            let mut r = resample(&out, sr, sample_rate);
+            let mut r = resample(&out, sr, sample_rate)?;
             r.truncate(audio.len());
             return Ok(r);
         }
@@ -431,58 +432,6 @@ fn istft(mag: &[f32], phase: &[f32], frames: usize, n_fft: usize, hop: usize) ->
     (half..total - half).map(|i| y[i] / env[i]).collect()
 }
 
-fn gcd(a: u64, b: u64) -> u64 {
-    if b == 0 { a } else { gcd(b, a % b) }
-}
-
-/// `torchaudio.functional.resample` 既定設定(`sinc_interp_hann`、幅 6、rolloff 0.99)の移植。
-pub fn resample(x: &[f32], orig_sr: u32, new_sr: u32) -> Vec<f32> {
-    let g = gcd(orig_sr as u64, new_sr as u64);
-    let (o, n) = ((orig_sr as u64 / g) as usize, (new_sr as u64 / g) as usize);
-    if o == n {
-        return x.to_vec();
-    }
-    let lpw = 6.0f64;
-    let base = (o.min(n) as f64) * 0.99;
-    let width = (lpw * o as f64 / base).ceil() as usize;
-    let k = 2 * width + o;
-    let scale = base / o as f64;
-    let mut kernels = vec![0f32; n * k];
-    for i in 0..n {
-        for j in 0..k {
-            let idx = (j as f64 - width as f64) / o as f64;
-            let mut t = (-(i as f64) / n as f64 + idx) * base;
-            t = t.clamp(-lpw, lpw);
-            let w = (t * PI / lpw / 2.0).cos().powi(2);
-            let tp = t * PI;
-            let s = if tp == 0.0 { 1.0 } else { tp.sin() / tp };
-            kernels[i * k + j] = (s * w * scale) as f32;
-        }
-    }
-    let len = x.len();
-    let mut xp = vec![0f32; width];
-    xp.extend_from_slice(x);
-    xp.extend(std::iter::repeat_n(0.0, width + o));
-    let nframes = (xp.len() - k) / o + 1;
-    let mut out = vec![0f32; nframes * n];
-    for f in 0..nframes {
-        let seg = &xp[f * o..f * o + k];
-        for i in 0..n {
-            let ker = &kernels[i * k..(i + 1) * k];
-            let mut acc = 0f32;
-            for (a, b) in seg.iter().zip(ker) {
-                acc += a * b;
-            }
-            out[f * n + i] = acc;
-        }
-    }
-    out.truncate((n * len).div_ceil(o));
-    out
-}
-
-// ---------------------------------------------------------------------------
-// 最小の PyTorch ckpt(zip + pickle)リーダ。state_dict(OrderedDict[str, Tensor])のみ対応。
-// `pth.rs` と統合する際に差し替える。
 // ---------------------------------------------------------------------------
 // チェックポイント(`.ckpt` = PyTorch の zip + pickle。`pth` の読み取りを使う)
 // ---------------------------------------------------------------------------

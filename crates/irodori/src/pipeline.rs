@@ -33,11 +33,10 @@ pub struct TtsPaths {
 impl TtsPaths {
     /// HuggingFace キャッシュ(`~/.cache/huggingface/hub`)から既定のモデルを探す
     pub fn from_hf_cache() -> Result<Self> {
-        let model_dir = crate::testing::checkpoint_dir().context("Irodori-TTS v4.1 Small MF が HF キャッシュにありません")?;
+        let model_dir = crate::hub::find_snapshot("models--Aratako--Irodori-TTS-v4.1-Small-MF", "model.safetensors").context("Irodori-TTS v4.1 Small MF が HF キャッシュにありません")?;
         let codec_weights = crate::codec::default_weights_path().context("DACVAE の weights.pth が HF キャッシュにありません")?;
-        let watermark_dir = crate::testing::hf_snapshot("models--sony--silentcipher")
-            .map(|d| d.join("44_1_khz/73999_iteration"))
-            .filter(|d| d.is_dir());
+        let watermark_dir = crate::hub::find_snapshot("models--sony--silentcipher", "44_1_khz/73999_iteration/enc_c.ckpt")
+            .map(|d| d.join("44_1_khz/73999_iteration"));
         Ok(Self { model_dir, codec_weights, watermark_dir })
     }
 }
@@ -147,6 +146,8 @@ impl Tts {
         let cond = TextConditioner::load(&w, device)?;
         let cfg = cond.cfg.clone();
         ensure!(cfg.is_meanflow(), "MeanFlow のチェックポイントのみ対応です(flow_parameterization={})", cfg.flow_parameterization);
+        // 参照音声の潜在をパッチ化する処理は未実装(v4.1 Small MF は 1)
+        ensure!(cfg.latent_patch_size == 1, "latent_patch_size != 1 は未対応です({})", cfg.latent_patch_size);
         let tokenizer = Tokenizer::load(paths.model_dir.join("tokenizer"))?;
         let dit = Dit::load(&w, &cfg, device)?;
         let duration = if cfg.use_duration_predictor { Some(DurationPredictor::load(&w, &cfg, device)?) } else { None };
@@ -304,7 +305,7 @@ impl Tts {
             if trace_stages {
                 lap("  duration graph build", &mut t0);
             }
-            let pred = pred_t.into_data().convert::<f32>().try_to_vec::<f32>().unwrap()[0];
+            let pred = to_host(pred_t)?[0];
             if let Some(t) = trace.as_deref_mut() {
                 t.duration_log_frames = Some(pred);
             }
@@ -334,13 +335,13 @@ impl Tts {
             .narrow(1, 0, patched_steps);
         let z = unpatchify_latent(z_patched, patch, self.cfg.latent_dim);
         let z = z.narrow(1, 0, latent_steps);
-        let z_host: Vec<f32> = z.clone().into_data().convert::<f32>().try_to_vec::<f32>().unwrap();
+        let z_host = to_host(z.clone())?;
         lap("sample_meanflow", &mut t0);
 
         // --- デコード・末尾トリム
         // 窓ごとにデコードする(ピークメモリが一定になり、同じ形状のカーネルを使い回せる。全体版との差は 1e-7 級)
         let audio_t = self.codec.decode_latent_windowed(z.clone(), DECODE_WINDOW, DECODE_CONTEXT);
-        let mut audio: Vec<f32> = audio_t.into_data().convert::<f32>().try_to_vec::<f32>().unwrap();
+        let mut audio = to_host(audio_t)?;
         let mut max_samples = target_samples.min(audio.len());
         if req.trim_tail {
             let fp = find_flattening_point(
@@ -422,6 +423,14 @@ impl Tts {
 fn bucket(n: usize) -> usize {
     const STEPS: &[usize] = &[16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024];
     STEPS.iter().copied().find(|&b| b >= n).unwrap_or_else(|| n.div_ceil(256) * 256)
+}
+
+/// GPU のテンソルをホストへ読み戻す(デバイスの異常はパニックにせず `Err` で返す)。
+fn to_host<const D: usize>(t: Tensor<D>) -> Result<Vec<f32>> {
+    t.into_data()
+        .convert::<f32>()
+        .try_to_vec::<f32>()
+        .map_err(|e| anyhow::anyhow!("GPU からの読み戻しに失敗しました: {e:?}"))
 }
 
 fn mask_tensor(mask: &[Vec<bool>], device: &Device) -> Tensor<2> {

@@ -66,13 +66,11 @@ pub fn sample_euler_meanflow_padded(
     if padded_len > seq_len {
         x = Tensor::cat(vec![x, Tensor::<3>::zeros([batch, padded_len - seq_len, dim], dev)], 1);
     }
-    let kv = dit.build_context_kv_cache(cond)?;
+    let prepared = dit.prepare(cond, padded_len, seq_len)?;
     let sched = meanflow_schedule(steps);
     for i in 0..steps {
         let (t, next) = (sched[i], sched[i + 1]);
-        let t_vec = Tensor::<1>::from_data(TensorData::new(vec![t; batch], vec![batch]), dev);
-        let d_vec = Tensor::<1>::from_data(TensorData::new(vec![t - next; batch], vec![batch]), dev);
-        let v = dit.forward_padded(x.clone(), t_vec, d_vec, cond, Some(&kv), seq_len)?;
+        let v = dit.forward_prepared(x.clone(), &vec![t; batch], &vec![t - next; batch], &prepared)?;
         x = x.add(v.mul_scalar(next - t));
     }
     Ok(x)

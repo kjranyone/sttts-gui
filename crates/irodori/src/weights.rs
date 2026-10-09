@@ -33,7 +33,11 @@ impl Weights {
             bail!("not a safetensors file: {}", path.display());
         }
         let n = u64::from_le_bytes(mmap[..8].try_into().unwrap()) as usize;
+        if n > mmap.len() - 8 {
+            bail!("truncated safetensors header in {} (header {} bytes, file {} bytes)", path.display(), n, mmap.len());
+        }
         let header: Value = serde_json::from_slice(&mmap[8..8 + n]).context("safetensors header")?;
+        let data_len = mmap.len() - 8 - n;
         let obj = header.as_object().ok_or_else(|| anyhow!("bad header"))?;
         let mut entries = HashMap::new();
         let mut metadata = HashMap::new();
@@ -53,18 +57,18 @@ impl Weights {
                 .as_array()
                 .ok_or_else(|| anyhow!("shape of {k}"))?
                 .iter()
-                .map(|x| x.as_u64().unwrap_or(0) as usize)
-                .collect();
+                .map(|x| x.as_u64().map(|d| d as usize).ok_or_else(|| anyhow!("bad shape of {k}")))
+                .collect::<Result<Vec<_>>>()?;
             let off = v["data_offsets"].as_array().ok_or_else(|| anyhow!("offsets of {k}"))?;
-            entries.insert(
-                k.clone(),
-                Entry {
-                    dtype,
-                    shape,
-                    start: off[0].as_u64().unwrap_or(0) as usize,
-                    end: off[1].as_u64().unwrap_or(0) as usize,
-                },
-            );
+            let (start, end) = match (off.first().and_then(Value::as_u64), off.get(1).and_then(Value::as_u64)) {
+                (Some(s), Some(e)) => (s as usize, e as usize),
+                _ => bail!("bad data_offsets of {k}"),
+            };
+            // 途中までしかダウンロードされていないファイルで、範囲外を読んで落ちないようにする
+            if start > end || end > data_len {
+                bail!("tensor {k} is out of range in {} (file truncated?)", path.display());
+            }
+            entries.insert(k.clone(), Entry { dtype, shape, start, end });
         }
         Ok(Self { mmap, base: 8 + n, entries, metadata })
     }

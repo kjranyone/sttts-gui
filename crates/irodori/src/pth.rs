@@ -6,10 +6,12 @@
 //! - `weight_norm`(`weight_g` + `weight_v`、または parametrizations の `original0/1`)は
 //!   [`Pth::fold_weight_norm`] で重みへ畳み込める。
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
+use std::rc::Rc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use burn::tensor::{Device, Tensor, TensorData};
@@ -175,8 +177,9 @@ enum Obj {
     Str(String),
     Bytes,
     Tuple(Vec<Obj>),
-    List(Vec<Obj>),
-    Dict(Vec<(Obj, Obj)>),
+    /// list / dict は共有される(pickle は空の容器を memo に登録してから中身を足すので、複製ではなく同一の実体を指す)
+    List(Rc<RefCell<Vec<Obj>>>),
+    Dict(Rc<RefCell<Vec<(Obj, Obj)>>>),
     Global(String, String),
     Storage { key: String, dtype: DType },
     Tensor(TensorRef),
@@ -229,15 +232,19 @@ fn pop_mark(stack: &mut Vec<Obj>) -> Result<Vec<Obj>> {
     Ok(items)
 }
 
+fn ints(v: &[Obj]) -> Result<Vec<usize>> {
+    v.iter()
+        .map(|x| match x {
+            Obj::Int(i) if *i >= 0 => Ok(*i as usize),
+            other => Err(anyhow!("expected non-negative int, got {other:?}")),
+        })
+        .collect()
+}
+
 fn as_usize_vec(o: &Obj) -> Result<Vec<usize>> {
     match o {
-        Obj::Tuple(v) | Obj::List(v) => v
-            .iter()
-            .map(|x| match x {
-                Obj::Int(i) if *i >= 0 => Ok(*i as usize),
-                other => Err(anyhow!("expected non-negative int, got {other:?}")),
-            })
-            .collect(),
+        Obj::Tuple(v) => ints(v),
+        Obj::List(v) => ints(&v.borrow()),
         other => Err(anyhow!("expected tuple of ints, got {other:?}")),
     }
 }
@@ -251,7 +258,7 @@ fn reduce(callable: Obj, args: Obj) -> Result<Obj> {
         return Ok(Obj::Opaque);
     };
     match (module.as_str(), name.as_str()) {
-        ("collections", "OrderedDict") => Ok(Obj::Dict(Vec::new())),
+        ("collections", "OrderedDict") => Ok(Obj::Dict(Rc::default())),
         ("torch._utils", "_rebuild_tensor_v2") | ("torch._utils", "_rebuild_tensor") => {
             // (storage, storage_offset, size, stride, ...)
             let Some(Obj::Storage { key, dtype }) = args.first() else {
@@ -353,8 +360,8 @@ fn run_pickle(data: &[u8]) -> Result<Obj> {
                 stack.push(Obj::Bytes);
             }
             b')' => stack.push(Obj::Tuple(Vec::new())),
-            b']' => stack.push(Obj::List(Vec::new())),
-            b'}' => stack.push(Obj::Dict(Vec::new())),
+            b']' => stack.push(Obj::List(Rc::default())),
+            b'}' => stack.push(Obj::Dict(Rc::default())),
             b'(' => stack.push(Obj::Mark),
             b't' => {
                 let items = pop_mark(&mut stack)?;
@@ -377,23 +384,23 @@ fn run_pickle(data: &[u8]) -> Result<Obj> {
             }
             b'l' => {
                 let items = pop_mark(&mut stack)?;
-                stack.push(Obj::List(items));
+                stack.push(Obj::List(Rc::new(RefCell::new(items))));
             }
             b'd' => {
                 let items = pop_mark(&mut stack)?;
-                stack.push(Obj::Dict(items.chunks(2).map(|c| (c[0].clone(), c[1].clone())).collect()));
+                stack.push(Obj::Dict(Rc::new(RefCell::new(items.chunks(2).map(|c| (c[0].clone(), c[1].clone())).collect()))));
             }
             b'a' => {
                 let v = pop!();
                 match stack.last_mut() {
-                    Some(Obj::List(l)) => l.push(v),
+                    Some(Obj::List(l)) => l.borrow_mut().push(v),
                     other => bail!("APPEND on {other:?}"),
                 }
             }
             b'e' => {
                 let items = pop_mark(&mut stack)?;
                 match stack.last_mut() {
-                    Some(Obj::List(l)) => l.extend(items),
+                    Some(Obj::List(l)) => l.borrow_mut().extend(items),
                     other => bail!("APPENDS on {other:?}"),
                 }
             }
@@ -401,14 +408,14 @@ fn run_pickle(data: &[u8]) -> Result<Obj> {
                 let v = pop!();
                 let k = pop!();
                 match stack.last_mut() {
-                    Some(Obj::Dict(d)) => d.push((k, v)),
+                    Some(Obj::Dict(d)) => d.borrow_mut().push((k, v)),
                     other => bail!("SETITEM on {other:?}"),
                 }
             }
             b'u' => {
                 let items = pop_mark(&mut stack)?;
                 match stack.last_mut() {
-                    Some(Obj::Dict(d)) => d.extend(items.chunks(2).map(|c| (c[0].clone(), c[1].clone()))),
+                    Some(Obj::Dict(d)) => d.borrow_mut().extend(items.chunks(2).map(|c| (c[0].clone(), c[1].clone()))),
                     other => bail!("SETITEMS on {other:?}"),
                 }
             }
@@ -506,9 +513,11 @@ fn to_json(o: &Obj) -> serde_json::Value {
         Obj::Int(i) => Value::from(*i),
         Obj::Float(f) => Value::from(*f),
         Obj::Str(s) => Value::String(s.clone()),
-        Obj::Tuple(v) | Obj::List(v) => Value::Array(v.iter().map(to_json).collect()),
+        Obj::Tuple(v) => Value::Array(v.iter().map(to_json).collect()),
+        Obj::List(v) => Value::Array(v.borrow().iter().map(to_json).collect()),
         Obj::Dict(d) => Value::Object(
-            d.iter()
+            d.borrow()
+                .iter()
                 .filter_map(|(k, v)| match k {
                     Obj::Str(s) => Some((s.clone(), to_json(v))),
                     _ => None,
@@ -580,14 +589,15 @@ pub fn load(path: impl AsRef<Path>) -> Result<Pth> {
 
     let root = run_pickle(&pkl).context("pickle")?;
     let Obj::Dict(top) = &root else { bail!("top-level object is not a dict: {root:?}") };
-    let (sd, metadata) = match dict_get(top, "state_dict") {
-        Some(Obj::Dict(sd)) => (sd.as_slice(), dict_get(top, "metadata").map(to_json).unwrap_or_default()),
-        _ => (top.as_slice(), serde_json::Value::Null),
+    let top = top.borrow();
+    let (sd, metadata): (Vec<(Obj, Obj)>, _) = match dict_get(&top, "state_dict") {
+        Some(Obj::Dict(sd)) => (sd.borrow().clone(), dict_get(&top, "metadata").map(to_json).unwrap_or_default()),
+        _ => (top.clone(), serde_json::Value::Null),
     };
 
     let mut out = Pth { tensors: BTreeMap::new(), metadata };
     let mut cache: HashMap<String, Vec<u8>> = HashMap::new();
-    for (k, v) in sd {
+    for (k, v) in &sd {
         let (Obj::Str(name), Obj::Tensor(t)) = (k, v) else { continue };
         if !cache.contains_key(&t.key) {
             let mut buf = Vec::new();
@@ -599,4 +609,23 @@ pub fn load(path: impl AsRef<Path>) -> Result<Pth> {
         out.tensors.insert(name.clone(), materialize(t, &cache[&t.key]).with_context(|| name.clone())?);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 空の list を memo に登録してから中身を足し、後で BINGET で参照しても、同じ(中身のある)list が返る
+    #[test]
+    fn memoized_container_is_shared_not_copied() {
+        // PROTO 2, EMPTY_LIST, BINPUT 0, MARK, BININT1 1, BININT1 2, APPENDS, BINGET 0, TUPLE2, STOP
+        let pkl = b"\x80\x02]q\x00(K\x01K\x02eh\x00\x86.";
+        let root = run_pickle(pkl).unwrap();
+        let Obj::Tuple(items) = root else { panic!("not a tuple") };
+        assert_eq!(items.len(), 2);
+        for it in &items {
+            let Obj::List(l) = it else { panic!("not a list") };
+            assert_eq!(l.borrow().len(), 2, "memo に登録した list の中身が失われた");
+        }
+    }
 }

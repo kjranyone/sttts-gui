@@ -27,14 +27,7 @@ pub const DEFAULT_NORMALIZE_DB: f32 = -16.0;
 
 /// HF キャッシュ内の既定の重み(`weights.pth`)。無ければ None。
 pub fn default_weights_path() -> Option<PathBuf> {
-    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
-    let base = PathBuf::from(home)
-        .join(".cache/huggingface/hub/models--Aratako--Semantic-DACVAE-Japanese-32dim/snapshots");
-    std::fs::read_dir(base)
-        .ok()?
-        .flatten()
-        .map(|e| e.path().join("weights.pth"))
-        .find(|p| p.is_file())
+    crate::hub::find_snapshot("models--Aratako--Semantic-DACVAE-Japanese-32dim", "weights.pth").map(|d| d.join("weights.pth"))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -47,6 +40,8 @@ const CHUNK_COLS: usize = 8192;
 
 struct Conv {
     w: Tensor<3>,
+    /// `[Cout, k*C]`(im2col 用に並べ替え済み。層ごとに 1 回だけ作る)
+    w2: Tensor<2>,
     b: Option<Tensor<1>>,
     opts: ConvOptions<1>,
     stride: usize,
@@ -56,8 +51,12 @@ struct Conv {
 
 impl Conv {
     fn load(p: &Pth, name: &str, stride: usize, pad: usize, dil: usize, dev: &Device) -> Result<Self> {
+        let w = p.tensor::<3>(&format!("{name}.weight"), dev)?;
+        let [co, c, k] = w.dims();
+        let w2 = w.clone().swap_dims(1, 2).reshape([co, k * c]);
         Ok(Self {
-            w: p.tensor::<3>(&format!("{name}.weight"), dev)?,
+            w,
+            w2,
             b: if p.contains(&format!("{name}.bias")) {
                 Some(p.tensor::<1>(&format!("{name}.bias"), dev)?)
             } else {
@@ -81,7 +80,7 @@ impl Conv {
         // それ以外も行列積より 2〜5 倍遅い。stride 1・batch 1(デコーダ・エンコーダの全層)は
         // im2col + 行列積で計算する: ずらしたスライスを積んで [Cout, k*C] x [k*C, L] にする。
         let lout = l + 2 * pad - dil * (k - 1);
-        let w2 = self.w.clone().swap_dims(1, 2).reshape([co, k * c]);
+        let w2 = self.w2.clone();
         if k == 1 {
             let y = w2.matmul(x.reshape([c, l])).reshape([1, co, lout]);
             return match &self.b {
@@ -259,8 +258,8 @@ impl EncoderBlock {
                 ResUnit::load(p, &format!("{name}.block.2"), 9, dev)?,
             ],
             snake: Snake::load(p, &format!("{name}.block.3.alpha"), dev)?,
-            // kernel = 2*stride, pad = (k - stride)/2 = stride/2
-            down: Conv::load(p, &format!("{name}.block.4"), stride, stride / 2, 1, dev)?,
+            // kernel = 2*stride、pad = ceil(stride / 2)(DAC と同じ。奇数のストライドでも長さが合う)
+            down: Conv::load(p, &format!("{name}.block.4"), stride, stride.div_ceil(2), 1, dev)?,
         })
     }
 
@@ -436,7 +435,7 @@ impl DacVae {
                 mono.iter_mut().for_each(|m| *m *= inv);
             }
             let mut x = if sample_rate != self.sample_rate {
-                resample(&mono, sample_rate, self.sample_rate)
+                resample(&mono, sample_rate, self.sample_rate)?
             } else {
                 mono
             };
@@ -588,9 +587,13 @@ fn gcd(a: u64, b: u64) -> u64 {
 }
 
 /// torchaudio `functional.resample`(`sinc_interp_hann`、lowpass_filter_width=6、rolloff=0.99)。
-pub fn resample(x: &[f32], orig_freq: u32, new_freq: u32) -> Vec<f32> {
+/// カーネル表の大きさの上限(f32 の個数。256MB)。互いに素に近い比(47999→48000 など)は表が巨大になる
+const MAX_RESAMPLE_TABLE: usize = 64 << 20;
+
+/// torchaudio の `sinc_interp_hann` 互換のリサンプル(`lowpass_filter_width = 6`、`rolloff = 0.99`)。
+pub fn resample(x: &[f32], orig_freq: u32, new_freq: u32) -> Result<Vec<f32>> {
     if orig_freq == new_freq {
-        return x.to_vec();
+        return Ok(x.to_vec());
     }
     const LPW: f64 = 6.0;
     const ROLLOFF: f64 = 0.99;
@@ -600,6 +603,11 @@ pub fn resample(x: &[f32], orig_freq: u32, new_freq: u32) -> Vec<f32> {
     let base = (orig.min(new) as f64) * ROLLOFF;
     let width = (LPW * orig as f64 / base).ceil() as usize;
     let klen = 2 * width + orig;
+    anyhow::ensure!(
+        new.saturating_mul(klen) <= MAX_RESAMPLE_TABLE,
+        "resample {orig_freq} -> {new_freq} Hz: 比が複雑すぎる(カーネル表 {} 個)。44100 / 48000 など一般的なレートに揃えてください",
+        new.saturating_mul(klen)
+    );
     // kernels[i][k]
     let mut kernels = vec![0f32; new * klen];
     let scale = base / orig as f64;
@@ -633,5 +641,5 @@ pub fn resample(x: &[f32], orig_freq: u32, new_freq: u32) -> Vec<f32> {
         }
     }
     out.truncate(target);
-    out
+    Ok(out)
 }

@@ -329,6 +329,15 @@ pub struct LayerKv {
     pub v: Tensor<4>,
 }
 
+/// [`Dit::prepare`] の結果(条件・系列長が固定の間、全ステップで使い回す)
+pub struct Prepared {
+    kv: ContextKv,
+    bias: Tensor<4>,
+    rope: Rope,
+    batch: usize,
+    seq_len: usize,
+}
+
 /// `build_context_kv_cache` の結果(条件が固定の間、全ステップで使い回す)
 pub struct ContextKv {
     pub layers: Vec<LayerKv>,
@@ -627,43 +636,63 @@ impl Dit {
         valid_len: usize,
     ) -> Result<Tensor<3>> {
         let [b, s, _] = x_t.dims();
-        ensure!(valid_len >= 1 && valid_len <= s, "valid_len {valid_len} out of range 1..={s}");
-        let dev = &self.device;
-        let ted = self.cfg.timestep_embed_dim;
         let tv = host_vec(t)?;
         let dv = host_vec(delta_t)?;
         ensure!(tv.len() == b && dv.len() == b, "t / delta_t must have batch size {b}");
-        let mut cond_embed = self.cond_module.forward(timestep_embedding(&tv, ted, dev));
-        let delta = self.delta_cond_module.as_ref().context("MeanFlow delta_cond_module missing")?;
-        cond_embed = cond_embed.add(delta.forward(timestep_embedding(&dv, ted, dev)));
+        let prepared = self.prepare_inner(cond, kv, b, s, valid_len)?;
+        self.forward_prepared(x_t, &tv, &dv, &prepared)
+    }
 
-        let built;
+    /// 同じ条件・系列長で何度も forward する(サンプラの各ステップ)ときに共通の部分(条件の K/V、
+    /// 注意のバイアス、RoPE 表)を 1 回だけ作る。
+    pub fn prepare(&self, cond: &Conditions, seq_len: usize, valid_len: usize) -> Result<Prepared> {
+        self.prepare_inner(cond, None, cond.batch(), seq_len, valid_len)
+    }
+
+    fn prepare_inner(
+        &self,
+        cond: &Conditions,
+        kv: Option<&ContextKv>,
+        b: usize,
+        s: usize,
+        valid_len: usize,
+    ) -> Result<Prepared> {
+        ensure!(valid_len >= 1 && valid_len <= s, "valid_len {valid_len} out of range 1..={s}");
+        let dev = &self.device;
+        let heads = self.cfg.num_heads;
         let kv = match kv {
-            Some(k) => k,
-            None => {
-                built = self.build_context_kv_cache(cond)?;
-                &built
-            }
+            Some(k) => ContextKv { layers: k.layers.iter().map(|l| LayerKv { k: l.k.clone(), v: l.v.clone() }).collect() },
+            None => self.build_context_kv_cache(cond)?,
         };
         ensure!(kv.layers.len() == self.blocks.len(), "context kv cache layer count mismatch");
-
-        let heads = self.cfg.num_heads;
-        // 連結キー = [自己(全有効), text, speaker, caption]
+        // 連結キー = [自己(valid_len まで有効)、text、speaker、caption]
         let ctx_mask = cond.context_mask();
         let self_mask = if valid_len == s {
             Tensor::<2>::ones([b, s], dev)
         } else {
             Tensor::cat(vec![Tensor::<2>::ones([b, valid_len], dev), Tensor::<2>::zeros([b, s - valid_len], dev)], 1)
         };
-        let key_mask = Tensor::cat(vec![self_mask, ctx_mask], 1);
-        let bias = mask_to_bias(key_mask, heads, s);
-
+        let bias = mask_to_bias(Tensor::cat(vec![self_mask, ctx_mask], 1), heads, s);
         let rope = Rope::new(self.cfg.model_dim / heads, s, dev);
+        Ok(Prepared { kv, bias, rope, batch: b, seq_len: s })
+    }
+
+    /// [`Self::prepare`] 済みの共通部分を使って 1 ステップ進める。`t` / `delta_t` はホスト側の値(バッチ長)。
+    pub fn forward_prepared(&self, x_t: Tensor<3>, t: &[f32], delta_t: &[f32], p: &Prepared) -> Result<Tensor<3>> {
+        let [b, s, _] = x_t.dims();
+        ensure!(b == p.batch && s == p.seq_len, "x_t shape {:?} != prepared ({}, {})", x_t.dims(), p.batch, p.seq_len);
+        ensure!(t.len() == b && delta_t.len() == b, "t / delta_t must have batch size {b}");
+        let dev = &self.device;
+        let ted = self.cfg.timestep_embed_dim;
+        let mut cond_embed = self.cond_module.forward(timestep_embedding(t, ted, dev));
+        let delta = self.delta_cond_module.as_ref().context("MeanFlow delta_cond_module missing")?;
+        cond_embed = cond_embed.add(delta.forward(timestep_embedding(delta_t, ted, dev)));
+
         let mut x = self.in_proj.forward3(x_t);
-        for (blk, lkv) in self.blocks.iter().zip(&kv.layers) {
+        for (blk, lkv) in self.blocks.iter().zip(&p.kv.layers) {
             let (shift, scale, gate) = blk.attention_adaln.modulation(&cond_embed);
             let h = blk.attention_adaln.norm_modulate(x.clone(), shift, scale);
-            x = x.add(gate.mul(blk.attention.forward(h, lkv, bias.clone(), &rope)));
+            x = x.add(gate.mul(blk.attention.forward(h, lkv, p.bias.clone(), &p.rope)));
 
             let (shift, scale, gate) = blk.mlp_adaln.modulation(&cond_embed);
             let h = blk.mlp_adaln.norm_modulate(x.clone(), shift, scale);

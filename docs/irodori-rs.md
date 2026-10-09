@@ -69,7 +69,7 @@ let out = tts.synthesize(&SamplingRequest { text: "…".into(), no_ref: true, ..
 
 実装の大半は「速い演算を書く」ことではなく、burn-wgpu の落とし穴を避けることだった。
 
-1. **`burn/vulkan`(SPIR-V コンパイラ)は使わない**。reduce 系(`sum` / `mean` / `max` / `softmax` / `attention`)が誤った値を返す(`examples/gpu_ops_check.rs` で再現)。WGSL 経路(`burn/wgpu` だけ)は全演算が CPU と一致する。
+1. **`burn/vulkan`(SPIR-V コンパイラ)は使わない**。reduce 系(`sum` / `mean` / `max` / `softmax` / `attention`)が誤った値を返す(例: ランダムな `[4, 9, 33]` のテンソルの `sum_dim(1)` が CPU(flex)と合わない)。WGSL 経路(`burn/wgpu` だけ)は全演算が CPU と一致する。
 2. **メモリ管理は `ExclusivePages`**(`device::gpu_device`)。既定の適応型は、長い発話を 1 回処理したあと以降のすべての演算が約 10 倍遅くなる状態に入った(メモリ使用量は変わらない)。
 3. **`burn/fusion` と `burn/autotune` は使わない**。有効にすると初回のカーネル探索・コンパイルが極端に長く(ModernBERT だけで 40 秒以上)、定常速度は変わらない。
 4. **大きな単一の確保を避ける**。トークン埋め込み表(300MB)は CPU に置いて必要な行だけ送る(GPU に置くとメモリプールが肥大して全体が遅くなった)。畳み込みの im2col と透かしの活性は固定長の列塊(`CHUNK`)に分ける。GPU メモリは他のアプリと取り合いになり、一時テンソルが数百 MB になると演算が数倍〜10 倍遅くなる。
