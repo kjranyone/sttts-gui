@@ -17,3 +17,6 @@ anyhow = { workspace = true }
 async-channel = { workspace = true }
 base64 = { workspace = true }
 rodio = "0.21"
+
+[build-dependencies]
+embed-resource = "3"

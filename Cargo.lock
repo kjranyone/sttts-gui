@@ -6553,6 +6553,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "base64 0.22.1",
+ "embed-resource",
  "gpui-kit",
  "rodio",
  "serde",
