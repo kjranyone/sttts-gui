@@ -498,6 +498,23 @@ impl StttsApp {
                 self.connected = true;
                 self.mock = mock;
                 self.models = models;
+                // 保存されていたモデルが今のエンジンで扱えない(以前の版で選んだ大型モデル等)ときは既定へ戻す
+                if !self.models.iter().any(|m| m.id == self.selected_model_id)
+                    && let Some(first) = self.models.first().cloned()
+                {
+                    self.push_log(format!(
+                        "音声合成モデル {} は使えないため {} に切り替えました",
+                        self.selected_model_id, first.label
+                    ));
+                    self.selected_model_id.clone_from(&first.id);
+                    self.send(GuiMessage::Configure {
+                        tts: Some(TtsConfig { model: Some(first.id), ..Default::default() }),
+                        asr: None,
+                        audio: None,
+                        voice: None,
+                        pipeline: None,
+                    });
+                }
                 // backend(再)起動で request id は 1 から振り直される
                 self.last_accepted_request = 0;
                 self.cancelled_upto = 0;

@@ -1,0 +1,35 @@
+[project]
+name = "sttts-reference"
+version = "0.1.0"
+description = "純 Rust 実装(crates/irodori, crates/whisper)の数値一致テスト用に、PyTorch の参照出力を CPU で書き出す開発用ツール。アプリの実行には使わない。"
+requires-python = ">=3.12"
+dependencies = [
+    # irodori-tts は検証済みコミットに固定(Rust 実装が一致を確認した版)
+    "irodori-tts @ git+https://github.com/Aratako/Irodori-TTS@89f9d8fbd4d51ea019867ee1197725ede1df13c5",
+    "torch>=2.14.1,<2.15.0",
+    "torchaudio>=2.11.0,<2.12.0",
+    "torchcodec>=0.10.0,<0.18.0",
+    "transformers>=5.13.0",
+    "safetensors",
+    "huggingface_hub",
+    "soundfile",
+    "scipy",
+    "numpy>=1.26",
+]
+
+[tool.uv]
+package = false
+# sentencepiece 0.1.x(irodori-tts のピン "<0.2")は cp312 Windows wheel が存在しないため 0.2.x へ上書きする。
+override-dependencies = [
+    "sentencepiece>=0.2.0,<0.3",
+    "torchcodec>=0.10.0,<0.18.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

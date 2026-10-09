@@ -27,7 +27,7 @@ fn watermark_matches_reference() {
         eprintln!("no refs; skipping");
         return;
     };
-    let Some(snap) = hf_snapshot("models--sony--silentcipher") else {
+    let Some(snap) = hf_snapshot("sony/silentcipher") else {
         eprintln!("no silentcipher weights; skipping");
         return;
     };

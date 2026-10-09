@@ -18,8 +18,6 @@ use crate::mel::{HOP_LENGTH, LogMel, N_FFT, N_MELS, WIN_LENGTH};
 const SUBSAMPLING: usize = 8;
 /// sliding_window (57) - 1(サブサンプル後のエンコーダフレーム単位)
 const LEFT_CONTEXT: usize = 56;
-pub static PROF_ENC: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-pub static PROF_DEC: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 const DECODER_LAYERS: usize = 2;
 
 /// chunk_ms → 右コンテキスト(ルックアヘッド)
@@ -81,10 +79,10 @@ impl PieceDecoder {
         if let Ok(text) = std::fs::read_to_string(path) {
             for line in text.lines() {
                 let (idx, piece) = line.split_once('\t').unwrap_or((line, ""));
-                if let Ok(i) = idx.trim().parse::<usize>() {
-                    if i < vocab {
-                        pieces[i] = piece.to_string();
-                    }
+                if let Ok(i) = idx.trim().parse::<usize>()
+                    && i < vocab
+                {
+                    pieces[i] = piece.to_string();
                 }
             }
         }
@@ -123,7 +121,8 @@ struct Encoder {
     out_to_cache: Vec<usize>,
 }
 
-/// セッション間で共有しない、1 発話ぶんのストリーミング状態
+/// 1 発話ぶんのストリーミング状態
+#[derive(Clone)]
 struct State {
     caches: Vec<Vec<f32>>,
     cache_valid: usize,
@@ -153,6 +152,16 @@ pub struct Engine {
     mel_frames_steady: usize,
     samples_first: usize,
     samples_steady: usize,
+    resume: Option<Resume>,
+}
+
+/// 直前の `transcribe` が完全なチャンクまで処理した時点の状態。
+/// partial は伸びていくバッファを繰り返し渡されるので、先頭が同じなら続きから再開する
+/// (結果は最初からやり直した場合と同一。完全チャンクは後続の音声に依存しない)。
+struct Resume {
+    /// 処理済みチャンクが参照した音声(先頭からここまで)
+    head: Vec<f32>,
+    state: State,
 }
 
 fn ort_err<T: std::fmt::Display>(e: T) -> anyhow::Error {
@@ -257,6 +266,7 @@ impl Engine {
             mel_frames_steady,
             samples_first: (mel_frames_first - 1) * HOP_LENGTH + WIN_LENGTH / 2,
             samples_steady: mel_frames_steady * HOP_LENGTH + WIN_LENGTH,
+            resume: None,
         })
     }
 
@@ -299,13 +309,6 @@ impl Engine {
 
     /// 1 チャンクぶんのエンコーダ出力 `enc`(`frames × hidden`)の先頭 `num_frames` を貪欲デコードする
     fn greedy_decode(&mut self, st: &mut State, enc: &[f32], num_frames: usize) -> Result<()> {
-        let t0 = std::time::Instant::now();
-        let r = self.greedy_decode_inner(st, enc, num_frames);
-        PROF_DEC.fetch_add(t0.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
-        r
-    }
-
-    fn greedy_decode_inner(&mut self, st: &mut State, enc: &[f32], num_frames: usize) -> Result<()> {
         let h = self.dec_hidden;
         for t in 0..num_frames {
             let frame = &enc[t * h..(t + 1) * h];
@@ -378,9 +381,7 @@ impl Engine {
             ));
         }
         let enc = if first { &mut self.enc_first } else { &mut self.enc_steady };
-        let t0 = std::time::Instant::now();
         let outs = enc.session.run(inputs).map_err(ort_err)?;
-        PROF_ENC.fetch_add(t0.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
         for (i, &ci) in enc.out_to_cache.iter().enumerate() {
             let (_, v) = outs[i + 1].try_extract_tensor::<f32>().map_err(ort_err)?;
             st.caches[ci].copy_from_slice(v);
@@ -392,10 +393,10 @@ impl Engine {
 
     /// 末尾 `valid` フレームより後ろを 0 にし、`want` フレームへゼロ詰め/切り詰めする
     fn fit_features(mut feats: Vec<f32>, frames: usize, valid: Option<usize>, want: usize) -> Vec<f32> {
-        if let Some(v) = valid {
-            if v < frames {
-                feats[v * N_MELS..].fill(0.0);
-            }
+        if let Some(v) = valid
+            && v < frames
+        {
+            feats[v * N_MELS..].fill(0.0);
         }
         feats.resize(want * N_MELS, 0.0);
         feats
@@ -428,15 +429,16 @@ impl Engine {
 
     /// 発話全体 → テキスト(Python の reset → accept_waveform → finish)
     pub fn transcribe(&mut self, audio: &[f32]) -> Result<String> {
-        let mut st = self.fresh_state()?;
         let total = audio.len();
         if total == 0 {
+            self.resume = None;
             return Ok(String::new());
         }
-
         let start_of = |mel_idx: usize| mel_idx * HOP_LENGTH - N_FFT / 2;
         if total < self.samples_first {
             // 先頭チャンクに満たない短い音声: ゼロ詰めして 1 チャンクだけ処理する
+            self.resume = None;
+            let mut st = self.fresh_state()?;
             let valid_mel = self.mel_frames_first.min(total / HOP_LENGTH);
             let mut padded = audio.to_vec();
             padded.resize(self.samples_first, 0.0);
@@ -444,7 +446,19 @@ impl Engine {
             return Ok(self.pieces.decode(&st.tokens));
         }
 
-        self.first_chunk(&mut st, &audio[..self.samples_first], None)?;
+        // 直前の呼び出しと先頭が同じなら、その時点の状態から再開する
+        let resumed = match self.resume.take() {
+            Some(r) if audio.len() >= r.head.len() && audio[..r.head.len()] == r.head[..] => Some(r.state),
+            _ => None,
+        };
+        let mut st = match resumed {
+            Some(st) => st,
+            None => {
+                let mut st = self.fresh_state()?;
+                self.first_chunk(&mut st, &audio[..self.samples_first], None)?;
+                st
+            }
+        };
         loop {
             let start = start_of(st.mel_idx);
             if start + self.samples_steady > total {
@@ -452,6 +466,14 @@ impl Engine {
             }
             self.steady_chunk(&mut st, &audio[start..start + self.samples_steady], None)?;
         }
+        // ここまでが後続の音声に依存しない部分。次回の再開用に保存する
+        let head_len = if st.mel_idx == self.mel_frames_first {
+            self.samples_first
+        } else {
+            start_of(st.mel_idx - self.mel_frames_steady) + self.samples_steady
+        };
+        self.resume = Some(Resume { head: audio[..head_len].to_vec(), state: st.clone() });
+
         // 末尾: 実音声が n_fft 以上残っていれば、ゼロ詰めした最終チャンクを処理する
         let start = start_of(st.mel_idx);
         let real = total.saturating_sub(start);

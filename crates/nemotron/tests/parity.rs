@@ -10,7 +10,7 @@ use std::time::Instant;
 use sttts_nemotron::{Nemotron, NemotronOptions};
 
 fn load() -> Option<Nemotron> {
-    if sttts_nemotron::hub::find_snapshot(sttts_nemotron::DEFAULT_REPO, &["tokens.txt", "joiner.onnx"]).is_none() {
+    if sttts_hub::find_snapshot(sttts_nemotron::DEFAULT_REPO, &["tokens.txt", "joiner.onnx"]).is_none() {
         eprintln!("Nemotron モデルが HF キャッシュに無い: skipping");
         return None;
     }
@@ -101,6 +101,48 @@ fn partial_redecode_rtf() {
         audio_s += n as f64 / 16000.0;
         n += step;
     }
-    eprintln!("PROF enc {}ms dec {}ms", sttts_nemotron::engine::PROF_ENC.load(std::sync::atomic::Ordering::Relaxed)/1000, sttts_nemotron::engine::PROF_DEC.load(std::sync::atomic::Ordering::Relaxed)/1000);
     eprintln!("partial re-decode: RTF {:.3} (累計 {audio_s:.1}s 分を {run_s:.2}s)", run_s / audio_s);
+}
+
+/// 続きから再開した結果が、最初からやり直した結果と同一であること
+#[test]
+fn incremental_resume_equals_fresh() {
+    let Some(dir) = std::env::var_os("NEMOTRON_PARITY_DIR").map(PathBuf::from) else { return };
+    let p = dir.join("wav").join("out_selfcheck_5b7255d9.wav");
+    if !p.exists() {
+        return;
+    }
+    let Some(m) = load() else { return };
+    let pcm = read_wav(&p);
+    let other = vec![0.01f32; 100]; // 再開状態を捨てるための別入力
+    for n in (6400..=pcm.len()).step_by(12800).chain([pcm.len()]) {
+        let inc = m.transcribe(&pcm[..n]).unwrap();
+        m.transcribe(&other).unwrap();
+        let fresh = m.transcribe(&pcm[..n]).unwrap();
+        assert_eq!(inc, fresh, "len {n}");
+        // 直前と同じ入力の再実行(再開位置がちょうど末尾)
+        assert_eq!(m.transcribe(&pcm[..n]).unwrap(), fresh, "repeat len {n}");
+    }
+}
+
+/// HF ダウンロードの動作確認(ネットワーク使用のため NEMOTRON_TEST_NETWORK=1 のときだけ)。
+/// 小さいファイルだけを一時キャッシュへ取得し、hub 互換の構成になることを見る。
+#[test]
+fn download_small_files_into_temp_cache() {
+    if std::env::var_os("NEMOTRON_TEST_NETWORK").is_none() {
+        eprintln!("NEMOTRON_TEST_NETWORK 未設定: skipping");
+        return;
+    }
+    let tmp = std::env::temp_dir().join(format!("nemotron-hub-test-{}", std::process::id()));
+    // SAFETY: このテストバイナリで環境変数を触るのはこのテストだけ(他のテストは読むのみ)
+    unsafe { std::env::set_var("HF_HUB_CACHE", &tmp) };
+    let want = |f: &str| f == "tokens.txt" || f == "nemotron_onnx_config.json";
+    let snap = sttts_hub::snapshot_download(sttts_nemotron::DEFAULT_REPO, &want, &|s| eprintln!("{s}")).unwrap();
+    assert!(snap.join("tokens.txt").metadata().unwrap().len() > 100_000);
+    assert!(snap.join("nemotron_onnx_config.json").exists());
+    let found = sttts_hub::find_snapshot(sttts_nemotron::DEFAULT_REPO, &["tokens.txt"]).unwrap();
+    assert_eq!(found, snap);
+    let resolved = sttts_hub::materialize_snapshot(&snap).unwrap();
+    assert!(resolved.join("tokens.txt").exists());
+    let _ = std::fs::remove_dir_all(&tmp);
 }

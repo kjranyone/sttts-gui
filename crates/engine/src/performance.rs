@@ -156,19 +156,21 @@ pub fn plan_delivery(obs: &AcousticObservation, emotion: Option<&str>, baseline_
         });
     }
     let mut scale = None;
-    if let (Some(rate), Some(base)) = (obs.mora_per_s, baseline_mora_per_s) {
-        if rate > 0.0 && base > 0.0 && obs.active_ms >= 800 {
-            let ratio = rate / base;
-            if ratio >= 1.35 {
-                scale = Some(0.90);
-                if emoji.is_empty() {
-                    emoji = "⏩".into();
-                }
-            } else if ratio <= 0.74 {
-                scale = Some(1.10);
-                if emoji.is_empty() {
-                    emoji = "🐢".into();
-                }
+    if let (Some(rate), Some(base)) = (obs.mora_per_s, baseline_mora_per_s)
+        && rate > 0.0
+        && base > 0.0
+        && obs.active_ms >= 800
+    {
+        let ratio = rate / base;
+        if ratio >= 1.35 {
+            scale = Some(0.90);
+            if emoji.is_empty() {
+                emoji = "⏩".into();
+            }
+        } else if ratio <= 0.74 {
+            scale = Some(1.10);
+            if emoji.is_empty() {
+                emoji = "🐢".into();
             }
         }
     }

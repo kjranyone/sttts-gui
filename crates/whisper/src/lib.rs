@@ -3,11 +3,10 @@
 //! PyTorch / Python / CTranslate2 には依存しない。
 //!
 //! 構成(数値は transformers の `WhisperForConditionalGeneration` と段階ごとに一致させる。参照出力は
-//! `backend/scripts/dump_whisper_ref.py` が `target/whisper-ref/` に書く):
+//! `tools/reference/dump_whisper_ref.py` が `target/whisper-ref/` に書く):
 //! - [`mel`]: ログメル特徴(`WhisperFeatureExtractor` 互換、CPU)
 //! - [`model`]: encoder(Conv1d x2 + 32 層)と decoder(2 層、self / cross-attention の KV キャッシュ)
 //! - [`decode`]: greedy / beam search
-//! - [`fetch`]: HF キャッシュ上の場所と、無ければダウンロード
 //!
 //! 30 秒を超える音声は 30 秒ずつ順次デコードして連結する(窓をまたぐ文脈の引き継ぎはしない:
 //! 元の faster-whisper 設定の `condition_on_previous_text=False` と同じ)。
@@ -16,7 +15,6 @@
 #![allow(clippy::chunks_exact_to_as_chunks)]
 
 pub mod decode;
-pub mod fetch;
 pub mod mel;
 pub mod model;
 
@@ -29,6 +27,9 @@ use irodori::weights::Weights;
 use crate::decode::DecodeSpec;
 use crate::mel::{MelExtractor, N_SAMPLES, SAMPLE_RATE};
 use crate::model::Model;
+
+/// 推論に必要なファイル(`model.safetensors` が本体)
+pub const MODEL_FILES: [&str; 4] = ["config.json", "generation_config.json", "tokenizer.json", "model.safetensors"];
 
 /// 既定のモデル
 pub const DEFAULT_REPO: &str = "kotoba-tech/kotoba-whisper-v2.0";
@@ -64,7 +65,7 @@ fn id_list(v: &serde_json::Value, key: &str) -> Vec<usize> {
 impl Whisper {
     /// HF キャッシュ(無ければダウンロード)からモデルを読み込む。`progress` に進捗の文言を渡す。
     pub fn load(opts: WhisperOptions, progress: &dyn Fn(&str)) -> Result<Self> {
-        let dir = fetch::ensure(&opts.repo, progress)?;
+        let dir = sttts_hub::ensure_files(&opts.repo, &MODEL_FILES, progress)?;
         Self::load_from(opts, &dir, progress)
     }
 

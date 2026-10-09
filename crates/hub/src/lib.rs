@@ -1,4 +1,4 @@
-//! HuggingFace Hub の最小実装。キャッシュの場所は `huggingface_hub` と同じ規則で、
+//! HuggingFace Hub の最小実装(Irodori / Whisper / Nemotron で共有)。キャッシュの場所は `huggingface_hub` と同じ規則で、
 //! スナップショットが無ければ API でファイル一覧を取り、resolve URL から取得する。
 //! 保存先は hub キャッシュ互換(`blobs/` `snapshots/<rev>/` `refs/main`)。
 
@@ -26,7 +26,7 @@ pub fn hub_dir() -> Option<PathBuf> {
 }
 
 /// `org/name` → `models--org--name`
-fn repo_folder(repo: &str) -> String {
+pub fn repo_folder(repo: &str) -> String {
     format!("models--{}", repo.replace('/', "--"))
 }
 
@@ -58,6 +58,7 @@ pub fn snapshot_download(repo: &str, want: &dyn Fn(&str) -> bool, progress: &dyn
     let root = hub_dir().context("HF キャッシュの場所を決められません")?.join(repo_folder(repo));
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(std::time::Duration::from_secs(30)))
+        .tls_config(ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::NativeTls).build())
         .build()
         .into();
     let endpoint = std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".into());
@@ -90,7 +91,7 @@ pub fn snapshot_download(repo: &str, want: &dyn Fn(&str) -> bool, progress: &dyn
         if dst.exists() {
             continue;
         }
-        progress(&format!("ASRモデル取得中: {f}"));
+        progress(&format!("取得中: {f}"));
         if let Some(p) = dst.parent() {
             fs::create_dir_all(p)?;
         }
@@ -170,4 +171,12 @@ fn walk(base: &Path, dir: &Path, dst: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// キャッシュに `files` が全部揃ったスナップショットがあればそれを返し、無ければ `files` だけダウンロードする。
+pub fn ensure_files(repo: &str, files: &[&str], progress: &dyn Fn(&str)) -> Result<PathBuf> {
+    if let Some(snap) = find_snapshot(repo, files) {
+        return Ok(snap);
+    }
+    snapshot_download(repo, &|f| files.contains(&f), progress)
 }

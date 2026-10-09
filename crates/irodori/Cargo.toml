@@ -35,4 +35,4 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 rand = "0.9"
 rand_distr = "0.5"
 regex = "1"
-ureq = { version = "3", default-features = false, features = ["native-tls"] }
+sttts-hub = { path = "../hub" }

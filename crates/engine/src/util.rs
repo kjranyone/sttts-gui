@@ -1,8 +1,8 @@
 //! 小さな共通部品。
 
-use std::sync::{Mutex, MutexGuard};
-use std::sync::OnceLock;
-use std::time::Instant;
+use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 /// 毒化(他スレッドの panic)を無視してロックする。状態は常に単純な値なので続行してよい。
 pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -18,4 +18,17 @@ pub fn now() -> f64 {
 /// 秒 → ms(小数1桁)
 pub fn ms(t: f64) -> f64 {
     (t * 10_000.0).round() / 10.0
+}
+
+/// `JoinHandle` を時間制限つきで待つ。間に合わなければ放置して false を返す(呼び出し側が資源を強制解放する)。
+pub fn join_timeout(h: JoinHandle<()>, timeout: Duration) -> bool {
+    let end = Instant::now() + timeout;
+    while !h.is_finished() {
+        if Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let _ = h.join();
+    true
 }

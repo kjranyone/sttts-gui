@@ -1,6 +1,6 @@
 //! DACVAE コーデック(`Aratako/Semantic-DACVAE-Japanese-32dim`、48 kHz、hop 1920、潜在 32 次元)。
 //!
-//! 原典は Meta の `dacvae`(`backend/.venv/Lib/site-packages/dacvae/`)と `irodori_tts/codec.py`。
+//! 原典は Meta の `dacvae`(`tools/reference/.venv/Lib/site-packages/dacvae/`)と `irodori_tts/codec.py`。
 //! - [`DacVae::decode_latent`]: 潜在 `[B,T,32]` → 波形 `[B,1,T*1920]`。デコーダは Snake 活性化 +
 //!   ConvTranspose1d + 残差ブロック。Irodori は `decoder.alpha = 0` とし、透かし枝は
 //!   `wm_model.encoder_block.forward_no_conv`(Snake → conv(96→1, k7) → Tanh)だけを通す
@@ -27,7 +27,7 @@ pub const DEFAULT_NORMALIZE_DB: f32 = -16.0;
 
 /// HF キャッシュ内の既定の重み(`weights.pth`)。無ければ None。
 pub fn default_weights_path() -> Option<PathBuf> {
-    crate::hub::find_snapshot("models--Aratako--Semantic-DACVAE-Japanese-32dim", "weights.pth").map(|d| d.join("weights.pth"))
+    crate::hub::find_snapshot(crate::pipeline::CODEC_REPO, &["weights.pth"]).map(|d| d.join("weights.pth"))
 }
 
 // ---------------------------------------------------------------------------------------------

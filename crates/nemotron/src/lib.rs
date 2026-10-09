@@ -3,10 +3,9 @@
 //! Nemotron 3.5 ASR streaming 0.6b(FastConformer-RNNT、ONNX fp16)の純 Rust 実装。
 //! `ort`(CPU EP)でキャッシュ対応エンコーダ・予測ネットワーク・ジョイナを回し、
 //! 特徴量抽出と貪欲デコードは Rust 側で行う。元実装は Python 版
-//! `backend/src/sttts_server/engines/vendor/nemotron_onnx_streaming.py`(Apache-2.0、`LICENSE` 参照)。
+//! Python 版 `nemotron_onnx_streaming.py`(Apache-2.0、`LICENSE` 参照。git 履歴の backend/ にある)。
 
-pub mod engine;
-pub mod hub;
+mod engine;
 mod mel;
 
 use std::path::PathBuf;
@@ -117,12 +116,12 @@ fn wanted(chunk_ms: u32, precision: &str) -> impl Fn(&str) -> bool {
 
 fn resolve_dir(repo: &str, chunk_ms: u32, precision: &str, progress: &dyn Fn(&str)) -> Result<PathBuf> {
     let required = ["tokens.txt", "nemotron_onnx_config.json", "joiner.onnx"];
-    let snap = match hub::find_snapshot(repo, &required) {
+    let snap = match sttts_hub::find_snapshot(repo, &required) {
         Some(s) => s,
         None => {
             progress(&format!("ASRモデル取得中: {repo}"));
-            hub::snapshot_download(repo, &wanted(chunk_ms, precision), progress)?
+            sttts_hub::snapshot_download(repo, &wanted(chunk_ms, precision), progress)?
         }
     };
-    hub::materialize_snapshot(&snap).with_context(|| format!("snapshot の展開: {}", snap.display()))
+    sttts_hub::materialize_snapshot(&snap).with_context(|| format!("snapshot の展開: {}", snap.display()))
 }

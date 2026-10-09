@@ -1,6 +1,6 @@
 //! Gemini Live API(`gemini-3.5-transcribe-live`)によるクラウド ASR の Rust 実装。
 //!
-//! 元は `backend/src/sttts_server/engines/asr_gemini.py`(google-genai SDK)。
+//! 元は Python 版 `asr_gemini.py`(google-genai SDK。git 履歴の backend/ にある)。
 //! SDK が WebSocket(BidiGenerateContent)で実際に送受信する JSON を再現している。
 //!
 //! 統合形態: ローカル VAD の発話開始で発話専用 Live セッションを開き、activityStart →

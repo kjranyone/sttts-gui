@@ -13,7 +13,7 @@ use std::time::Instant;
 use irodori::testing::{assert_close, to_vec};
 use irodori::weights::Weights;
 use sttts_whisper::mel::N_SAMPLES;
-use sttts_whisper::{DEFAULT_REPO, Whisper, WhisperOptions, decode, fetch};
+use sttts_whisper::{DEFAULT_REPO, MODEL_FILES, Whisper, WhisperOptions, decode};
 
 fn ref_dir() -> PathBuf {
     std::env::var_os("WHISPER_REF_DIR")
@@ -48,11 +48,11 @@ fn setup() -> Option<Env> {
         Weights::open(dir.join("refs.safetensors")),
         std::fs::read_to_string(dir.join("meta.json")).map(|s| serde_json::from_str::<serde_json::Value>(&s)),
     ) else {
-        eprintln!("skip: 参照が {} にありません(backend/scripts/dump_whisper_ref.py)", dir.display());
+        eprintln!("skip: 参照が {} にありません(tools/reference/dump_whisper_ref.py)", dir.display());
         return None;
     };
     let meta = meta.ok()?;
-    let Some(snap) = fetch::find(DEFAULT_REPO) else {
+    let Some(snap) = sttts_hub::find_snapshot(DEFAULT_REPO, &MODEL_FILES) else {
         eprintln!("skip: {DEFAULT_REPO} が HF キャッシュにありません");
         return None;
     };

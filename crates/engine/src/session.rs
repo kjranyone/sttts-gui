@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 
 use crate::asr::{AsrEngine, StreamCb};
-use crate::util::{lock, now};
+use crate::util::{join_timeout, lock, now};
 
 pub const SAMPLE_RATE: usize = 16000;
 /// Silero VAD の 1 フレーム(32ms @ 16kHz)
@@ -324,20 +324,9 @@ impl JobSink for ArcWorker {
     }
 }
 
-/// `JoinHandle` を時間制限つきで待つ。間に合わなければ放置する(呼び出し側が資源を強制解放する)。
-fn join_timeout(h: JoinHandle<()>, timeout: Duration) -> bool {
-    let end = Instant::now() + timeout;
-    while !h.is_finished() {
-        if Instant::now() >= end {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    let _ = h.join();
-    true
-}
-
 // ---------------------------------------------------------------- VAD セグメンタ
+
+type UtteranceHook = Box<dyn Fn(u64, &[f32]) + Send>;
 
 /// VAD + 発話バッファ管理(デコードはしない)。`feed()` を実時間で呼ぶ。
 pub struct VadSegmenter {
@@ -346,7 +335,7 @@ pub struct VadSegmenter {
     /// <=0 で partial 無効
     partial_interval: f64,
     on_level: Option<Box<dyn Fn(f32, f32) + Send>>,
-    on_utterance: Option<Box<dyn Fn(u64, &[f32]) + Send>>,
+    on_utterance: Option<UtteranceHook>,
     stream_asr: Option<Arc<dyn AsrEngine>>,
     clock: Box<dyn Fn() -> f64 + Send>,
     pub utterance_id: u64,
@@ -420,12 +409,12 @@ impl VadSegmenter {
     pub fn feed(&mut self, block: &[f32], arrival: Option<f64>) {
         let now = (self.clock)();
         let arrival = arrival.unwrap_or(now);
-        if let Some(cb) = &self.on_level {
-            if now - self.last_level > LEVEL_INTERVAL {
-                let (rms, db) = level_of(block);
-                cb(rms, db);
-                self.last_level = now;
-            }
+        if let Some(cb) = &self.on_level
+            && now - self.last_level > LEVEL_INTERVAL
+        {
+            let (rms, db) = level_of(block);
+            cb(rms, db);
+            self.last_level = now;
         }
 
         let mut tail = std::mem::take(&mut self.tail);
@@ -585,10 +574,10 @@ impl LiveSession {
             asr.abort_all_streams();
         }
         let _ = self.audio_tx.send(None);
-        if let Some(h) = lock(&self.thread).take() {
-            if !join_timeout(h, Duration::from_secs(10)) {
-                self.host.on_asr_error("セッションスレッドが時間内に止まりませんでした。ソースを強制的に閉じます");
-            }
+        if let Some(h) = lock(&self.thread).take()
+            && !join_timeout(h, Duration::from_secs(10))
+        {
+            self.host.on_asr_error("セッションスレッドが時間内に止まりませんでした。ソースを強制的に閉じます");
         }
         if let Some(src) = lock(&self.source).as_mut() {
             src.stop();

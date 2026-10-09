@@ -52,9 +52,9 @@ impl TtsPaths {
 
     /// HuggingFace キャッシュ(`~/.cache/huggingface/hub`)から既定のモデルを探す
     pub fn from_hf_cache() -> Result<Self> {
-        let model_dir = crate::hub::find_snapshot("models--Aratako--Irodori-TTS-v4.1-Small-MF", "model.safetensors").context("Irodori-TTS v4.1 Small MF が HF キャッシュにありません")?;
+        let model_dir = crate::hub::find_snapshot(MODEL_REPO, &["model.safetensors"]).context("Irodori-TTS v4.1 Small MF が HF キャッシュにありません")?;
         let codec_weights = crate::codec::default_weights_path().context("DACVAE の weights.pth が HF キャッシュにありません")?;
-        let watermark_dir = crate::hub::find_snapshot("models--sony--silentcipher", "44_1_khz/73999_iteration/enc_c.ckpt")
+        let watermark_dir = crate::hub::find_snapshot(WATERMARK_REPO, &["44_1_khz/73999_iteration/enc_c.ckpt"])
             .map(|d| d.join("44_1_khz/73999_iteration"));
         Ok(Self { model_dir, codec_weights, watermark_dir })
     }

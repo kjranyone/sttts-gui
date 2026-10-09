@@ -16,6 +16,7 @@ irodori = { path = "../irodori" }
 sttts-audio = { path = "../audio" }
 sttts-whisper = { path = "../whisper" }
 sttts-gemini = { path = "../gemini" }
+sttts-nemotron = { path = "../nemotron" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

@@ -11,6 +11,7 @@ use crate::config::{get, get_f64, get_i64, get_str};
 pub fn create_real_asr(engine: &str, cfg: &Value, progress: Progress) -> Result<Arc<dyn AsrEngine>> {
     match engine {
         "kotoba" | "whisper" | "faster-whisper" => Ok(Arc::new(WhisperAsr::load(cfg, progress)?)),
+        "nemotron" => Ok(Arc::new(NemotronAsr::load(cfg, progress)?)),
         "gemini" | "gemini_live" => Ok(Arc::new(GeminiAsr::load(cfg, progress)?)),
         other => bail!("unknown asr.engine: {other:?} (choices: kotoba, nemotron, gemini, mock)"),
     }
@@ -126,5 +127,40 @@ impl AsrEngine for GeminiAsr {
     }
     fn abort_all_streams(&self) {
         self.live.abort_all_streams();
+    }
+}
+
+// ---------------------------------------------------------------- Nemotron (ONNX)
+
+/// Nemotron 3.5 ASR(cache-aware FastConformer-RNNT / onnxruntime CPU)。句読点をネイティブに出力する。
+/// 途中経過(partial)も確定も `transcribe` で、伸びていく発話は直前の続きから再開するので partial は軽い。
+pub struct NemotronAsr {
+    nemotron: sttts_nemotron::Nemotron,
+}
+
+impl NemotronAsr {
+    pub fn load(cfg: &Value, progress: Progress) -> Result<Self> {
+        let d = sttts_nemotron::NemotronOptions::default();
+        let opts = sttts_nemotron::NemotronOptions {
+            model_dir: get_str(cfg, "asr", "nemotron_model_dir").filter(|s| !s.is_empty()).map(Into::into),
+            repo: get_str(cfg, "asr", "nemotron_repo").filter(|s| !s.is_empty()).map_or(d.repo, str::to_string),
+            chunk_ms: get_i64(cfg, "asr", "nemotron_chunk_ms", i64::from(d.chunk_ms)).max(0) as u32,
+            precision: get_str(cfg, "asr", "nemotron_precision").filter(|s| !s.is_empty()).map_or(d.precision, str::to_string),
+            language: get_str(cfg, "asr", "language").unwrap_or("ja").to_string(),
+            num_threads: get_i64(cfg, "asr", "nemotron_threads", d.num_threads as i64).max(0) as usize,
+        };
+        Ok(Self { nemotron: sttts_nemotron::Nemotron::load(opts, progress)? })
+    }
+}
+
+impl AsrEngine for NemotronAsr {
+    fn model_id(&self) -> String {
+        self.nemotron.model_id().to_string()
+    }
+    fn transcribe_utterance(&self, audio: &[f32]) -> Result<String> {
+        self.nemotron.transcribe(audio)
+    }
+    fn transcribe_partial(&self, audio: &[f32]) -> Result<String> {
+        self.nemotron.transcribe(audio)
     }
 }

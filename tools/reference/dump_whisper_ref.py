@@ -5,8 +5,8 @@ PyTorch の実行は CPU のみ(XPU / GPU には触れない)。音声は output
 decoder の最初の数ステップの logits・greedy / beam(2) の転写を保存する(30 秒を超える音声は、
 Rust 実装と同じく 30 秒ずつ順次デコードして連結する)。
 
-使い方:  cd backend && uv run --no-sync python scripts/dump_whisper_ref.py [出力ディレクトリ]
-既定の出力先: ../target/whisper-ref  (refs.safetensors, meta.json)
+使い方:  cd tools/reference && uv run python dump_whisper_ref.py [出力ディレクトリ]
+既定の出力先: <repo>/target/whisper-ref  (refs.safetensors, meta.json)
 """
 
 from __future__ import annotations

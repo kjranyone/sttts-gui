@@ -207,7 +207,7 @@ fn no_partial() -> PartialCallback {
     Arc::new(|_, _| {})
 }
 
-// ---------- backend/tests/test_gemini_stream.py の移植 ----------
+// ---------- Python 版 test_gemini_stream.py の移植 ----------
 
 #[test]
 fn stream_sends_audio_before_vad_end() {

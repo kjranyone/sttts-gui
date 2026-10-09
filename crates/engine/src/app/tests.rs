@@ -601,10 +601,12 @@ impl AsrEngine for FakeAsr {
     }
 }
 
+type Gate = Arc<(Mutex<bool>, Condvar)>;
+
 #[derive(Default)]
 struct FakeFactory {
     created: Mutex<Vec<Arc<FakeAsr>>>,
-    gates: Mutex<std::collections::HashMap<String, Arc<(Mutex<bool>, Condvar)>>>,
+    gates: Mutex<std::collections::HashMap<String, Gate>>,
     fail_keys: Mutex<std::collections::HashSet<String>>,
     count: AtomicUsize,
 }

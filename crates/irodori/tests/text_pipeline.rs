@@ -39,7 +39,7 @@ const TEXT_D: &str = "今日は朝から小雨が降っていましたが、午�
 #[test]
 fn text_and_caption_conditions_match_pytorch() {
     let Some(refs) = testing::refs() else {
-        eprintln!("no reference outputs (run backend/scripts/dump_irodori_ref.py); skipping");
+        eprintln!("no reference outputs (run tools/reference/dump_irodori_ref.py); skipping");
         return;
     };
     let Some(dir) = testing::checkpoint_dir() else {

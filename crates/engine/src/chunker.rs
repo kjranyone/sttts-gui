@@ -65,10 +65,8 @@ pub fn char_mora(c: char) -> f64 {
         0.0
     } else if is_hiragana(c) || is_katakana(c) {
         1.0
-    } else if is_kanji(c) {
-        2.0 // 音読み2モーラ前後が多い
-    } else if c.is_numeric() {
-        2.0
+    } else if is_kanji(c) || c.is_numeric() {
+        2.0 // 漢字は音読み2モーラ前後が多い。数字も2モーラ程度
     } else if c.is_ascii_alphabetic() {
         0.7 // 英字はおおよそ
     } else {
@@ -128,12 +126,9 @@ fn cut_first(text: &[char], mora_min: f64, mora_max: f64) -> Option<usize> {
         }
     }
     // 2) 自然な切れ目: [mora_min, mora_max] の中で最も後ろ、無ければ 2*mora_max まで延長して最初
-    let mut best = None;
-    for i in 1..text.len() {
-        if mora_min <= prefix[i] && prefix[i] <= mora_max && is_natural_boundary(text, i) && tail_ok(i) {
-            best = Some(i);
-        }
-    }
+    let best = (1..text.len())
+        .rev()
+        .find(|&i| mora_min <= prefix[i] && prefix[i] <= mora_max && is_natural_boundary(text, i) && tail_ok(i));
     if best.is_some() {
         return best;
     }

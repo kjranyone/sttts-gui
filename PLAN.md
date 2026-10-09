@@ -1,3 +1,6 @@
+> **注意(歴史的文書)**: これは最初期(Python / PySide 構想)の計画書で、現在の構成とは異なります。
+> 現在は Rust 1 プロセス(GUI + `crates/engine`)で、Python は使いません。構成は `README.md` / `AGENTS.md` / `docs/irodori-rs.md` を参照してください。
+
 # sttts-gui — 実装計画(Windows 11 + Intel Arc B570 向け)
 
 > **[2026-10-08 追記] アーキテクチャ v2(GPUI 版)への移行について**

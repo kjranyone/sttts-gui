@@ -29,6 +29,7 @@ pub struct TtsRequest<'a> {
     pub sampling: &'a Map<String, Value>,
 }
 
+#[derive(Debug)]
 pub struct TtsOutput {
     /// 16bit PCM の WAV
     pub wav: Vec<u8>,

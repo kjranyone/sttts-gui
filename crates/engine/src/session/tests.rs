@@ -174,7 +174,7 @@ struct ScriptVad {
 }
 
 impl ScriptVad {
-    fn new(script: &[((usize, usize), VadEvent)]) -> (Box<dyn Vad>, Arc<Mutex<usize>>) {
+    fn boxed(script: &[((usize, usize), VadEvent)]) -> (Box<dyn Vad>, Arc<Mutex<usize>>) {
         let resets = Arc::new(Mutex::new(0));
         (Box::new(Self { script: script.iter().copied().collect(), frame: 0, resets: Arc::clone(&resets) }), resets)
     }
@@ -225,7 +225,7 @@ fn f(n: usize) -> usize {
 #[test]
 fn segmenter_emits_final_with_speech_end_timestamp() {
     // 発話: 2 フレーム目で開始、40 フレーム目で終了検出。end サンプル = 30 フレーム目
-    let (vad, resets) = ScriptVad::new(&[((0, 2), VadEvent::Start(f(2) as i64)), ((0, 40), VadEvent::End(f(30) as i64))]);
+    let (vad, resets) = ScriptVad::boxed(&[((0, 2), VadEvent::Start(f(2) as i64)), ((0, 40), VadEvent::End(f(30) as i64))]);
     let rec = Arc::new(Recorder::default());
     let t = Arc::new(Mutex::new(100.0));
     let mut seg = VadSegmenter::new(vad, Box::new(RecSink(rec.clone())), 0.0).with_clock(clock_at(t));
@@ -274,7 +274,7 @@ impl AsrEngine for StreamAsr {
 fn segmenter_streams_during_speech_and_ends_before_final_job() {
     let rec = Arc::new(Recorder::default());
     let asr = Arc::new(StreamAsr { events: Mutex::default(), recorder: rec.clone() });
-    let (vad, _) = ScriptVad::new(&[((0, 0), VadEvent::Start(0)), ((0, 20), VadEvent::End(f(15) as i64))]);
+    let (vad, _) = ScriptVad::boxed(&[((0, 0), VadEvent::Start(0)), ((0, 20), VadEvent::End(f(15) as i64))]);
     let mut seg = VadSegmenter::new(vad, Box::new(RecSink(rec.clone())), 0.0).with_stream_asr(asr);
     seg.feed(&vec![1.0; f(10)], None);
     {
@@ -292,7 +292,7 @@ fn segmenter_streams_during_speech_and_ends_before_final_job() {
 fn segmenter_stream_includes_audio_before_vad_start() {
     let rec = Arc::new(Recorder::default());
     let asr = Arc::new(StreamAsr { events: Mutex::default(), recorder: rec.clone() });
-    let (vad, _) = ScriptVad::new(&[((0, 3), VadEvent::Start(f(3) as i64)), ((0, 20), VadEvent::End(f(16) as i64))]);
+    let (vad, _) = ScriptVad::boxed(&[((0, 3), VadEvent::Start(f(3) as i64)), ((0, 20), VadEvent::End(f(16) as i64))]);
     let mut seg = VadSegmenter::new(vad, Box::new(RecSink(rec.clone())), 0.0).with_stream_asr(asr.clone());
     let samples: Vec<f32> = (0..21).flat_map(|i| vec![i as f32; FRAME]).collect();
     seg.feed(&samples, None);
@@ -305,7 +305,7 @@ fn segmenter_stream_includes_audio_before_vad_start() {
 
 #[test]
 fn segmenter_speech_end_after_reset_uses_absolute_position() {
-    let (vad, _) = ScriptVad::new(&[
+    let (vad, _) = ScriptVad::boxed(&[
         ((0, 0), VadEvent::Start(0)),
         ((0, 20), VadEvent::End(f(10) as i64)),
         ((1, 5), VadEvent::Start(f(5) as i64)),
@@ -323,7 +323,7 @@ fn segmenter_speech_end_after_reset_uses_absolute_position() {
 
 #[test]
 fn segmenter_submits_partials_on_interval_and_handles_unaligned_blocks() {
-    let (vad, _) = ScriptVad::new(&[((0, 0), VadEvent::Start(0))]);
+    let (vad, _) = ScriptVad::boxed(&[((0, 0), VadEvent::Start(0))]);
     let rec = Arc::new(Recorder::default());
     let t = Arc::new(Mutex::new(0.0));
     let mut seg = VadSegmenter::new(vad, Box::new(RecSink(rec.clone())), 0.5).with_clock(clock_at(t.clone()));
@@ -398,7 +398,7 @@ impl AudioSource for ListSource {
 
 fn session_with(host: Arc<HostLog>, asr: AsrSource, block_value: f32, stopped: Arc<AtomicBool>) -> LiveSession {
     let blocks = vec![vec![block_value; FRAME]; 60];
-    let (vad, _) = ScriptVad::new(&[((0, 5), VadEvent::Start(f(5) as i64)), ((0, 50), VadEvent::End(f(40) as i64))]);
+    let (vad, _) = ScriptVad::boxed(&[((0, 5), VadEvent::Start(f(5) as i64)), ((0, 50), VadEvent::End(f(40) as i64))]);
     LiveSession::start(
         host,
         SessionConfig { partial_interval_ms: 0, utterance_start: 1 },

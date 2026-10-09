@@ -4,8 +4,8 @@ PyTorch の実行は CPU・fp32 のみ(XPU / GPU には触れない)。各ケー
 (トークナイザ、ModernBERT、条件エンコーダ、長さ予測、DiT の各ステップ、codec のデコード、透かし)を
 safetensors に保存する。Rust 側のテストはこれを読んで段階ごとに突き合わせる。
 
-使い方:  cd backend && uv run --no-sync python scripts/dump_irodori_ref.py [出力ディレクトリ]
-既定の出力先: ../target/irodori-ref
+使い方:  cd tools/reference && uv run python dump_irodori_ref.py [出力ディレクトリ]
+既定の出力先: <repo>/target/irodori-ref
 """
 
 from __future__ import annotations

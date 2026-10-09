@@ -28,7 +28,7 @@ use crate::performance::{AcousticObservation, Delivery, observe, plan_delivery};
 use crate::session::{AsrSource, AudioSource, LiveSession, OnBlock, SessionConfig, SessionHost, Timing, Vad};
 use crate::sink::Sink;
 use crate::tts::{MockTts, TtsEngine, TtsOutput, TtsRequest, check_sampling_overrides};
-use crate::util::{lock, ms, now};
+use crate::util::{join_timeout, lock, ms, now};
 
 pub const IDLE: &str = "idle";
 pub const LOADING: &str = "loading";
@@ -38,6 +38,9 @@ pub const ERROR: &str = "error";
 /// 停止→再開の最小間隔(秒)。USB オーディオの短時間反復 open/close はドライバクラッシュを
 /// 引き起こした実績あり(BugCheck 0xD1、2026-10 に2度)。
 pub const SESSION_RESTART_COOLDOWN_S: f64 = 1.5;
+
+/// 終了時に TTS ワーカーの完了を待つ上限
+const TTS_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 const DEVICE_FATAL_MARKERS: [&str; 9] = [
     "DEVICE_LOST",
@@ -340,8 +343,10 @@ impl Backend {
         if let Some(h) = lock(&self.dispatcher).take() {
             let _ = h.join();
         }
+        // 合成中の 1 チャンクは中断できない。モデルのダウンロード/ロード中に閉じても固まらないよう、
+        // 待つのは短い時間だけにする(残りはプロセス終了で止まる。マイクは dispatcher の teardown で解放済み)
         if let Some(h) = lock(&self.tts_thread).take() {
-            let _ = h.join();
+            join_timeout(h, TTS_JOIN_TIMEOUT);
         }
     }
 }
@@ -406,7 +411,6 @@ impl Inner {
         self.sink.send(BackendMessage::Hello {
             protocol: PROTOCOL_VERSION,
             mock: self.opts.mock,
-            python: None,
             backend_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             models: model_catalog(),
         });
@@ -773,14 +777,12 @@ impl Inner {
             if count < needed {
                 return;
             }
-            if let Some(cur_id) = st.by_utterance.get(&utterance) {
-                if let Some(cur) = st.entries.get(cur_id) {
-                    if cur.text == candidate && cur.voice_key == key && cur.status != SpecStatus::Discarded {
-                        return; // 既に同じ候補で投機済み
-                    }
-                    if cur.request.is_some() {
-                        return; // 既に確定に束縛済み
-                    }
+            if let Some(cur) = st.by_utterance.get(&utterance).and_then(|id| st.entries.get(id)) {
+                if cur.text == candidate && cur.voice_key == key && cur.status != SpecStatus::Discarded {
+                    return; // 既に同じ候補で投機済み
+                }
+                if cur.request.is_some() {
+                    return; // 既に確定に束縛済み
                 }
             }
             for e in st.entries.values_mut() {
@@ -981,10 +983,8 @@ impl Inner {
                 let st = lock(&self.state);
                 st.tts_phase == READY && st.tts_loaded_model.as_deref() == Some(model.as_str())
             };
-            if ready {
-                if let Some(e) = lock(&self.engine).clone() {
-                    return Ok(e);
-                }
+            if let Some(e) = lock(&self.engine).clone().filter(|_| ready) {
+                return Ok(e);
             }
         }
         if let Some(old) = lock(&self.engine).take() {
