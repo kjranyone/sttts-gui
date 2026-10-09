@@ -181,6 +181,8 @@ class BackendApp:
 
         # ASR プリロード(asr.preload)
         self._asr_engine = None
+        # _asr_engine を作ったときの _asr_config_key()。現設定と一致するときだけ流用する
+        self._asr_engine_key = None
         self._asr_lock = threading.Lock()
         self._asr_preload_key = None
 
@@ -298,6 +300,10 @@ class BackendApp:
         # (GUI の初期 configure には asr セクションが無いため)
         self._maybe_schedule_asr_preload()
 
+        # GUI は UTF-8 の NDJSON を送る。Windows の既定(cp932)で読むと日本語の
+        # テキスト・キャプション・声ファイル名が化けて TTS が落ちる
+        if hasattr(sys.stdin, "reconfigure"):
+            sys.stdin.reconfigure(encoding="utf-8")
         for line in sys.stdin:
             line = line.strip()
             if not line:
@@ -365,6 +371,13 @@ class BackendApp:
             TtsJob(request=-1, chunk=0, text=WARMUP_TEXT, caption=caption, ref_wavs=ref_wavs, seed=0, warmup=True)
         )
 
+    def _asr_config_key(self) -> tuple:
+        """エンジンを作り直すべき ASR 設定の組。Gemini はキー/モードの変更でも作り直す。"""
+        asr_cfg = self.config["asr"]
+        return (asr_cfg.get("engine"), asr_cfg.get("model"), asr_cfg.get("nemotron_model_dir"),
+                asr_cfg.get("nemotron_chunk_ms"), asr_cfg.get("reazon_model_dir"),
+                asr_cfg.get("gemini_model"), asr_cfg.get("gemini_api_key"), asr_cfg.get("gemini_mode"))
+
     def _maybe_schedule_asr_preload(self) -> None:
         """asr.preload が有効なら ASR エンジンを起動時にロードしてキャッシュする。
         「マイク開始」を押した瞬間から(ロード待ちなく)文字起こしが始まるようにする
@@ -372,8 +385,7 @@ class BackendApp:
         asr_cfg = self.config["asr"]
         if not asr_cfg.get("preload", True) or self.mock:
             return
-        key = (asr_cfg.get("engine"), asr_cfg.get("model"), asr_cfg.get("nemotron_model_dir"),
-               asr_cfg.get("nemotron_chunk_ms"), asr_cfg.get("reazon_model_dir"))
+        key = self._asr_config_key()
         if self._asr_preload_key == key:
             return
         self._asr_preload_key = key
@@ -386,12 +398,27 @@ class BackendApp:
                 engine.load(lambda m, f=None: self._set_asr("loading", m))
         except Exception as e:
             log.exception("asr preload failed")
-            self._asr_preload_key = None  # 再試験できるように
+            with self._asr_lock:
+                if self._asr_preload_key != key:
+                    return  # 既に別設定のプリロードへ移っている。古い失敗は報告しない
+                self._asr_preload_key = None  # 再試験できるように
             self._set_asr(ERROR, f"ASRプリロード失敗: {e}")
             return
         with self._asr_lock:
-            old = self._asr_engine
-            self._asr_engine = engine
+            if self._asr_preload_key != key:
+                # ロード中に設定が変わった(別のプリロードが走っている)。この結果は捨てる
+                stale, old = engine, None
+            else:
+                old = self._asr_engine
+                self._asr_engine = engine
+                self._asr_engine_key = key
+                stale = None
+        if stale is not None:
+            try:
+                stale.unload() if hasattr(stale, "unload") else None
+            except Exception:
+                log.exception("stale asr unload failed")
+            return
         if old is not None:
             try:
                 old.unload() if hasattr(old, "unload") else None
@@ -678,6 +705,10 @@ class BackendApp:
                 cache_conditions=bool(cfg.get("cache_conditions", True)),
                 ref_latent_cache=bool(cfg.get("ref_latent_cache", True)),
                 ref_cache_dir=cfg.get("ref_cache_dir"),
+                sampling=cfg.get("sampling"),
+                codec_repo=str(cfg.get("codec_repo") or ""),
+                codec_device=cfg.get("codec_device"),
+                codec_precision=str(cfg.get("codec_precision") or "fp32"),
             )
         engine.load(progress)
         self._engine = engine
@@ -695,16 +726,13 @@ class BackendApp:
                 ref_wavs=job.ref_wavs,
                 seed=job.seed,
                 progress=ProgressFn(self, "tts"),
+                sampling=self.config["tts"].get("sampling"),
             )
 
     def _emit_chunk(
         self,
         request: int,
         chunk: int,
-                sampling=cfg.get("sampling"),
-                codec_repo=str(cfg.get("codec_repo") or ""),
-                codec_device=cfg.get("codec_device"),
-                codec_precision=str(cfg.get("codec_precision") or "fp32"),
         text: str,
         result: SynthResult,
         *,
@@ -722,7 +750,6 @@ class BackendApp:
             if info is None or info["cancelled"]:
                 log.info("drop audio of cancelled request %d chunk %d", request, chunk)
                 return
-                sampling=self.config["tts"].get("sampling"),
         path = self._save_wav(result.wav_bytes)
         audio_msg = {
             "type": "tts_audio",
@@ -877,9 +904,11 @@ class BackendApp:
                     def source_factory(on_block):
                         return WavSource(self.input_wavs, on_block, on_eof=on_eof)
 
-                # プリロード済み ASR があれば注入(マイク開始→即文字起こし可能)
+                # プリロード済み ASR があれば注入(マイク開始→即文字起こし可能)。
+                # 現設定で作ったものに限る(切替後のプリロード失敗/ロード中に旧エンジンを使わない)
                 with self._asr_lock:
-                    preloaded = self._asr_engine
+                    if self._asr_engine_key == self._asr_config_key():
+                        preloaded = self._asr_engine
                 if preloaded is not None:
                     session = LiveSession(self, source_factory=source_factory, asr_factory=lambda: preloaded)
                 else:

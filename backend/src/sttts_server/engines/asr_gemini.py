@@ -67,8 +67,8 @@ class GeminiLiveAsr:
         key = resolve_api_key(self.api_key)
         if not key:
             raise RuntimeError(
-                "Gemini API キーがありません。data/backend.json の asr.gemini_api_key または"
-                " 環境変数 GEMINI_API_KEY を設定してください(AI Studio で発行)"
+                "Gemini API キーがありません。GUI の「キー」欄に AI Studio で発行したキーを"
+                "入力してください(data/backend.json の asr.gemini_api_key / 環境変数 GEMINI_API_KEY でも可)"
             )
         if progress is not None:
             progress(f"Gemini 接続準備: {self.model_id} ({self.mode})")

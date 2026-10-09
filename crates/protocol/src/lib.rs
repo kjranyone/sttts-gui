@@ -253,6 +253,10 @@ pub struct AsrConfig {
     pub language: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vad_min_silence_ms: Option<u64>,
+    /// Gemini(engine = "gemini")の API キー。空文字は「GUI では未設定」
+    /// (backend は環境変数 GEMINI_API_KEY / GOOGLE_API_KEY にフォールバック)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gemini_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
