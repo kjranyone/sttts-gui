@@ -1,25 +1,18 @@
-//! 右レール: ライブ / 届け方 / 声 / 認識。主画面に常に出す設定はここだけに置く。
+//! 右レール: ライブ / 音声キュー / 声 / 認識。主画面に常に出す設定はここだけに置く。
 
 use gpui_kit::component::button::*;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::select::Select;
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::help::HelpTopic;
 use super::{GEMINI_KEY_URL, MicTransition, StttsApp, kit, phase_label};
 use crate::theme::{self, c};
 
 const RAIL_W: f32 = 340.;
-
-fn segment(id: &'static str, label: &'static str, selected: bool) -> Button {
-    Button::new(id)
-        .small()
-        .flex_1()
-        .label(label)
-        .when(selected, |b| b.primary())
-        .when(!selected, |b| b.ghost())
-}
 
 impl StttsApp {
     pub(super) fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -132,62 +125,84 @@ impl StttsApp {
         )
     }
 
+    /// 確定文を音声キューへ自動で流すか(OFF = カードで止めて手動で発話)と、テンポと間の再現。
     fn render_delivery(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let auto = self.auto_speak;
-        let expressive = self.performance_enabled;
+        let weak_auto = cx.weak_entity();
+        let weak_expr = cx.weak_entity();
         kit::section(
-            "届け方",
+            "音声キュー",
             v_flex()
-                .gap_2()
-                .child(
-                    // 2択の切替。選ばれている側を塗りつぶして、今の届け方を一目で分かるようにする
-                    h_flex()
-                        .gap_0p5()
-                        .p_0p5()
-                        .rounded_md()
-                        .bg(c(theme::ELEVATED))
-                        .child(segment("mode-auto", "すぐ話す", auto).on_click(
-                            cx.listener(|this, _, _, cx| this.set_auto_speak(true, cx)),
-                        ))
-                        .child(segment("mode-confirm", "確認してから", !auto).on_click(
-                            cx.listener(|this, _, _, cx| this.set_auto_speak(false, cx)),
-                        )),
-                )
-                .child(
-                    h_flex()
-                        .gap_0p5()
-                        .p_0p5()
-                        .rounded_md()
-                        .bg(c(theme::ELEVATED))
-                        .child(segment("expression-on", "話し方を反映", expressive).on_click(
-                            cx.listener(|this, _, _, cx| this.set_performance_enabled(true, cx)),
-                        ))
-                        .child(segment("expression-off", "明瞭に読む", !expressive).on_click(
-                            cx.listener(|this, _, _, cx| this.set_performance_enabled(false, cx)),
-                        )),
-                ),
+                .gap_3()
+                .child(kit::with_help(
+                    Switch::new("auto-play")
+                        .checked(self.auto_speak)
+                        .label("自動再生")
+                        .on_click(move |checked, _, cx| {
+                            let _ = weak_auto.update(cx, |this, cx| this.set_auto_speak(*checked, cx));
+                        }),
+                    self.help_icon(HelpTopic::AutoPlay, cx),
+                ))
+                .child(kit::with_help(
+                    Switch::new("performance")
+                        .checked(self.performance_enabled)
+                        .label("テンポと間を再現")
+                        .on_click(move |checked, _, cx| {
+                            let _ = weak_expr.update(cx, |this, cx| this.set_performance_enabled(*checked, cx));
+                        }),
+                    self.help_icon(HelpTopic::Tempo, cx),
+                )),
         )
     }
 
     fn render_voice(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        kit::section(
+        let icon = self
+            .selected_voice_name
+            .as_deref()
+            .and_then(|n| self.voice_image(n));
+        let has_voice = self.selected_voice_name.is_some();
+        kit::section_with_help(
             "声",
+            self.help_icon(HelpTopic::Voice, cx),
             v_flex()
                 .gap_3()
                 .child(
                     h_flex()
                         .gap_1()
+                        .items_center()
+                        .when_some(icon, |d, path| {
+                            d.child(
+                                img(path)
+                                    .size(px(32.))
+                                    .flex_shrink_0()
+                                    .rounded_md()
+                                    .object_fit(ObjectFit::Cover),
+                            )
+                        })
                         .child(div().flex_1().min_w_0().child(Select::new(&self.voice_select).small()))
                         .child(
-                            Button::new("open-voices")
+                            Button::new("add-voice")
                                 .small()
                                 .ghost()
-                                .icon(IconName::FolderOpen)
-                                .tooltip("声フォルダ")
-                                .on_click(cx.listener(|this, _, window, cx| this.open_voice_folder(window, cx))),
-                        ),
+                                .icon(IconName::Plus)
+                                .tooltip("声を追加(wav / flac / 画像。ドロップも可)")
+                                .on_click(cx.listener(|this, _, _, cx| this.pick_voice_files(cx))),
+                        )
+                        .when(has_voice, |d| {
+                            d.child(
+                                Button::new("delete-voice")
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::Delete)
+                                    .tooltip("この声を削除")
+                                    .on_click(cx.listener(|this, _, window, cx| this.delete_selected_voice(window, cx))),
+                            )
+                        }),
                 )
-                .child(kit::field("話し方", Input::new(&self.caption_input).small())),
+                .child(kit::field_with_help(
+                    "話し方",
+                    self.help_icon(HelpTopic::Style, cx),
+                    Input::new(&self.caption_input).small(),
+                )),
         )
     }
 
@@ -224,8 +239,9 @@ impl StttsApp {
             v_flex()
         };
 
-        kit::section(
+        kit::section_with_help(
             "認識",
+            self.help_icon(HelpTopic::Recognition, cx),
             v_flex()
                 .gap_3()
                 .child(Select::new(&self.asr_select).small())

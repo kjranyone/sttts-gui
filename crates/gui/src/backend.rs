@@ -76,6 +76,56 @@ pub fn default_spawn(mock: bool, output_dir: &Path) -> BackendSpawn {
     }
 }
 
+/// 実エンジン起動前に依存を同期する(`uv sync --inexact --extra <torch>`)。
+/// pyproject.toml の依存追加が手動操作なしで反映される。最新なら数秒で終わる。
+/// 進捗は uv の出力をそのまま `tx_log` へ流す。mock と STTTS_BACKEND_CMD 指定時は何もしない。
+/// PyTorch の extra は dev.ps1 と共有する backend/.venv/.sttts-backend に記録する(既定 xpu)。
+pub fn sync_dependencies(mock: bool, root: &Path, tx_log: &Sender<String>) -> Result<()> {
+    if mock || std::env::var_os("STTTS_BACKEND_CMD").is_some() {
+        return Ok(());
+    }
+    let dir = root.join("backend");
+    let marker = dir.join(".venv").join(".sttts-backend");
+    let extra = std::fs::read_to_string(&marker)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| matches!(s.as_str(), "xpu" | "cu128" | "cpu"))
+        .unwrap_or_else(|| "xpu".to_string());
+
+    let _ = tx_log.send_blocking(format!("依存を同期中: uv sync --extra {extra}(初回は数GBのダウンロード)"));
+    let mut cmd = Command::new("uv");
+    cmd.args(["sync", "--inexact", "--extra", &extra])
+        .current_dir(&dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd
+        .spawn()
+        .context("uv が見つかりません。https://docs.astral.sh/uv/ からインストールしてください")?;
+    // 進捗は CR 区切りで更新されるため行単位に整形して流す
+    if let Some(stderr) = child.stderr.take() {
+        for line in BufReader::new(stderr).lines().map_while(|l| l.ok()) {
+            let line = line.rsplit('\r').next().unwrap_or("").trim_end();
+            if !line.is_empty() {
+                let _ = tx_log.send_blocking(format!("[uv] {line}"));
+            }
+        }
+    }
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(anyhow!("uv sync --extra {extra} に失敗しました ({status})"));
+    }
+    if dir.join(".venv").is_dir() {
+        let _ = std::fs::write(&marker, &extra);
+    }
+    Ok(())
+}
+
 /// backend/.venv の python を探す(Windows: Scripts/python.exe、Linux/macOS: bin/python)。
 pub fn find_venv_python(root: &std::path::Path) -> Option<std::path::PathBuf> {
     ["backend/.venv/Scripts/python.exe", "backend/.venv/bin/python"]

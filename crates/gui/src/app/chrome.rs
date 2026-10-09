@@ -22,11 +22,20 @@ impl Render for StttsApp {
             });
         }
 
+        if let Some(paths) = self.pending_voice_import.take() {
+            self.import_voice_files(&paths, window, cx);
+        }
+
         div()
+            .id("root")
             .relative()
             .size_full()
             .bg(c(theme::BG))
             .text_color(c(theme::TEXT))
+            .drag_over::<ExternalPaths>(|d, _, _, _| d.bg(ca(theme::VOICE, 0x14)))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.import_voice_files(paths.paths(), window, cx);
+            }))
             .child(
                 v_flex()
                     .size_full()
@@ -47,6 +56,7 @@ impl Render for StttsApp {
                     .when(self.log_open, |d| d.child(self.render_log(cx)))
                     .child(self.render_status_bar(cx)),
             )
+            .children(self.render_help_modal(cx))
             .children(self.render_mic_overlay())
     }
 }

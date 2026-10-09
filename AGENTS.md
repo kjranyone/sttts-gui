@@ -8,7 +8,7 @@ sttts-gui で作業するエージェントへの指示。人間のコントリ�
 
 ## 開発コマンド
 
-- 起動: `.\dev.ps1`(毎回差分 `cargo build` → GUI 起動。`-Mode mock|real`、`-Sync`、`-Backend xpu|cu128|cpu`)
+- 起動: `.\dev.ps1`(real は毎回 `uv sync`、続けて差分 `cargo build` → GUI 起動。`-Mode mock|real`、`-Backend xpu|cu128|cpu` は初回のみ指定し以降は記録される。依存は自動同期されるので手動の `uv sync` 不要)
 - バックエンドテスト: `cd backend && uv run --no-sync pytest`(実モデル不要。fake で全体を検証する設計)
 - Rust: `cargo check` / `cargo build --release`(MSRV 1.95。`rust-version` 宣言済み)
 
@@ -37,6 +37,7 @@ sttts-gui で作業するエージェントへの指示。人間のコントリ�
   - 遷移中(開始中/停止中)の再入・連打を GUI と backend の両面で拒否する。デバイスの短時間反復 open/close は BugCheck 0xD1 の実績あり(2026-10 に2度)。
   - 停止→再開にはクールダウン(`SESSION_RESTART_COOLDOWN_S`)を挟む。
   - ライフサイクルを変える変更は `test_mic_first_*` / `test_session_restart_cooldown_*` 等の該当テストを必ず通す。
+- **余計なフラグを立てない。** 必要な処理(依存の同期・ディレクトリ作成・モデル取得など)は既定で自動実行し、ユーザーに手動の前準備やオプション指定(`-Sync` のようなフラグ)を要求しない。設定は一度決まれば記録して再指定を不要にする。フラグを足したくなったら、まず「何も指定しなくても正しく動く」設計にできないかを考える。
 - **後方互換シムを書かない。** 依存の破壊的変更はフロア引き上げで対処する(例: silero-vad 6 の `reset_states()` → `pyproject.toml` を `>=6` に)。
 - バックエンドのスレッド構成(マイク → VAD スレッド → ASR ワーカー)は `backend/src/sttts_server/session.py` の docstring を参照。**ASR ロードはマイクオープンと並行**(mic-first)であり、レベルメーターはいかなるブロッキング中も止まらないこと。この挙動のテスト(`test_mic_first_*`)があるので変更時は通すこと。
 - GUI⇄backend 間プロトコルは `crates/protocol/src/lib.rs` と `backend/src/sttts_server/protocol.py` の**両方を必ず同期**して変更する。

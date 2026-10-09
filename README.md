@@ -75,7 +75,7 @@ uv run --no-sync python -c "import torch; print(torch.cuda.is_available(), torch
 uv run --no-sync python -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())"
 ```
 
-`dev.ps1` からは `.\dev.ps1 -Mode real -Sync -Backend cu128`。Linux / macOS / GPU なしは
+`dev.ps1` からは `.\dev.ps1 -Mode real -Backend cu128`。Linux / macOS / GPU なしは
 `uv sync --extra cpu`(GUI の backend 探索は `backend/.venv/bin/python` にも対応)。
 
 - **TTS**: `tts.device=auto` で CUDA を使います。`tts.precision=auto` は compute capability
@@ -96,12 +96,11 @@ uv run --no-sync python -c "import ctranslate2; print(ctranslate2.get_cuda_devic
 ```powershell
 .\dev.ps1                        # モードを対話式で選択(1: real / 2: mock、空欄で real)
 .\dev.ps1 -Mode real             # 実エンジンモードを直接指定(対話なし・自動化向け)
-.\dev.ps1 -Mode real -Sync       # uv sync --extra xpu してから起動
-.\dev.ps1 -Mode real -Sync -Backend cu128   # NVIDIA GPU 用に同期してから起動
+.\dev.ps1 -Mode real -Backend cu128   # NVIDIA GPU 用に同期して起動(以降は記録され省略可)
 .\dev.ps1 -DebugBuild            # debug プロファイルで起動
 ```
 
-スクリプトは 前提確認(cargo / uv)→ 必要時のみ `uv sync --extra <Backend>`(既定 xpu)→
+スクリプトは 前提確認(cargo / uv)→ `uv sync --extra <Backend>`(real は毎回。既定 xpu、初回指定は記録)→
 `cargo build`(毎回実行。変更がなければ差分ビルドで数秒)→ GUI 起動、を行います。
 コード編集後に古いバイナリが起動することはありません。
 
@@ -125,8 +124,8 @@ cargo run --release -p sttts-gui -- --real
   中断できませんが、完了後に結果を捨てるので鳴りません)
 - **右レール**
   - **ライブ**: ライブ開始/停止とマイクの入力レベル
-  - **届け方**: 「すぐ話す」(確定したら自動で発話)/「確認してから」(カードで止まり、
-    「この内容で話す」「訂正する」「話さない」を選ぶ)。「話し方を反映する」は
+  - **音声キュー**: 「自動再生」ON で確定文をそのまま発話。OFF ではカードで止まり、
+    「この内容で話す」「訂正する」「話さない」を選ぶ。「テンポと間を再現」は
     元音声の速さと、任意の感情モデルによる表現を Irodori に渡します
   - **声**: 声バンクの選択と、話し方の指示(Irodori の caption)
   - **認識**: クラウド(Gemini)/ ローカルの切替。Gemini の API キーはここで入力します
@@ -162,8 +161,10 @@ uv run --no-sync python -m sttts_server --self-check-asr
 
 ### 声のバンク(voice cloning)
 
-`data/voices/` に参照音声の wav(10秒程度・話者の声)を置くと、GUI の右レール「声」から
-選択できるようになります(フォルダのボタンで開けます)。選択すると Irodori-TTS は
+参照音声(wav / flac、10秒程度・話者の声)をアプリのウィンドウへドラッグ&ドロップするか、
+右レール「声」の「＋」から選ぶと `data/voices/` に取り込まれ、そのまま選択されます。
+画像(png / jpg / webp)を落とすと選択中の声のアイコンになり、音声と一緒に落とせば
+新しい声に付きます。「ゴミ箱」で削除できます。Explorer での管理は不要です。選択すると Irodori-TTS は
 その音声を話者参照として合成し、話し方を模倣します。未選択(既定の声)は
 キャプション/自動音質での合成になります。選択は `data/config.json` に保存されます。
 
@@ -206,7 +207,7 @@ GUI に UI の無い設定は `data/backend.json`(任意。`STTTS_CONFIG` 環境
 | `pipeline.chunk_max_chars` | `80` | これを超える塊は読点 / 文節境界で分割(句読点の無い ASR 出力対策) |
 | `pipeline.speculative_tts` | `false` | 投機的 TTS(下記) |
 | `pipeline.speculative_stable_partials` | `2` | 同じ先頭チャンクが何回連続したら先行合成するか |
-| `pipeline.performance_enabled` | `true` | 元音声の速さと任意の感情候補を Irodori の発話単位指示へ写す。GUI の「話し方を反映する」で切替 |
+| `pipeline.performance_enabled` | `true` | 元音声の速さと任意の感情候補を Irodori の発話単位指示へ写す。GUI の「テンポと間を再現」で切替 |
 | `pipeline.emotion_engine` | `none` | `emotion2vec` を選ぶと、ローカル CPU モデルを転写と並行実行する。任意 extra `emotion` が必要 |
 | `pipeline.emotion_model_dir` | `null` | 取得済み emotion2vec+ のローカルフォルダ。マイク稼働中にモデルをダウンロードしない |
 | `pipeline.performance_wait_ms` | `150` | ASR 確定後に表現分析を待つ上限。超過時は表現を付けず発話 |

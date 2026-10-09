@@ -5,13 +5,14 @@
 //! (docs/acting-reconstruction-design.md「UI への反映」):
 //!
 //! - **何を話したか** — ストリーム(中央)。1ターン = 入力1件と、それを届けた声の対応
-//! - **どう伝えるか** — 右レールの「届け方」(すぐ話す / 確認してから)
+//! - **どう伝えるか** — 右レールの「音声キュー」(自動再生 ON/OFF、テンポと間の再現)
 //! - **どの声で届けるか** — 右レールの「声」
 //!
 //! 環境で一度決まる設定(入出力デバイス、TTS モデル、seed)は「詳細設定」シート
 //! (既定は閉)に置き、主画面に出さない(AGENTS.md「設計の前提」)。
 
 mod chrome;
+mod help;
 mod kit;
 mod rail;
 mod sheet;
@@ -80,13 +81,15 @@ pub struct StttsApp {
     stream_scroll: gpui::ScrollHandle,
     composer: Entity<TextareaState>,
 
-    // ---- 届け方
-    /// 確定文を自動で話す(false = 確認してから話す)
+    // ---- 音声キュー
+    /// 確定文を自動で音声キューへ流す(false = カードで止めて手動で発話)
     auto_speak: bool,
     performance_enabled: bool,
 
     // ---- 声
     voices: Vec<(String, PathBuf)>,
+    /// ファイル選択ダイアログの結果。Window が要るので render で取り込む。
+    pending_voice_import: Option<Vec<PathBuf>>,
     selected_voice_name: Option<String>,
     voice_select: Entity<SelectState<Vec<String>>>,
     /// 話し方の指示(Irodori の caption)
@@ -104,6 +107,8 @@ pub struct StttsApp {
 
     // ---- 詳細設定(環境で一度決まるもの)
     settings_open: bool,
+    /// 「?」から開いている解説
+    help_topic: Option<help::HelpTopic>,
     input_select: Entity<SelectState<Vec<String>>>,
     output_select: Entity<SelectState<Vec<String>>>,
     input_devices: Vec<AudioDeviceInfo>,
@@ -246,6 +251,7 @@ impl StttsApp {
             auto_speak,
             performance_enabled,
             voices,
+            pending_voice_import: None,
             selected_voice_name: saved_voice,
             voice_select,
             caption_input,
@@ -255,6 +261,7 @@ impl StttsApp {
             gemini_api_key,
             gemini_key_protected,
             settings_open: false,
+            help_topic: None,
             input_select,
             output_select,
             input_devices: Vec::new(),
@@ -375,12 +382,56 @@ impl StttsApp {
     // ---------- backend ----------
 
     fn start_backend(&mut self, cx: &mut Context<Self>) {
+        let (tx_events, rx_events) = async_channel::unbounded::<AnyMessage>();
+        let (tx_stderr, rx_stderr) = async_channel::unbounded::<String>();
+
+        // stderr(人間可読ログ)の取り込みループ。依存同期の進捗もここへ流れる
+        cx.spawn(async move |this, cx| {
+            while let Ok(line) = rx_stderr.recv().await {
+                let line = if line.starts_with("[uv]") { line } else { format!("[py] {line}") };
+                if this
+                    .update(cx, |app, cx| {
+                        app.push_log(line);
+                        if app.log_open {
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        // 依存の同期は UI を止めないようバックグラウンドで行い、完了後にバックエンドを起動する
+        self.status_hint = if self.mock { "バックエンド起動中…".into() } else { "依存を同期中…".into() };
+        let (mock, root, tx_sync) = (self.mock, self.root.clone(), tx_stderr.clone());
+        cx.spawn(async move |this, cx| {
+            let sync = cx
+                .background_executor()
+                .spawn(async move { backend::sync_dependencies(mock, &root, &tx_sync) })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                if let Err(e) = sync {
+                    app.push_log(format!("[error:deps] 依存の同期に失敗(既存の環境で続行): {e:#}"));
+                }
+                app.launch_backend(tx_events, tx_stderr, rx_events, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn launch_backend(
+        &mut self,
+        tx_events: async_channel::Sender<AnyMessage>,
+        tx_stderr: async_channel::Sender<String>,
+        rx_events: async_channel::Receiver<AnyMessage>,
+        cx: &mut Context<Self>,
+    ) {
         let output_dir: PathBuf = self.root.join("output");
         let _ = std::fs::create_dir_all(&output_dir);
         let spawn_cfg = backend::default_spawn(self.mock, &output_dir);
-
-        let (tx_events, rx_events) = async_channel::unbounded::<AnyMessage>();
-        let (tx_stderr, rx_stderr) = async_channel::unbounded::<String>();
 
         let handle = match backend::BackendHandle::spawn(spawn_cfg, tx_events, tx_stderr) {
             Ok(h) => h,
@@ -410,24 +461,6 @@ impl StttsApp {
                 app.turns.backend_restarted();
                 cx.notify();
             });
-        })
-        .detach();
-
-        // stderr(人間可読ログ)の取り込みループ
-        cx.spawn(async move |this, cx| {
-            while let Ok(line) = rx_stderr.recv().await {
-                if this
-                    .update(cx, |app, cx| {
-                        app.push_log(format!("[py] {line}"));
-                        if app.log_open {
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
         })
         .detach();
     }
@@ -758,7 +791,7 @@ impl StttsApp {
         playing || self.turns.iter().any(|t| t.status.is_active())
     }
 
-    // ---------- 届け方・声・認識 ----------
+    // ---------- 音声キュー・声・認識 ----------
 
     fn set_auto_speak(&mut self, on: bool, cx: &mut Context<Self>) {
         if self.auto_speak == on {
@@ -834,24 +867,100 @@ impl StttsApp {
         self.persist_settings(cx);
     }
 
-    /// 声バンクフォルダ(data/voices)を Explorer で開き、内容を再読込する。
-    fn open_voice_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// 声ライブラリへ取り込む(ドロップ/ファイル選択の共通入口)。
+    /// 音声(wav/flac)は data/voices へコピーして選択し、画像は選択中の声のアイコンにする。
+    /// 音声を先に処理するので、音声と画像を同時に渡せば新しい声に画像が付く。
+    fn import_voice_files(&mut self, paths: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
         let dir = self.root.join("data").join("voices");
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::process::Command::new("explorer").arg(&dir).spawn();
-        // フォルダを開いた後に追加された wav も選択できるように再スキャン
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            self.push_log(format!("[error:voice] 声フォルダを作れません: {e}"));
+            return;
+        }
+        let (audio, rest): (Vec<_>, Vec<_>) = paths.iter().partition(|p| is_voice_audio(p));
+        let mut imported = None;
+        for src in audio {
+            match copy_into_voice_bank(src, &dir) {
+                Ok(name) => {
+                    self.push_log(format!("声を追加: {name}"));
+                    imported = Some(name);
+                }
+                Err(e) => self.push_log(format!("[error:voice] {}: {e}", src.display())),
+            }
+        }
+        self.refresh_voices(imported.as_deref(), window, cx);
+        if let Some(name) = imported {
+            self.apply_voice(name, cx);
+        }
+        for src in rest {
+            if !is_voice_image(src) {
+                self.push_log(format!("[error:voice] 非対応のファイル: {}", src.display()));
+                continue;
+            }
+            let Some(name) = self.selected_voice_name.clone() else {
+                self.push_log("[error:voice] 画像は声を選んでから追加してください".into());
+                continue;
+            };
+            match set_voice_image(src, &dir, &name) {
+                Ok(()) => self.push_log(format!("声のアイコンを設定: {name}")),
+                Err(e) => self.push_log(format!("[error:voice] {}: {e}", src.display())),
+            }
+        }
+        cx.notify();
+    }
+
+    /// ファイル選択ダイアログから声を追加する。
+    fn pick_voice_files(&mut self, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: None,
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = rx.await {
+                let _ = this.update(cx, |this, cx| {
+                    // Window が要るので、取り込みは次の render で実行する
+                    this.pending_voice_import = Some(paths);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// 選択中の声をライブラリから削除し、既定の声に戻す。
+    fn delete_selected_voice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.selected_voice_name.clone() else { return };
+        let dir = self.root.join("data").join("voices");
+        if let Some((_, path)) = self.voices.iter().find(|(n, _)| *n == name) {
+            let _ = std::fs::remove_file(path);
+        }
+        remove_voice_images(&dir, &name);
+        self.push_log(format!("声を削除: {name}"));
+        self.refresh_voices(None, window, cx);
+        self.apply_voice(DEFAULT_VOICE_LABEL.to_string(), cx);
+        cx.notify();
+    }
+
+    /// data/voices を再スキャンして選択肢を更新する(`select` が None なら現在の選択を維持)。
+    fn refresh_voices(&mut self, select: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
         self.voices = scan_voice_bank(&self.root);
         let mut items = vec![DEFAULT_VOICE_LABEL.to_string()];
         items.extend(self.voices.iter().map(|(n, _)| n.clone()));
-        let selected = self
-            .selected_voice_name
-            .clone()
+        let selected = select
+            .map(str::to_string)
+            .or_else(|| self.selected_voice_name.clone())
+            .filter(|n| self.voices.iter().any(|(vn, _)| vn == n))
             .unwrap_or_else(|| DEFAULT_VOICE_LABEL.to_string());
         self.voice_select.update(cx, |s, cx| {
             s.set_items(items, window, cx);
             s.set_selected_value(&selected, window, cx);
         });
-        self.push_log(format!("声フォルダを開きました: {}(wav を置くと声として選べます)", dir.display()));
+    }
+
+    /// 声のアイコン画像(あれば)。
+    pub(super) fn voice_image(&self, name: &str) -> Option<PathBuf> {
+        find_voice_image(&self.root.join("data").join("voices"), name)
     }
 
     /// ASR プロバイダの選択適用(ローカル/クラウド)。次回のライブ開始から新エンジンで動く
@@ -1108,18 +1217,31 @@ fn open_log_file(root: &std::path::Path) -> Option<std::fs::File> {
     std::fs::File::create(dir.join("gui.log")).ok()
 }
 
-/// data/voices の wav を声バンクとして読み込む(ファイル名=話者名)。
+const VOICE_AUDIO_EXT: &[&str] = &["wav", "flac"];
+const VOICE_IMAGE_EXT: &[&str] = &["png", "jpg", "jpeg", "webp"];
+
+fn has_ext(p: &std::path::Path, exts: &[&str]) -> bool {
+    p.extension()
+        .and_then(|x| x.to_str())
+        .is_some_and(|x| exts.iter().any(|e| x.eq_ignore_ascii_case(e)))
+}
+
+fn is_voice_audio(p: &std::path::Path) -> bool {
+    has_ext(p, VOICE_AUDIO_EXT)
+}
+
+fn is_voice_image(p: &std::path::Path) -> bool {
+    has_ext(p, VOICE_IMAGE_EXT)
+}
+
+/// data/voices の音声(wav/flac)を声バンクとして読み込む(ファイル名=話者名)。
 fn scan_voice_bank(root: &std::path::Path) -> Vec<(String, PathBuf)> {
     let dir = root.join("data").join("voices");
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
             let p = e.path();
-            let is_wav = p
-                .extension()
-                .and_then(|x| x.to_str())
-                .is_some_and(|x| x.eq_ignore_ascii_case("wav"));
-            if is_wav {
+            if is_voice_audio(&p) {
                 if let Some(name) = p.file_stem().and_then(|s| s.to_str()).filter(|n| !n.is_empty()) {
                     out.push((name.to_string(), p.clone()));
                 }
@@ -1128,4 +1250,53 @@ fn scan_voice_bank(root: &std::path::Path) -> Vec<(String, PathBuf)> {
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
+}
+
+fn find_voice_image(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
+    VOICE_IMAGE_EXT
+        .iter()
+        .map(|e| dir.join(format!("{name}.{e}")))
+        .find(|p| p.is_file())
+}
+
+fn remove_voice_images(dir: &std::path::Path, name: &str) {
+    for e in VOICE_IMAGE_EXT {
+        let _ = std::fs::remove_file(dir.join(format!("{name}.{e}")));
+    }
+}
+
+/// 音声を声バンクへコピーし、声の名前(拡張子なし)を返す。同名があれば連番を付ける。
+fn copy_into_voice_bank(src: &std::path::Path, dir: &std::path::Path) -> std::io::Result<String> {
+    let stem = src
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.trim().replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_"))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "voice".to_string());
+    let ext = src
+        .extension()
+        .and_then(|x| x.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| "wav".to_string());
+    let taken = |n: &str| VOICE_AUDIO_EXT.iter().any(|e| dir.join(format!("{n}.{e}")).exists());
+    let mut name = stem.clone();
+    let mut i = 2;
+    while taken(&name) {
+        name = format!("{stem} ({i})");
+        i += 1;
+    }
+    std::fs::copy(src, dir.join(format!("{name}.{ext}")))?;
+    Ok(name)
+}
+
+/// 画像を声のアイコンとして data/voices/<name>.<ext> へコピーする(既存のアイコンは置換)。
+fn set_voice_image(src: &std::path::Path, dir: &std::path::Path, name: &str) -> std::io::Result<()> {
+    let ext = src
+        .extension()
+        .and_then(|x| x.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| "png".to_string());
+    remove_voice_images(dir, name);
+    std::fs::copy(src, dir.join(format!("{name}.{ext}")))?;
+    Ok(())
 }

@@ -10,6 +10,7 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::help::HelpTopic;
 use super::{StttsApp, kit, phase_label};
 use crate::theme::{self, c, ca};
 
@@ -164,8 +165,9 @@ impl StttsApp {
 
     fn render_seed(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let weak = cx.weak_entity();
-        kit::section(
+        kit::section_with_help(
             "乱数(seed)",
+            self.help_icon(HelpTopic::Seed, cx),
             v_flex()
                 .gap_2()
                 .child(

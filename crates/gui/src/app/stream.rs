@@ -9,16 +9,64 @@ use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::help::HelpTopic;
 use super::{StttsApp, voice_phrase};
 use crate::theme::{self, c, ca};
 use crate::turns::{Turn, TurnSource, TurnStatus};
 
 const CARD_MAX_W: f32 = 780.;
+/// Irodori-TTS v4 の入力パレット。依存ピン `89f9d8f` の
+/// `irodori_tts/gradio_emoji_palette.py` `EMOJI_PALETTE_ITEMS` と、
+/// v4 / v4.1 の `EMOJI_ANNOTATIONS.md` と同じ 45 種・同じ順。
+/// 意味は公式表の日本語欄。`⏸️` だけは末尾へ入れることをツールチップに書く。
 const ANNOTATION_CHOICES: &[(&str, &str)] = &[
-    ("😊", "楽しげに"), ("😠", "不満げに"), ("🥺", "ためらい・声の震え"),
-    ("🤭", "含み笑い"), ("👂", "囁き"), ("😮‍💨", "ため息"),
-    ("⏩", "早口"), ("🐢", "ゆっくり"), ("⏸️", "末尾に間を追加"),
+    ("👂", "囁き、耳元"),
+    ("😮‍💨", "吐息、溜息、寝息"),
+    ("⏸️", "間、沈黙。末尾に追加"),
+    ("🤭", "くすくす、含み笑い"),
+    ("🥵", "喘ぎ、うめき"),
+    ("📢", "エコー、リバーブ"),
+    ("😏", "からかう、甘える"),
+    ("🥺", "声を震わせて、自信なさげ"),
+    ("🌬️", "息切れ、荒い息"),
+    ("😮", "息をのむ"),
+    ("👅", "舐める音、咀嚼音"),
+    ("💋", "リップノイズ"),
+    ("🫶", "優しく"),
+    ("😭", "泣き声、悲しみ"),
+    ("😱", "悲鳴、叫び"),
+    ("😪", "眠そう、気だるげ"),
+    ("😴", "寝言、いびき"),
+    ("⏩", "早口"),
+    ("📞", "電話越し、スピーカー越し"),
+    ("🐢", "ゆっくり"),
+    ("🥤", "唾を飲み込む"),
+    ("🤧", "咳、くしゃみ、鼻をすする"),
+    ("😒", "舌打ち"),
+    ("😰", "慌て、緊張、どもり"),
+    ("😆", "喜びながら"),
+    ("💥", "勢いよく"),
+    ("😠", "怒り、不満"),
+    ("😲", "驚き"),
+    ("🥱", "あくび"),
+    ("😖", "苦しげ"),
+    ("😟", "心配そう"),
+    ("🫣", "恥ずかしそう、照れ"),
+    ("🙄", "呆れて"),
+    ("😊", "楽しげ"),
+    ("😎", "得意げ、自信ありげ"),
+    ("👌", "相槌"),
+    ("🙏", "懇願"),
+    ("🥴", "酔っ払って"),
+    ("🎵", "鼻歌"),
+    ("🤐", "口を塞がれて"),
+    ("😌", "安堵、満足"),
+    ("🤔", "疑問"),
+    ("💪", "力強く"),
+    ("👃", "匂いを嗅ぐ"),
+    ("📖", "ナレーション、独白"),
 ];
+const _: () = assert!(ANNOTATION_CHOICES.len() == 45);
 
 fn status_label(turn: &Turn) -> (String, u32) {
     match turn.status {
@@ -44,7 +92,11 @@ fn status_label(turn: &Turn) -> (String, u32) {
 
 impl StttsApp {
     pub(super) fn render_stream(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let body: Vec<AnyElement> = self.turns.iter().map(|t| self.render_turn(t, cx).into_any_element()).collect();
+        let body: Vec<AnyElement> = self
+            .turns
+            .iter()
+            .map(|t| self.render_turn(t, cx).into_any_element())
+            .collect();
         v_flex()
             .flex_1()
             .min_w_0()
@@ -65,7 +117,6 @@ impl StttsApp {
             .child(self.render_composer(cx))
     }
 
-
     fn render_turn(&self, turn: &Turn, cx: &mut Context<Self>) -> impl IntoElement {
         let id = turn.id;
         let (status, status_color) = status_label(turn);
@@ -73,11 +124,18 @@ impl StttsApp {
         let speaking = turn.status == TurnStatus::Speaking;
         let quiet = matches!(
             turn.status,
-            TurnStatus::Unheard | TurnStatus::Skipped | TurnStatus::Cancelled | TurnStatus::Interrupted
+            TurnStatus::Unheard
+                | TurnStatus::Skipped
+                | TurnStatus::Cancelled
+                | TurnStatus::Interrupted
         );
         let show_delivery = matches!(
             turn.status,
-            TurnStatus::Queued | TurnStatus::Speaking | TurnStatus::Done | TurnStatus::Cancelled | TurnStatus::Failed
+            TurnStatus::Queued
+                | TurnStatus::Speaking
+                | TurnStatus::Done
+                | TurnStatus::Cancelled
+                | TurnStatus::Failed
         ) && !(turn.status == TurnStatus::Cancelled && turn.request.is_none());
         let expression = turn.delivery.as_ref().and_then(|d| {
             let emoji = d.emoji.as_deref().unwrap_or("");
@@ -106,8 +164,19 @@ impl StttsApp {
                             .gap_1p5()
                             .items_center()
                             .text_color(c(theme::INPUT))
-                            .child(Icon::new(if is_mic { IconName::Mic } else { IconName::ALargeSmall }).xsmall())
-                            .child(div().text_xs().child(if is_mic { "マイク" } else { "文字入力" })),
+                            .child(
+                                Icon::new(if is_mic {
+                                    IconName::Mic
+                                } else {
+                                    IconName::ALargeSmall
+                                })
+                                .xsmall(),
+                            )
+                            .child(div().text_xs().child(if is_mic {
+                                "マイク"
+                            } else {
+                                "文字入力"
+                            })),
                     )
                     .child(
                         h_flex()
@@ -126,7 +195,11 @@ impl StttsApp {
                         _ if quiet => theme::TEXT_FAINT,
                         _ => theme::TEXT,
                     }))
-                    .child(if turn.text.is_empty() { "…".to_string() } else { turn.text.clone() }),
+                    .child(if turn.text.is_empty() {
+                        "…".to_string()
+                    } else {
+                        turn.text.clone()
+                    }),
             )
             .when_some(expression, |col, label| {
                 col.child(div().text_xs().text_color(c(theme::VOICE)).child(label))
@@ -151,7 +224,9 @@ impl StttsApp {
                         .small()
                         .ghost()
                         .label("訂正する")
-                        .on_click(cx.listener(move |this, _, window, cx| this.edit_turn(id, window, cx))),
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.edit_turn(id, window, cx)),
+                        ),
                 )
                 .child(
                     Button::new(SharedString::from(format!("dismiss-{id}")))
@@ -178,24 +253,30 @@ impl StttsApp {
                 .border_t_1()
                 .border_color(c(theme::BORDER))
                 .bg(ca(theme::VOICE, 0x0c))
-                .child(div().w(px(3.)).h(px(14.)).rounded_full().bg(c(theme::VOICE)))
                 .child(
                     div()
-                        .text_xs()
-                        .text_color(c(theme::VOICE))
-                        .child(voice),
+                        .w(px(3.))
+                        .h(px(14.))
+                        .rounded_full()
+                        .bg(c(theme::VOICE)),
                 )
+                .child(div().text_xs().text_color(c(theme::VOICE)).child(voice))
                 .when(!turn.chunks.is_empty(), |row| {
                     row.child(h_flex().gap_1().children(turn.chunks.iter().map(|ch| {
-                        div()
-                            .w(px(14.))
-                            .h(px(4.))
-                            .rounded_full()
-                            .bg(c(if ch.ready { theme::VOICE } else { theme::BORDER_STRONG }))
+                        div().w(px(14.)).h(px(4.)).rounded_full().bg(c(if ch.ready {
+                            theme::VOICE
+                        } else {
+                            theme::BORDER_STRONG
+                        }))
                     })))
                 })
                 .when_some(turn.e2e_ms, |row, ms| {
-                    row.child(div().text_xs().text_color(c(theme::TEXT_FAINT)).child(format!("応答 {ms}ms")))
+                    row.child(
+                        div()
+                            .text_xs()
+                            .text_color(c(theme::TEXT_FAINT))
+                            .child(format!("応答 {ms}ms")),
+                    )
                 })
                 .child(div().flex_1())
                 .when(speaking, |row| {
@@ -232,7 +313,9 @@ impl StttsApp {
                             .xsmall()
                             .ghost()
                             .label("訂正")
-                            .on_click(cx.listener(move |this, _, window, cx| this.edit_turn(id, window, cx))),
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.edit_turn(id, window, cx)
+                            })),
                     )
                 })
         });
@@ -243,7 +326,11 @@ impl StttsApp {
             .flex_shrink_0()
             .rounded_lg()
             .border_1()
-            .border_color(if speaking { ca(theme::VOICE, 0x80) } else { c(theme::BORDER) })
+            .border_color(if speaking {
+                ca(theme::VOICE, 0x80)
+            } else {
+                c(theme::BORDER)
+            })
             .bg(c(theme::CARD))
             .overflow_hidden()
             .when(quiet, |card| card.opacity(0.7))
@@ -265,19 +352,30 @@ impl StttsApp {
             .items_center()
             .child(
                 h_flex()
+                    .flex_wrap()
                     .w_full()
                     .max_w(px(CARD_MAX_W))
                     .gap_1()
                     .items_center()
-                    .child(div().text_xs().text_color(c(theme::TEXT_FAINT)).child("演技"))
-                    .children(ANNOTATION_CHOICES.iter().enumerate().map(|(i, &(emoji, description))| {
-                        Button::new(SharedString::from(format!("annotation-{i}")))
-                            .xsmall()
-                            .ghost()
-                            .label(emoji)
-                            .tooltip(description)
-                            .on_click(cx.listener(move |this, _, window, cx| this.insert_annotation(emoji, window, cx)))
-                    })),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(c(theme::TEXT_FAINT))
+                            .child("演技"),
+                    )
+                    .child(self.help_icon(HelpTopic::Acting, cx))
+                    .children(ANNOTATION_CHOICES.iter().enumerate().map(
+                        |(i, &(emoji, description))| {
+                            Button::new(SharedString::from(format!("annotation-{i}")))
+                                .xsmall()
+                                .ghost()
+                                .label(emoji)
+                                .tooltip(description)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.insert_annotation(emoji, window, cx)
+                                }))
+                        },
+                    )),
             )
             .child(
                 h_flex()
@@ -285,7 +383,11 @@ impl StttsApp {
                     .max_w(px(CARD_MAX_W))
                     .gap_2()
                     .items_end()
-                    .child(div().flex_1().child(Textarea::new(&self.composer).text_sm()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(Textarea::new(&self.composer).text_sm()),
+                    )
                     .when(delivering, |row| {
                         row.child(
                             Button::new("stop-speaking")
@@ -300,7 +402,9 @@ impl StttsApp {
                             .primary()
                             .icon(IconName::Play)
                             .label("話す")
-                            .on_click(cx.listener(|this, _, window, cx| this.speak_from_composer(window, cx))),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.speak_from_composer(window, cx)
+                            })),
                     ),
             )
             .child(
@@ -314,7 +418,13 @@ impl StttsApp {
                         h_flex()
                             .gap_1p5()
                             .items_center()
-                            .child(div().w(px(3.)).h(px(10.)).rounded_full().bg(c(theme::VOICE)))
+                            .child(
+                                div()
+                                    .w(px(3.))
+                                    .h(px(10.))
+                                    .rounded_full()
+                                    .bg(c(theme::VOICE)),
+                            )
                             .child(self.voice_phrase()),
                     ),
             )

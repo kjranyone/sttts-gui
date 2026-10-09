@@ -25,7 +25,7 @@ pub enum TurnSource {
 pub enum TurnStatus {
     /// 認識の途中経過を受信中
     Listening,
-    /// 確定済み。「確認してから話す」設定で、利用者の操作待ち
+    /// 確定済み。自動再生 OFF のため、利用者の操作待ち
     AwaitingConfirm,
     /// 発話を依頼済み(自動発話 or 送信)、backend の受付待ち
     Queued,

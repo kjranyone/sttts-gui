@@ -7,19 +7,30 @@ use crate::theme::{self, c, ca};
 
 /// レールの区画: 小見出し + 内容。区画どうしは罫線で区切る。
 pub(super) fn section(title: &'static str, content: impl IntoElement) -> Div {
+    section_frame(section_title(title), content)
+}
+
+/// 見出しの横に「?」(解説)を置く区画
+pub(super) fn section_with_help(title: &'static str, help: impl IntoElement, content: impl IntoElement) -> Div {
+    section_frame(h_flex().gap_1p5().items_center().child(section_title(title)).child(help), content)
+}
+
+fn section_title(title: &'static str) -> Div {
+    div()
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(c(theme::TEXT_FAINT))
+        .child(title)
+}
+
+fn section_frame(header: impl IntoElement, content: impl IntoElement) -> Div {
     v_flex()
         .gap_2()
         .px_4()
         .py_3()
         .border_b_1()
         .border_color(c(theme::BORDER))
-        .child(
-            div()
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(c(theme::TEXT_FAINT))
-                .child(title),
-        )
+        .child(header)
         .child(content)
 }
 
@@ -29,6 +40,25 @@ pub(super) fn field(label: &'static str, control: impl IntoElement) -> Div {
         .gap_1()
         .child(div().text_xs().text_color(c(theme::TEXT_MUTED)).child(label))
         .child(control)
+}
+
+/// ラベルの横に「?」(解説)を置く設定項目
+pub(super) fn field_with_help(label: &'static str, help: impl IntoElement, control: impl IntoElement) -> Div {
+    v_flex()
+        .gap_1()
+        .child(
+            h_flex()
+                .gap_1p5()
+                .items_center()
+                .child(div().text_xs().text_color(c(theme::TEXT_MUTED)).child(label))
+                .child(help),
+        )
+        .child(control)
+}
+
+/// 操作(スイッチ等)の横に「?」を置く行
+pub(super) fn with_help(control: impl IntoElement, help: impl IntoElement) -> Div {
+    h_flex().gap_2().items_center().child(control).child(help)
 }
 
 /// 色付きドット + 短いラベル
