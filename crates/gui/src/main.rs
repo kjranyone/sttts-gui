@@ -9,7 +9,9 @@ mod backend;
 mod settings;
 
 use std::collections::VecDeque;
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
 use gpui_kit::component::button::*;
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
@@ -26,6 +28,17 @@ use sttts_protocol::{
 const DEFAULT_INPUT_LABEL: &str = "既定の入力デバイス";
 const DEFAULT_OUTPUT_LABEL: &str = "既定のデバイス";
 const DEFAULT_VOICE_LABEL: &str = "既定の声(自動)";
+
+fn app_icon() -> Arc<Image> {
+    static ICON: OnceLock<Arc<Image>> = OnceLock::new();
+    ICON.get_or_init(|| {
+        Arc::new(Image::from_bytes(
+            ImageFormat::Png,
+            include_bytes!("../../../assets/app-icon.png").to_vec(),
+        ))
+    })
+    .clone()
+}
 
 /// ASR プロバイダ選択(表示名, asr.engine 値)。ローカルとクラウドを選べる。
 const ASR_PROVIDERS: &[(&str, &str)] = &[
@@ -101,11 +114,14 @@ pub struct StttsApp {
     conversation: Vec<ConversationEntry>,
     /// 会話ビューのスクロール制御(新規エントリで最下部へ追従)
     conversation_scroll: gpui::ScrollHandle,
+    log_scroll: gpui::ScrollHandle,
     /// ログペインの折りたたみ
     log_collapsed: bool,
     /// 現在合成中/直前のチャンクテキスト(tts_chunk_start で設定、tts_audio で履歴へ)
     pending_chunk_text: Option<String>,
     logs: VecDeque<String>,
+    /// data/gui.log(起動ごとに作り直す。エージェント/人間が事後に読むため)
+    log_file: Option<std::fs::File>,
     last_gen_ms: Option<u64>,
     /// 発話終了 → 初音(先頭チャンクを再生キューに積むまで)の直近値と履歴(中央値表示用)
     last_e2e_ms: Option<u64>,
@@ -239,9 +255,11 @@ impl StttsApp {
             mic_level_db: -100.0,
             conversation: Vec::new(),
             conversation_scroll: gpui::ScrollHandle::new(),
+            log_scroll: gpui::ScrollHandle::new(),
             log_collapsed: false,
             pending_chunk_text: None,
             logs: VecDeque::new(),
+            log_file: open_log_file(&root),
             last_gen_ms: None,
             last_e2e_ms: None,
             e2e_history: VecDeque::new(),
@@ -262,6 +280,14 @@ impl StttsApp {
             app.push_log(format!("出力デバイスを開けませんでした: {err}"));
         }
         app.start_backend(cx);
+
+        // OS タイトルバーを持たないため、終了はウィンドウの × に一本化する。
+        // 閉じる前に設定保存とバックエンド停止(マイク解放を含む)を済ませる。
+        let weak_close = cx.weak_entity();
+        window.on_window_should_close(cx, move |_window, cx| {
+            let _ = weak_close.update(cx, |this, cx| this.shutdown(cx));
+            true
+        });
 
         // デバイス選択イベント(選択は window スコープで届く)。
         // Subscription は drop すると購読解除になるため保持する。
@@ -486,10 +512,14 @@ impl StttsApp {
     }
 
     fn push_log(&mut self, line: String) {
+        if let Some(f) = self.log_file.as_mut() {
+            let _ = writeln!(f, "{line}");
+        }
         self.logs.push_back(line);
         while self.logs.len() > 300 {
             self.logs.pop_front();
         }
+        self.log_scroll.scroll_to_bottom();
     }
 
     fn persist_settings(&self, cx: &App) {
@@ -927,12 +957,34 @@ impl StttsApp {
         }
     }
 
-    fn quit(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    /// 設定を保存してバックエンドを停止する。take() で二重停止を防ぐ。
+    fn shutdown(&mut self, cx: &mut Context<Self>) {
         self.persist_settings(cx);
-        if let Some(b) = &self.backend {
+        if let Some(b) = self.backend.take() {
             b.shutdown();
         }
-        cx.quit();
+    }
+
+    fn phase_color(state: &EngineState) -> Rgba {
+        match state.phase.as_str() {
+            "ready" => rgb(0x8ef0c0),
+            "loading" => rgb(0xf0c987),
+            "error" => rgb(0xff8a8a),
+            _ => rgb(0x8d86ad),
+        }
+    }
+
+    /// タイトルバーの状態ピル(色付きドット + ラベル)
+    fn status_pill(dot: Rgba, label: impl Into<SharedString>) -> Div {
+        h_flex()
+            .gap_1p5()
+            .items_center()
+            .px_2()
+            .h(px(20.))
+            .rounded_full()
+            .bg(rgba(0xffffff0d))
+            .child(div().size(px(6.)).rounded_full().bg(dot))
+            .child(div().text_xs().text_color(rgb(0xb9b1d6)).child(label.into()))
     }
 
     /// ヘッダ表示用の短ラベル(固定語のみ。detail のような長い文字列はログで確認する)
@@ -1097,78 +1149,97 @@ impl Render for StttsApp {
         let weak_auto_speak = cx.weak_entity();
         let weak_random_seed = cx.weak_entity();
 
-        // ---- ヘッダ
+        // ---- タイトルバー(OS のタイトルバーの代わりに、アプリの見出しと主要操作を載せる)
+        // 空き領域はドラッグ/ダブルクリック最大化/スナップが効く。操作群だけ occlude して
+        // ドラッグ領域の hit-test から外す(外さないとボタン押下が窓移動になる)。
         let (mic_dot, mic_label) = if self.mic_running {
-            (rgb(0x8ef0c0), "listening")
+            (rgb(0x8ef0c0), "聞き取り中")
         } else {
-            (rgb(0x8d86ad), "idle")
+            (rgb(0x8d86ad), "マイク待機")
         };
-        let header = h_flex()
-            .gap_3()
-            .items_center()
-            .px_4()
-            .py_2()
-            .child(
-                div()
-                    .text_base()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(0xfff2fa))
-                    .child("sttts"),
-            )
-            .child(div().text_sm().text_color(rgb(0xc9a8dd)).child("音声対話"))
+        let mic_busy = self.mic_transition != MicTransition::None;
+        let title_bar = TitleBar::new()
+            .bg(rgba(0x140e2acc))
+            .border_color(rgba(0xffffff14))
             .child(
                 h_flex()
-                    .gap_1()
+                    .gap_2()
                     .items_center()
-                    .px_2()
-                    .py_1()
-                    .rounded_full()
-                    .bg(rgba(0xffffff10))
+                    .child(img(app_icon()).size(px(22.)))
                     .child(
-                        div().text_xs().text_color(rgb(0xb9b1d6)).child(format!(
-                            "TTS {} / ASR {}",
-                            Self::phase_label(&self.tts_state),
-                            Self::phase_label(&self.asr_state)
-                        )),
-                    ),
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(0xfff2fa))
+                            .child("sttts"),
+                    )
+                    .child(div().text_xs().text_color(rgb(0x8d86ad)).child("音声対話"))
+                    .child(div().w(px(1.)).h(px(14.)).mx_1().bg(rgba(0xffffff1f)))
+                    .child(Self::status_pill(
+                        Self::phase_color(&self.tts_state),
+                        format!("TTS {}", Self::phase_label(&self.tts_state)),
+                    ))
+                    .child(Self::status_pill(
+                        Self::phase_color(&self.asr_state),
+                        format!("ASR {}", Self::phase_label(&self.asr_state)),
+                    ))
+                    .child(Self::status_pill(mic_dot, mic_label)),
             )
             .child(
                 h_flex()
-                    .gap_1()
+                    .gap_3()
                     .items_center()
-                    .px_2()
-                    .py_1()
-                    .rounded_full()
-                    .bg(rgba(0xffffff10))
-                    .child(div().size(px(8.)).rounded_full().bg(mic_dot))
-                    .child(div().text_xs().text_color(rgb(0xb9b1d6)).child(mic_label)),
-            )
-            .child(div().flex_1())
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(0xffb1cf))
-                    .child(self.latency_label()),
-            )
-            .child(div().text_xs().text_color(rgb(0x8d86ad)).child(self.latency_detail()))
-            .child(
-                Button::new("mic")
-                    .label(match self.mic_transition {
-                        MicTransition::Starting => "マイク開始中…",
-                        MicTransition::Stopping => "マイク停止中…",
-                        MicTransition::None if self.mic_running => "マイク停止",
-                        MicTransition::None => "マイク開始",
-                    })
-                    .disabled(self.mic_transition != MicTransition::None)
-                    .on_click(cx.listener(Self::toggle_mic)),
-            )
-            .child(
-                Button::new("cancel")
-                    .label("発話を中止")
-                    .on_click(cx.listener(Self::cancel_speak)),
-            )
-            .child(Button::new("quit").label("終了").on_click(cx.listener(Self::quit)));
+                    .pr_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(0xffb1cf))
+                            .child(self.latency_label()),
+                    )
+                    .child(
+                        h_flex()
+                            .id("title-actions")
+                            .occlude()
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                Button::new("mic")
+                                    .small()
+                                    .icon(if self.mic_running { IconName::Square } else { IconName::Mic })
+                                    .label(match self.mic_transition {
+                                        MicTransition::Starting => "マイク開始中…",
+                                        MicTransition::Stopping => "マイク停止中…",
+                                        MicTransition::None if self.mic_running => "マイク停止",
+                                        MicTransition::None => "マイク開始",
+                                    })
+                                    .when(!self.mic_running, |b| b.primary())
+                                    .when(self.mic_running, |b| b.danger())
+                                    .loading(mic_busy)
+                                    .disabled(mic_busy)
+                                    .on_click(cx.listener(Self::toggle_mic)),
+                            )
+                            .child(
+                                Button::new("cancel")
+                                    .small()
+                                    .ghost()
+                                    .label("発話を中止")
+                                    .on_click(cx.listener(Self::cancel_speak)),
+                            )
+                            .child(
+                                Button::new("toggle-log")
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::PanelBottom)
+                                    .selected(!self.log_collapsed)
+                                    .tooltip("ログの表示/非表示")
+                                    .on_click(cx.listener(|this, _ev, _w, cx| {
+                                        this.log_collapsed = !this.log_collapsed;
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            );
 
         // ---- レベルメーター(緑→桜グラデ)
         let level_meter = h_flex()
@@ -1220,7 +1291,7 @@ impl Render for StttsApp {
             .child(
                 v_flex()
                     .size_full()
-                    .child(header)
+                    .child(title_bar)
                     .child(
                         h_flex()
                             .flex_1()
@@ -1449,14 +1520,25 @@ impl Render for StttsApp {
                                 div()
                                     .id("log-body")
                                     .when(!self.log_collapsed, |d| {
-                                        d.h(px(104.))
+                                        d.h(px(150.))
                                             .px_2()
                                             .pb_2()
                                             .overflow_y_scroll()
+                                            .track_scroll(&self.log_scroll)
                                             .text_xs()
-                                            .font_family("Consolas")
-                                            .text_color(rgb(0x9d96bd))
-                                            .children(self.logs.iter().rev().take(12).rev().cloned())
+                                            .text_color(rgb(0xc4bfe0))
+                                            .children(self.logs.iter().map(|line| {
+                                                let is_err = line.starts_with("[error")
+                                                    || line.starts_with("[ERROR")
+                                                    || line.starts_with("[WARN")
+                                                    || line.contains("エラー")
+                                                    || line.contains("失敗")
+                                                    || line.contains("切れました");
+                                                div()
+                                                    .w_full()
+                                                    .when(is_err, |d| d.text_color(rgb(0xff8a8a)))
+                                                    .child(line.clone())
+                                            }))
                                     }),
                             ),
                     )
@@ -1469,6 +1551,7 @@ impl Render for StttsApp {
                             .gap_3()
                             .child(self.status_hint.clone())
                             .child(div().flex_1())
+                            .child(self.latency_detail())
                             .child(format!("会話: {} 件", self.conversation.len())),
                     ),
             );
@@ -1540,6 +1623,13 @@ impl Render for StttsApp {
 
 
 /// data/voices の wav を声バンクとして読み込む(ファイル名=話者名)。
+/// 起動時に data/gui.log を空にして開く(古いログは残さない)。
+fn open_log_file(root: &std::path::Path) -> Option<std::fs::File> {
+    let dir = root.join("data");
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::File::create(dir.join("gui.log")).ok()
+}
+
 fn scan_voice_bank(root: &std::path::Path) -> Vec<(String, PathBuf)> {
     let dir = root.join("data").join("voices");
     let mut out = Vec::new();
@@ -1578,13 +1668,18 @@ fn main() {
         settings::AppSettings::load(&root).mock.unwrap_or(true)
     };
 
-    gpui_kit::application().run(move |cx: &mut App| {
+    // コンポーネントのアイコン(タイトルバーのウィンドウ操作ボタン等)は SVG アセットとして同梱する
+    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx: &mut App| {
         gpui_kit::init(cx);
+        // UI は濃色基調。コンポーネント(タイトルバーのウィンドウ操作ボタン等)も濃色テーマに揃える
+        Theme::change(ThemeMode::Dark, None, cx);
         let bounds = Bounds::centered(None, size(px(1220.), px(780.)), cx);
         gpui_kit::open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                ..Default::default()
+                window_min_size: Some(size(px(960.), px(600.))),
+                // OS のタイトルバーを隠し、TitleBar コンポーネントが描画とドラッグを受け持つ
+                ..TitleBar::window_options()
             },
             cx,
             |window, cx| cx.new(|cx| StttsApp::new(mock, window, cx)),

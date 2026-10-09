@@ -12,6 +12,9 @@ dependencies = [
     "sounddevice>=0.5.1",
     "soxr>=0.5.0.post1",
     "numpy>=1.26",
+    # GUI の「認識」ドロップダウンで選べる ASR(Nemotron / Gemini)は標準依存。
+    "onnxruntime>=1.20",
+    "google-genai>=1.16",
 ]
 
 [project.optional-dependencies]
@@ -45,16 +48,6 @@ cpu = [
 reazonspeech = [
     "sherpa-onnx>=1.13.8,<1.14",
     "sherpa-onnx-core>=1.13.8,<1.14",
-]
-# 任意: Nemotron 3.5 ASR (onnxruntime) エンジン。asr.engine = "nemotron" で使う。
-# ストリーミングエンジン本体は sttts_server/engines/vendor/ に同梱(Apache-2.0)。
-nemotron = [
-    "onnxruntime>=1.20",
-]
-# 任意: Gemini Live API (クラウド ASR)。asr.engine = "gemini" で使う。
-# API キーは data/backend.json の asr.gemini_api_key か環境変数 GEMINI_API_KEY。
-gemini = [
-    "google-genai>=1.16",
 ]
 
 [tool.uv]

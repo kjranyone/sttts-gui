@@ -170,7 +170,7 @@ GUI に UI の無い設定は `data/backend.json`(任意。`STTTS_CONFIG` 環境
 
 | キー | 既定 | 説明 |
 |---|---|---|
-| `asr.engine` | `kotoba` | `kotoba`(faster-whisper)/ `reazonspeech`(sherpa-onnx、要 `--extra reazonspeech`)/ `nemotron`(onnxruntime、要 `--extra nemotron`)/ `gemini`(クラウド、要 `--extra gemini` + APIキー)。GUI の「認識」ドロップダウンでも切替可 |
+| `asr.engine` | `kotoba` | `kotoba`(faster-whisper)/ `reazonspeech`(sherpa-onnx、要 `--extra reazonspeech`)/ `nemotron`(onnxruntime)/ `gemini`(クラウド、要 APIキー)。GUI の「認識」ドロップダウンでも切替可 |
 | `asr.device` / `asr.compute_type` | `auto` / `auto` | kotoba 用。auto = CUDA なら cuda/float16、無ければ cpu/int8 |
 | `asr.cpu_threads` | `0` | CTranslate2 の CPU スレッド数(0 = 既定) |
 | `asr.final_beam_size` | `2` | 確定デコードのビーム幅(1 にすると少し速い) |
@@ -288,8 +288,8 @@ ASR(`asr.engine`):
 |---|---|---|
 | `kotoba`(既定) | `kotoba-tech/kotoba-whisper-v2.0-faster`(CTranslate2) | CUDA があれば float16、無ければ CPU int8。句読点は出ない |
 | `reazonspeech` | `reazon-research/reazonspeech-k2-v2`(sherpa-onnx、Apache-2.0) | CPU でも非常に速い(下表)。**句読点なし**・**固有名詞/英字略語に弱い**(例:「NLP」→「エネルギー」)・**int8 は短い発話で崩れる**ので fp32 推奨。`uv sync --extra <torch extra> --extra reazonspeech` |
-| `nemotron` | `nemotron-3.5-asr-streaming-0.6b` の ONNX export(cache-aware FastConformer-RNNT / onnxruntime、コード Apache-2.0 / 重み OpenMDW-1.1) | **句読点をネイティブ出力**・whisper large-v3 級の精度・発話確定 **平均 0.31 秒 / 最大 0.51 秒**(i5-12600KF、chunk=1120ms fp16 実測。chunk=320ms は平均 0.56 秒)。モデル ~2.5GB(fp16)。`uv sync --extra <torch extra> --extra nemotron`。ストリーディングエンジンは `engines/vendor/nemotron_onnx_streaming.py` として同梱。**既知の弱点: 母音のみの連続(「あいうえお」等)を正しく認識しない**(直渡しでも「i」等に潰れる。kotoba は「アイウエオ」と認識。2026-10-09 検証)。通常の発話(子音を含む)では影響なし |
-| `gemini` | Google AI Studio「Gemini 3.5 Transcribe Live」(`gemini-3.5-transcribe-live` / Live API WebSocket) | **クラウド**。WER ~2.6%、SMART モードでフィラー(えー等)除去・句読点整形。発話単位で API へ送信(ローカル VAD はそのまま)。1発話 0.5〜1.5 秒程度(要実測)。話者分離・単語タイムスタンプ非対応。`uv sync --extra <torch extra> --extra gemini` + API キー |
+| `nemotron` | `nemotron-3.5-asr-streaming-0.6b` の ONNX export(cache-aware FastConformer-RNNT / onnxruntime、コード Apache-2.0 / 重み OpenMDW-1.1) | **句読点をネイティブ出力**・whisper large-v3 級の精度・発話確定 **平均 0.31 秒 / 最大 0.51 秒**(i5-12600KF、chunk=1120ms fp16 実測。chunk=320ms は平均 0.56 秒)。モデル ~2.5GB(fp16)。標準依存(`uv sync --extra <torch extra>`)。ストリーディングエンジンは `engines/vendor/nemotron_onnx_streaming.py` として同梱。**既知の弱点: 母音のみの連続(「あいうえお」等)を正しく認識しない**(直渡しでも「i」等に潰れる。kotoba は「アイウエオ」と認識。2026-10-09 検証)。通常の発話(子音を含む)では影響なし |
+| `gemini` | Google AI Studio「Gemini 3.5 Transcribe Live」(`gemini-3.5-transcribe-live` / Live API WebSocket) | **クラウド**。WER ~2.6%、SMART モードでフィラー(えー等)除去・句読点整形。発話単位で API へ送信(ローカル VAD はそのまま)。1発話 0.5〜1.5 秒程度(要実測)。話者分離・単語タイムスタンプ非対応。標準依存 + API キー |
 
 VAD は silero-vad(ONNX)。VAD 発話終了時にバッファ全体を再デコードして確定文を作り、
 発話中は partial_interval_ms(既定800ms)ごとに部分表示を更新します。

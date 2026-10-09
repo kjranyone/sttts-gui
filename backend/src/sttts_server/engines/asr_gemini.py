@@ -1,6 +1,6 @@
 """Gemini Live API(gemini-3.5-transcribe-live)によるクラウド ASR(任意エンジン)。
 
-asr.engine = "gemini" で選択。`uv sync --extra gemini`(google-genai)が必要。
+asr.engine = "gemini" で選択。google-genai は標準依存。
 API キーは asr.gemini_api_key(data/backend.json)または環境変数 GEMINI_API_KEY /
 GOOGLE_API_KEY から解決する。
 
@@ -62,7 +62,7 @@ class GeminiLiveAsr:
             from google import genai  # noqa: PLC0415
         except ImportError as e:
             raise RuntimeError(
-                "Gemini エンジンには google-genai が必要です: uv sync --extra gemini"
+                "Gemini エンジンには google-genai が必要です: uv sync を実行してください"
             ) from e
         key = resolve_api_key(self.api_key)
         if not key:

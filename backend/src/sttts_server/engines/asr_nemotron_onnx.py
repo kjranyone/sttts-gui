@@ -1,6 +1,6 @@
 """Nemotron 3.5 ASR(ONNX / onnxruntime CPU)による多言語 ASR(任意エンジン)。
 
-asr.engine = "nemotron" で選択する。`uv sync --extra nemotron`(onnxruntime)が必要。
+asr.engine = "nemotron" で選択する。onnxruntime は標準依存。
 重みは HuggingFace のコミュニティ export(fp16)を自動DL:
     codavidgarcia/nemotron-3.5-asr-streaming-0.6b-onnx(Apache-2.0 コード / OpenMDW-1.1 重み)
 ベースモデル: nvidia/nemotron-3.5-asr-streaming-0.6b(cache-aware FastConformer-RNNT, 600M)。
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +29,32 @@ DEFAULT_REPO = "codavidgarcia/nemotron-3.5-asr-streaming-0.6b-onnx"
 
 # HF 公式パッケージに用意されているチャンク(80/160/…は自前exportが必要)
 KNOWN_CHUNKS = (320,)
+
+
+def _materialize_snapshot(snapshot: str | Path) -> str:
+    """HF snapshot のシンボリックリンクを実ファイルに展開したディレクトリを返す。
+
+    onnxruntime は外部データ(*.onnx.data)のパスがモデルディレクトリ外
+    (symlink 先の hub/blobs)へ出ると拒否する。ハードリンク(不可ならコピー)で
+    snapshot と同階層の ``_resolved/<revision>`` に実体を置く。冪等。
+    """
+    src = Path(snapshot)
+    dst = src.parent.parent / "_resolved" / src.name
+    for f in src.rglob("*"):
+        if not f.is_file():
+            continue
+        rel = f.relative_to(src)
+        target = dst / rel
+        real = f.resolve()
+        if target.exists() and target.stat().st_size == real.stat().st_size:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.unlink(missing_ok=True)
+        try:
+            os.link(real, target)
+        except OSError:
+            shutil.copy2(real, target)
+    return str(dst)
 
 
 class NemotronOnnxAsr:
@@ -57,7 +84,7 @@ class NemotronOnnxAsr:
             import onnxruntime  # noqa: F401, PLC0415
         except ImportError as e:
             raise RuntimeError(
-                "Nemotron エンジンには onnxruntime が必要です: uv sync --extra nemotron"
+                "Nemotron エンジンには onnxruntime が必要です: uv sync を実行してください"
             ) from e
 
         model_dir = self._resolve_dir(progress)
@@ -88,7 +115,7 @@ class NemotronOnnxAsr:
 
         if progress is not None:
             progress(f"ASRモデル取得中: {self.model_id}")
-        d = snapshot_download(self.model_id)
+        d = _materialize_snapshot(snapshot_download(self.model_id))
         self.model_id_resolved = str(d)
         # 指定チャンクのグラフが無ければ HF パッケージ既定の 320ms に戻す
         # (他のチャンクは export/export_onnx.py による自前 export が必要)
