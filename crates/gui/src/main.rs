@@ -9,6 +9,7 @@ mod audio;
 mod backend;
 mod secret;
 mod settings;
+mod sysmon;
 mod theme;
 mod turns;
 

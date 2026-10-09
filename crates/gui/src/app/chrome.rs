@@ -8,6 +8,46 @@ use gpui_kit::*;
 use super::{MicTransition, StttsApp, is_error_line, kit, phase_label};
 use crate::theme::{self, c, ca};
 
+impl StttsApp {
+    /// エンジンの状態を主画面の最上段に出す(ログを開かなくても気づける)。
+    /// エラーは赤、読み込み中は黄(経過秒つき)。
+    fn render_engine_error(&self) -> Option<Div> {
+        let engines = [
+            ("音声合成", &self.tts_state, self.tts_loading_since),
+            ("認識", &self.asr_state, self.asr_loading_since),
+        ];
+        let (what, state, since, is_error) = engines
+            .iter()
+            .find(|(_, s, _)| s.phase == "error")
+            .map(|(w, s, t)| (*w, *s, *t, true))
+            .or_else(|| {
+                engines
+                    .iter()
+                    .find(|(_, s, _)| s.phase == "loading")
+                    .map(|(w, s, t)| (*w, *s, *t, false))
+            })?;
+        let color = if is_error { theme::ERROR } else { theme::WARN };
+        let mut detail = state.detail.clone().unwrap_or_else(|| if is_error { "エラー".into() } else { "読み込み中".into() });
+        if let Some(t) = since.filter(|_| !is_error) {
+            detail = format!("{detail} · {}秒", t.elapsed().as_secs());
+        }
+        Some(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .px_4()
+                .py_2()
+                .bg(ca(color, 0x24))
+                .border_b_1()
+                .border_color(c(color))
+                .text_sm()
+                .text_color(c(theme::TEXT))
+                .child(div().font_weight(FontWeight::SEMIBOLD).text_color(c(color)).child(what))
+                .child(div().min_w_0().flex_1().child(detail)),
+        )
+    }
+}
+
 impl Render for StttsApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // デバイス一覧は window を要求する API なので render で Select へ反映する
@@ -40,6 +80,7 @@ impl Render for StttsApp {
                 v_flex()
                     .size_full()
                     .child(self.render_title_bar(cx))
+                    .children(self.render_engine_error())
                     .child(
                         div()
                             .relative()
@@ -89,8 +130,20 @@ impl StttsApp {
                 fmt(self.last_first_chunk_ms),
                 rtf
             ))
+            .when_some(self.sys, |d, s| {
+                let hot = s.vram_ratio().is_some_and(|r| r >= 0.9)
+                    || (s.ram_total > 0 && s.ram_used as f64 / s.ram_total as f64 >= 0.9);
+                d.child(
+                    div()
+                        .when(hot, |d| d.text_color(c(theme::WARN)))
+                        .child(super::format_sample(&s)),
+                )
+            })
             .child(div().flex_1())
-            .child(format!("{} ターン", self.turns.len()))
+            .child({
+                let (queued, speaking) = self.turns.queue_counts();
+                format!("待機 {queued} · 合成/再生 {speaking} · {} ターン", self.turns.len())
+            })
             .child(
                 Button::new("status-log")
                     .xsmall()

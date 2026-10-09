@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/gui"]
+members = ["crates/protocol", "crates/gui", "crates/irodori"]
+# irodori(burn)は依存が重いので、GUI の通常ビルド(dev.ps1 の cargo build)には含めない。
+# テスト・実行は -p irodori か --workspace で。
+default-members = ["crates/protocol", "crates/gui"]
 
 [workspace.package]
 version = "0.1.0"

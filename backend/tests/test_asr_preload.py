@@ -118,13 +118,14 @@ def test_stale_preload_result_is_discarded(real_app):
     _configure_asr(app, engine="gemini", gemini_api_key="key-slow")
     _wait(lambda: len(factory.created) == 1)
 
-    # ロード中にキーが変わる。ロード中は旧設定のエンジンも新設定のエンジンも流用されない
+    # ロード中にキーが変わる。旧設定(key-slow)のエンジンは流用されない
+    # (新設定のプリロードは並行に走るので、完了していれば key-fast のものだけが使える)
     _configure_asr(app, gemini_api_key="key-fast")
-    assert _injectable(app) is None
+    current = _injectable(app)
+    assert current is None or current.cfg["gemini_api_key"] == "key-fast"
 
     # 先発が完了しても採用されず解放され、後発(現設定)が採用される。
-    # (プリロードは _engine_quiet_stdout のロックで直列に走る)
     slow.set()
     _wait(lambda: _injectable(app) is not None)
     assert _injectable(app).cfg["gemini_api_key"] == "key-fast"
-    assert factory.created[0].unloaded
+    _wait(lambda: factory.created[0].unloaded)

@@ -26,6 +26,7 @@ Irodori-TTS は文単位の非ストリーミング合成のため、**確定文
 |---|---|
 | `crates/protocol/` | GUI⇄backend の NDJSON メッセージ型(Rust/serde) |
 | `crates/gui/` | GPUI クライアント(gpui-kit 0.7 + rodio) |
+| `crates/irodori/` | Irodori-TTS の純 Rust 推論(burn / wgpu。PyTorch 不要。設計・精度・速度は `docs/irodori-rs.md`) |
 | `backend/` | Python バックエンド(uv プロジェクト) |
 | `backend/src/sttts_server/` | stdio サーバ本体・チャンク分割・エンジン実装 |
 | `backend/src/sttts_server/engines/` | `tts_irodori` / `asr`(ファクトリ)/ `asr_whisper` / `asr_reazon` / `vad_silero` / `mic` / `wav_source` / `mock` |
@@ -43,7 +44,7 @@ Irodori-TTS は文単位の非ストリーミング合成のため、**確定文
 - [uv](https://docs.astral.sh/uv/) と git
 
 ```bat
-:: 1) Python 環境(torch 2.10 XPU 含む。初回は数GBダウンロード)
+:: 1) Python 環境(torch 2.14 XPU 含む。初回は数GBダウンロード)
 cd backend
 uv sync --extra xpu
 
@@ -57,25 +58,25 @@ cargo build --release
 
 注意: 本リポジトリの Python 環境はグローバルに入れず、必ず上記 venv(uv)で隔離してください。
 
-## セットアップ(NVIDIA GPU / CUDA 12.8)
+## セットアップ(NVIDIA GPU / CUDA 13.0)
 
-RTX 20xx〜50xx 向け。PyTorch extra は **xpu / cu128 / cpu のどれか1つ**だけ指定します
+RTX 20xx〜50xx 向け。PyTorch extra は **xpu / cu130 / cpu のどれか1つ**だけ指定します
 (`[tool.uv] conflicts` で同時指定は禁止。切り替えるときは指定し直して `uv sync`)。
 
-要件: NVIDIA ドライバ R570 以上(CUDA 12.8 ランタイムは torch wheel に同梱)。
+要件: NVIDIA ドライバ R570 以上(CUDA 13.0 ランタイムは torch wheel に同梱)。
 
 ```bat
 cd backend
-uv sync --extra cu128
+uv sync --extra cu130
 :: 任意: ReazonSpeech ASR も使う場合
-:: uv sync --extra cu128 --extra reazonspeech
+:: uv sync --extra cu130 --extra reazonspeech
 
 :: 疎通確認(どちらも True / 1 以上になること)
 uv run --no-sync python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_capability())"
 uv run --no-sync python -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())"
 ```
 
-`dev.ps1` からは `.\dev.ps1 -Mode real -Backend cu128`。Linux / macOS / GPU なしは
+`dev.ps1` からは `.\dev.ps1 -Mode real -Backend cu130`。Linux / macOS / GPU なしは
 `uv sync --extra cpu`(GUI の backend 探索は `backend/.venv/bin/python` にも対応)。
 
 - **TTS**: `tts.device=auto` で CUDA を使います。`tts.precision=auto` は compute capability
@@ -96,7 +97,7 @@ uv run --no-sync python -c "import ctranslate2; print(ctranslate2.get_cuda_devic
 ```powershell
 .\dev.ps1                        # モードを対話式で選択(1: real / 2: mock、空欄で real)
 .\dev.ps1 -Mode real             # 実エンジンモードを直接指定(対話なし・自動化向け)
-.\dev.ps1 -Mode real -Backend cu128   # NVIDIA GPU 用に同期して起動(以降は記録され省略可)
+.\dev.ps1 -Mode real -Backend cu130   # NVIDIA GPU 用に同期して起動(以降は記録され省略可)
 .\dev.ps1 -DebugBuild            # debug プロファイルで起動
 ```
 
@@ -358,12 +359,12 @@ cd backend && uv run --no-sync pytest   :: チャンク分割・ASR ワーカー
 |---|---|
 | `torch.xpu.is_available()` が False | Intel ドライバを 32.0.101.7028+ へ更新 |
 | TTS でメモリ不足(OOM) | モデルを INT8 版へ / `decode_mode` sequential 維持 / codec の CPU 追い出し(将来設定化) |
-| ASR が CUDA にならない | ログの「ASR ... フォールバック」を確認。`uv run --no-sync python -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())"` が 0 なら cu128 extra / ドライバを確認。`asr.device` を `cuda` にすると失敗理由がログに出ます |
+| ASR が CUDA にならない | ログの「ASR ... フォールバック」を確認。`uv run --no-sync python -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())"` が 0 なら cu130 extra / ドライバを確認。`asr.device` を `cuda` にすると失敗理由がログに出ます |
 | 文中の短い間で発話が切れる | `asr.vad_min_silence_ms` を 350〜400 に戻す |
 | スピーカーで自分の合成音声を拾ってループする | ヘッドホンを使う(マイクは再生中も開いています) |
 | 最初の発話まで数分かかる | 正常です。irodori の依存(torch/transformers 等)の import とモデル構築に冷起動で数分かかります。`tts.warmup`(既定 ON)により起動直後からバックグラウンドでロードが始まります |
 | マイクを開けない / レートエラー | バックエンドは既定レート(通常48kHz)で開き soxr で16kへ変換します。他アプリの排他占有を解除 |
-| ASR の部分表示・確定が遅い | GPU なら cu128 extra で kotoba を CUDA に。CPU なら `asr.engine: "reazonspeech"`、または `asr.partial_interval_ms: 0` で partial を止めて確定を優先 |
+| ASR の部分表示・確定が遅い | クラウド(Gemini)を選ぶのが最速。kotoba を CUDA で動かすには CUDA 12 のランタイム(cublas64_12 / cudnn9)が別途必要(cu130 の torch は CUDA 13 を同梱)。CPU なら `asr.engine: "reazonspeech"`、または `asr.partial_interval_ms: 0` で partial を止めて確定を優先 |
 | 発話が止まって進まない | バックエンドログ(GUI 下段)を確認。モデル初回 DL 中は待つ必要があります |
 | タスクマネージャに python.exe が残る | GUI を強制終了した場合は子のバックエンドが孤児化します。正常終了は「終了」ボタンから。孤児は手動で終了してください |
 

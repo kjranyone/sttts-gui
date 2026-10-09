@@ -76,9 +76,16 @@ pub struct Turn {
     pub asr_ms: Option<u64>,
     /// 元音声から推定した表現。転写文とは別に保持する。
     pub delivery: Option<DeliveryInfo>,
+    /// ターンを作った時刻(待ち時間の表示用)
+    pub created_at: std::time::Instant,
 }
 
 impl Turn {
+    /// 作成からの経過秒(整数)
+    pub fn waited_secs(&self) -> u64 {
+        self.created_at.elapsed().as_secs()
+    }
+
     pub fn ready_chunks(&self) -> usize {
         self.chunks.iter().filter(|c| c.ready).count()
     }
@@ -106,6 +113,13 @@ pub struct Turns {
 impl Turns {
     pub fn iter(&self) -> impl Iterator<Item = &Turn> {
         self.items.iter()
+    }
+
+    /// (発話待ち, 合成・再生中) のターン数
+    pub fn queue_counts(&self) -> (usize, usize) {
+        let queued = self.items.iter().filter(|t| t.status == TurnStatus::Queued).count();
+        let speaking = self.items.iter().filter(|t| t.status == TurnStatus::Speaking).count();
+        (queued, speaking)
     }
 
     pub fn len(&self) -> usize {
@@ -145,6 +159,7 @@ impl Turns {
             e2e_ms: None,
             asr_ms: None,
             delivery: None,
+            created_at: std::time::Instant::now(),
         });
         while self.items.len() > MAX_TURNS {
             self.items.pop_front();

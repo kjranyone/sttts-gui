@@ -45,7 +45,11 @@ def resolve_device(device: str | None, compute_type: str | None, *, cuda_count: 
 
 
 def _add_windows_cuda_dll_dirs() -> None:
-    """Windows で torch(cu128) 同梱の cuDNN/cuBLAS DLL を CTranslate2 から見えるようにする。
+    """Windows で torch 同梱の cuDNN/cuBLAS DLL を CTranslate2 から見えるようにする。
+
+    注意: CTranslate2 は CUDA 12 系(cublas64_12.dll)を要求する。cu130 の torch は CUDA 13 の
+    DLL を同梱するため、kotoba を CUDA で動かすには別途 CUDA 12 のランタイムが要る(無ければ
+    CPU にフォールバックする)。
 
     CTranslate2 は cudnn64_9.dll / cublas64_12.dll を PATH から探すため、torch/lib と
     nvidia-* wheel の bin を PATH と DLL 検索パスに足す(存在するものだけ)。

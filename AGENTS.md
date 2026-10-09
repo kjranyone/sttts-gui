@@ -8,7 +8,7 @@ sttts-gui で作業するエージェントへの指示。人間のコントリ�
 
 ## 開発コマンド
 
-- 起動: `.\dev.ps1`(real は毎回 `uv sync`、続けて差分 `cargo build` → GUI 起動。`-Mode mock|real`、`-Backend xpu|cu128|cpu` は初回のみ指定し以降は記録される。依存は自動同期されるので手動の `uv sync` 不要)
+- 起動: `.\dev.ps1`(real は毎回 `uv sync`、続けて差分 `cargo build` → GUI 起動。`-Mode mock|real`、`-Backend xpu|cu130|cpu` は初回のみ指定し以降は記録される。依存は自動同期されるので手動の `uv sync` 不要)
 - バックエンドテスト: `cd backend && uv run --no-sync pytest`(実モデル不要。fake で全体を検証する設計)
 - Rust: `cargo check` / `cargo build --release`(MSRV 1.95。`rust-version` 宣言済み)
 
@@ -28,6 +28,7 @@ sttts-gui で作業するエージェントへの指示。人間のコントリ�
 
 - **Irodori-TTS のフル機能を、このアプリが塞がない。** Irodori 本来できる設定(`SamplingRequest` の全項目、`RuntimeKey` の codec 設定、LoRA 等)が、GUI や backend の都合でできなくなっている状態を作らない。GUI が未対応の項目も `data/backend.json` の `tts.sampling`(項目名は Irodori と同じ)/ `tts.codec_*` で必ず指定できること。Irodori 側の項目が増えたら、ラッパで握りつぶさず通す。
 - **発話ごとにアプリが決める項目**(`text` / `caption` / `ref_*` / `no_ref` / `seed`)だけは `tts.sampling` で上書きさせない(`RESERVED_SAMPLING_KEYS`)。黙って捨てずエラーにする。
+- **Irodori の推論は XPU(GPU)で行い、CPU 推論は実装しない。** 速度のために GPU を使うのが前提で、CPU への既定切替・フォールバックは作らない(codec も同じデバイス)。デバイスの問題は GPU 側で直す。
 - **TTS モデルは環境固有で一度決めたら滅多に変えない。** 主画面に出さず、GUI では「詳細設定」(既定は閉)の奥に置く。同様に、環境で一度決まる設定(デバイス・精度・codec)も主画面に増やさない。
 
 ## コーディング規約

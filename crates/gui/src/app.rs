@@ -22,6 +22,8 @@ mod title_bar;
 use std::collections::VecDeque;
 use std::io::Write as _;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
@@ -34,7 +36,7 @@ use sttts_protocol::{
 };
 
 use crate::turns::{Turns, tag_for};
-use crate::{audio, backend, secret, settings};
+use crate::{audio, backend, secret, settings, sysmon};
 
 pub(crate) const DEFAULT_INPUT_LABEL: &str = "既定の入力デバイス";
 pub(crate) const DEFAULT_OUTPUT_LABEL: &str = "既定の出力デバイス";
@@ -90,6 +92,15 @@ pub struct StttsApp {
     voices: Vec<(String, PathBuf)>,
     /// ファイル選択ダイアログの結果。Window が要るので render で取り込む。
     pending_voice_import: Option<Vec<PathBuf>>,
+    /// PC リソース(RAM / GPU 専用メモリ)の最新サンプル
+    sys: Option<sysmon::SysSample>,
+    backend_pid: Arc<AtomicU32>,
+    /// 依存同期中(backend 起動前)に送られたメッセージ。起動直後にまとめて送る。
+    queued_sends: Vec<GuiMessage>,
+    /// エンジンが loading になった時刻(経過秒の表示用)
+    tts_loading_since: Option<Instant>,
+    asr_loading_since: Option<Instant>,
+    backend_starting: bool,
     selected_voice_name: Option<String>,
     voice_select: Entity<SelectState<Vec<String>>>,
     /// 話し方の指示(Irodori の caption)
@@ -252,6 +263,12 @@ impl StttsApp {
             performance_enabled,
             voices,
             pending_voice_import: None,
+            sys: None,
+            backend_pid: Arc::new(AtomicU32::new(0)),
+            queued_sends: Vec::new(),
+            tts_loading_since: None,
+            asr_loading_since: None,
+            backend_starting: false,
             selected_voice_name: saved_voice,
             voice_select,
             caption_input,
@@ -298,6 +315,7 @@ impl StttsApp {
             );
         }
         app.start_backend(cx);
+        app.start_sysmon(cx);
 
         // OS タイトルバーを持たないため、終了はウィンドウの × に一本化する。
         // 閉じる前に設定保存とバックエンド停止(マイク解放を含む)を済ませる。
@@ -382,6 +400,23 @@ impl StttsApp {
     // ---------- backend ----------
 
     fn start_backend(&mut self, cx: &mut Context<Self>) {
+        // 待ち時間・読み込み時間の表示を毎秒更新する(待ちが無いときは再描画しない)
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            if this
+                .update(cx, |app, cx| {
+                    let (queued, speaking) = app.turns.queue_counts();
+                    if queued + speaking > 0 || app.tts_loading_since.is_some() || app.asr_loading_since.is_some() {
+                        cx.notify();
+                    }
+                })
+                .is_err()
+            {
+                break;
+            }
+        })
+        .detach();
+
         let (tx_events, rx_events) = async_channel::unbounded::<AnyMessage>();
         let (tx_stderr, rx_stderr) = async_channel::unbounded::<String>();
 
@@ -405,6 +440,7 @@ impl StttsApp {
         .detach();
 
         // 依存の同期は UI を止めないようバックグラウンドで行い、完了後にバックエンドを起動する
+        self.backend_starting = true;
         self.status_hint = if self.mock { "バックエンド起動中…".into() } else { "依存を同期中…".into() };
         let (mock, root, tx_sync) = (self.mock, self.root.clone(), tx_stderr.clone());
         cx.spawn(async move |this, cx| {
@@ -422,6 +458,26 @@ impl StttsApp {
         .detach();
     }
 
+    /// RAM / GPU 専用メモリの監視(読み取り専用。デバイスには触れない)。
+    fn start_sysmon(&mut self, cx: &mut Context<Self>) {
+        let (tx, rx) = async_channel::unbounded::<sysmon::SysSample>();
+        sysmon::spawn(tx, self.backend_pid.clone());
+        cx.spawn(async move |this, cx| {
+            while let Ok(sample) = rx.recv().await {
+                if this
+                    .update(cx, |app, cx| {
+                        app.sys = Some(sample);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     fn launch_backend(
         &mut self,
         tx_events: async_channel::Sender<AnyMessage>,
@@ -433,15 +489,21 @@ impl StttsApp {
         let _ = std::fs::create_dir_all(&output_dir);
         let spawn_cfg = backend::default_spawn(self.mock, &output_dir);
 
+        self.backend_starting = false;
         let handle = match backend::BackendHandle::spawn(spawn_cfg, tx_events, tx_stderr) {
             Ok(h) => h,
             Err(e) => {
+                self.queued_sends.clear();
                 self.push_log(format!("バックエンド起動エラー: {e:#}"));
                 self.status_hint = "バックエンド起動エラー".into();
                 return;
             }
         };
+        self.backend_pid.store(handle.pid(), Ordering::Relaxed);
         self.backend = Some(handle);
+        for msg in std::mem::take(&mut self.queued_sends) {
+            self.send(msg);
+        }
         self.status_hint = "バックエンド接続待ち…".into();
 
         // backend → UI の取り込みループ
@@ -470,6 +532,8 @@ impl StttsApp {
             if let Err(e) = b.send(&msg) {
                 self.push_log(format!("送信失敗: {e}"));
             }
+        } else if self.backend_starting {
+            self.queued_sends.push(msg);
         } else {
             self.push_log("バックエンド未接続".into());
         }
@@ -518,6 +582,11 @@ impl StttsApp {
                     }
                     MicTransition::None => {}
                 }
+                let since = |loading: bool, prev: Option<Instant>| {
+                    if loading { prev.or_else(|| Some(Instant::now())) } else { None }
+                };
+                self.tts_loading_since = since(tts.phase == "loading", self.tts_loading_since);
+                self.asr_loading_since = since(asr.phase == "loading", self.asr_loading_since);
                 self.tts_state = tts;
                 self.asr_state = asr;
             }
@@ -601,6 +670,10 @@ impl StttsApp {
                     self.mic_transition = MicTransition::None;
                 }
                 self.push_log(format!("[error:{scope}] {message}"));
+                if let Some(s) = self.sys {
+                    // 失敗の瞬間のリソースをログに残す(原因調査用)
+                    self.push_log(format!("[sys] {}", format_sample(&s)));
+                }
             }
             BackendMessage::Pong { .. } => {}
             BackendMessage::Devices { inputs, .. } => {
@@ -701,14 +774,9 @@ impl StttsApp {
     }
 
     fn insert_annotation(&mut self, emoji: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        let current = self.composer.read(cx).value().to_string();
-        let text = if emoji == "⏸️" {
-            format!("{current}{emoji}")
-        } else {
-            format!("{emoji}{current}")
-        };
         self.composer.update(cx, |s, cx| {
-            s.set_value(&text, window, cx);
+            // 選択が空ならカーソル位置へ挿入し、範囲があればそこを置き換える。
+            s.replace(emoji, window, cx);
             s.focus(window, cx);
         });
         cx.notify();
@@ -1299,4 +1367,20 @@ fn set_voice_image(src: &std::path::Path, dir: &std::path::Path, name: &str) -> 
     remove_voice_images(dir, name);
     std::fs::copy(src, dir.join(format!("{name}.{ext}")))?;
     Ok(())
+}
+
+const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+/// "VRAM 5.0/10.0GB (アプリ 3.1GB) · RAM 33.2/47.7GB"
+pub(crate) fn format_sample(s: &sysmon::SysSample) -> String {
+    let gb = |b: u64| b as f64 / GIB;
+    let mut parts = Vec::new();
+    if s.vram_total > 0 {
+        let app = s.app_vram.map(|a| format!(" (アプリ {:.1}GB)", gb(a))).unwrap_or_default();
+        parts.push(format!("VRAM {:.1}/{:.1}GB{app}", gb(s.vram_used), gb(s.vram_total)));
+    }
+    if s.ram_total > 0 {
+        parts.push(format!("RAM {:.1}/{:.1}GB", gb(s.ram_used), gb(s.ram_total)));
+    }
+    parts.join(" · ")
 }
