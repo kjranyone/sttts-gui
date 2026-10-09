@@ -63,21 +63,7 @@ pub fn assert_close(what: &str, got: &[f32], want: &[f32], rtol: f32) {
 pub fn device() -> Device {
     #[cfg(feature = "_gpu")]
     if std::env::var("IRODORI_DEVICE").as_deref() == Ok("gpu") {
-        return gpu_device();
+        return crate::device::gpu_device();
     }
     Device::flex()
-}
-
-/// wgpu の独立 GPU(プロセスで 1 回だけ初期化する)
-#[cfg(feature = "_gpu")]
-pub fn gpu_device() -> Device {
-    use std::sync::OnceLock;
-    static DEV: OnceLock<Device> = OnceLock::new();
-    DEV.get_or_init(|| {
-        Device::wgpu_options()
-            .device_kind(burn::tensor::DeviceKind::DiscreteGpu(0))
-            .init()
-            .expect("wgpu init")
-    })
-    .clone()
 }

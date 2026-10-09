@@ -48,7 +48,7 @@ fn main() -> Result<()> {
     let device = match device_kind.as_str() {
         "cpu" => Device::flex(),
         #[cfg(feature = "_gpu")]
-        "gpu" => irodori::testing::gpu_device(),
+        "gpu" => irodori::gpu_device(),
         other => bail!("unsupported --device {other} (cpu{})", if cfg!(feature = "_gpu") { " / gpu" } else { "; build with --features gpu for gpu" }),
     };
     eprintln!("device: {device:?}");

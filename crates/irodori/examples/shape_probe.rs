@@ -4,7 +4,7 @@ use std::time::Instant;
 use burn::tensor::{Distribution, Tensor};
 
 fn main() {
-    let dev = irodori::testing::gpu_device();
+    let dev = irodori::gpu_device();
     let w = Tensor::<2>::random([96, 672], Distribution::Default, &dev);
     let sync = |t: Tensor<2>| t.into_data().convert::<f32>().try_to_vec::<f32>().unwrap()[0];
     println!("--- matmul [96,672] x [672,n]: n を毎回変える");

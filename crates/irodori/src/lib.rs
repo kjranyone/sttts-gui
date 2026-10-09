@@ -13,9 +13,13 @@
 
 pub use burn::tensor::{Device, Tensor};
 
+#[cfg(feature = "_gpu")]
+pub use device::gpu_device;
+
 pub mod codec;
 pub mod condition;
 pub mod config;
+pub mod device;
 pub mod dit;
 pub mod duration;
 pub mod modernbert;
