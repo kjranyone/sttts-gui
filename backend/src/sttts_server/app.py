@@ -701,6 +701,10 @@ class BackendApp:
         self,
         request: int,
         chunk: int,
+                sampling=cfg.get("sampling"),
+                codec_repo=str(cfg.get("codec_repo") or ""),
+                codec_device=cfg.get("codec_device"),
+                codec_precision=str(cfg.get("codec_precision") or "fp32"),
         text: str,
         result: SynthResult,
         *,
@@ -718,6 +722,7 @@ class BackendApp:
             if info is None or info["cancelled"]:
                 log.info("drop audio of cancelled request %d chunk %d", request, chunk)
                 return
+                sampling=self.config["tts"].get("sampling"),
         path = self._save_wav(result.wav_bytes)
         audio_msg = {
             "type": "tts_audio",

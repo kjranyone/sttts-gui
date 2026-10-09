@@ -197,6 +197,8 @@ GUI に UI の無い設定は `data/backend.json`(任意。`STTTS_CONFIG` 環境
 | `tts.warmup` | `true` | モデル決定時にロード + 短文合成を先行して初回の待ちを無くす |
 | `tts.cache_conditions` | `true` | text / caption / 話者エンコードのメモ化(下記) |
 | `tts.ref_latent_cache` | `true` | 参照 WAV の DACVAE latent をキャッシュ(`~/.cache/sttts-gui/ref_latents`、Windows は `%LOCALAPPDATA%\sttts-gui\cache`) |
+| `tts.sampling` | `{}` | Irodori の `SamplingRequest` 項目を上書き(GUI 未対応でも使える)。例: `{"cfg_scale_text": 2.5, "cfg_scale_speaker": 6.0, "duration_scale": 1.1, "truncation_factor": 0.8, "lora_adapter": "..."}`。`text` / `caption` / `ref_*` / `no_ref` / `seed` は発話ごとにアプリが決めるため指定不可(エラー)。設定変更は次の発話から反映 |
+| `tts.codec_repo` / `tts.codec_device` / `tts.codec_precision` | `Aratako/Semantic-DACVAE-Japanese-32dim` / モデルと同じ / `fp32` | codec のロード設定(モデル再ロードで反映) |
 | `tts.compile` | `false` | `torch.compile`。初回が遅く、Windows では triton が必要。有効時はメモ化を無効化 |
 
 ### 何が速くなったか

@@ -54,7 +54,21 @@ REF_NORMALIZE_DB = -16.0
 REF_ENSURE_MAX = True
 REF_CACHE_VERSION = 1
 
+# アプリが発話ごとに決める SamplingRequest 項目(tts.sampling では上書きさせない)
+RESERVED_SAMPLING_KEYS = frozenset(
+    {"text", "caption", "ref_wav", "ref_wavs", "ref_latent", "ref_latents", "ref_embed", "no_ref", "seed"}
+)
+
 log = logging.getLogger("sttts.tts")
+
+
+def check_sampling_overrides(sampling: dict | None) -> dict:
+    """tts.sampling を検証して返す。予約キーは ValueError(黙って捨てると効かない原因が追えない)。"""
+    sampling = dict(sampling or {})
+    reserved = sorted(RESERVED_SAMPLING_KEYS & sampling.keys())
+    if reserved:
+        raise ValueError(f"tts.sampling に指定できないキー(発話ごとにアプリが決定): {reserved}")
+    return sampling
 
 
 def resolve_precision(device: str, requested: str | None, cuda_capability: tuple[int, int] | None = None) -> str:
@@ -181,7 +195,15 @@ class IrodoriTts:
         cache_conditions: bool = True,
         ref_latent_cache: bool = True,
         ref_cache_dir: str | None = None,
+        sampling: dict | None = None,
+        codec_repo: str = CODEC_REPO,
+        codec_device: str | None = None,
+        codec_precision: str = "fp32",
     ) -> None:
+        self.sampling = check_sampling_overrides(sampling)
+        self.codec_repo = codec_repo or CODEC_REPO
+        self.codec_device = codec_device
+        self.codec_precision = codec_precision or "fp32"
         self.model_id = model_id
         self.device = device
         self.num_steps = num_steps
@@ -231,10 +253,10 @@ class IrodoriTts:
             RuntimeKey(
                 checkpoint=checkpoint_path,
                 model_device=device,
-                codec_repo=CODEC_REPO,
+                codec_repo=self.codec_repo,
                 model_precision=model_precision,
-                codec_device=device,
-                codec_precision="fp32",
+                codec_device=self.codec_device or device,
+                codec_precision=self.codec_precision,
                 codec_deterministic_encode=True,
                 codec_deterministic_decode=True,
                 compile_model=self.compile_model,
@@ -271,7 +293,7 @@ class IrodoriTts:
         self.ref_cache_dir.mkdir(parents=True, exist_ok=True)
         out: list[str] = []
         for path in ref_wavs:
-            key = ref_cache_key(path, codec_repo=CODEC_REPO, trim_seconds=trim)
+            key = ref_cache_key(path, codec_repo=self.codec_repo, trim_seconds=trim)
             cached = self.ref_cache_dir / f"{key}.pt"
             if not cached.is_file():
                 wav, sr = _load_audio(path)
@@ -302,6 +324,7 @@ class IrodoriTts:
         ref_wavs: list[str] | None = None,
         seed: int | None = None,
         progress=None,
+        sampling: dict | None = None,
     ) -> SynthResult:
         import soundfile as sf  # noqa: PLC0415
         import torch  # noqa: PLC0415
@@ -322,7 +345,9 @@ class IrodoriTts:
                 log.exception("ref latent cache failed; falling back to ref_wavs")
                 ref_latents = None
         no_ref = not ref_wavs and not caption
-        req = SamplingRequest(
+        # 既定(コンストラクタ時の tts.sampling)< 呼び出しごとの tts.sampling(設定変更を即反映)
+        extra = {**self.sampling, **check_sampling_overrides(sampling)}
+        base = dict(
             text=text,
             caption=caption,
             ref_wavs=None if ref_latents else (list(ref_wavs) if ref_wavs else None),
@@ -335,6 +360,11 @@ class IrodoriTts:
             num_steps=self.num_steps,  # None で checkpoint 既定(MF:4 / RF:40)
             seed=seed,
         )
+        # num_steps / decode_mode も tts.sampling で上書き可(Irodori 側の項目名と同じ)
+        try:
+            req = SamplingRequest(**{**base, **extra})
+        except TypeError as e:
+            raise RuntimeError(f"tts.sampling に Irodori が知らない項目があります: {e}") from e
         try:
             result = self._runtime.synthesize(req)
         except torch.OutOfMemoryError as e:

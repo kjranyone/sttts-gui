@@ -31,6 +31,14 @@ DEFAULTS: dict[str, Any] = {
         "compile": False,  # torch.compile(初回が遅く、Windows では triton が必要)
         "cache_conditions": True,  # text/caption/speaker エンコード結果のメモ化
         "ref_latent_cache": True,  # 参照 WAV の DACVAE latent をディスクにキャッシュ
+        # Irodori の SamplingRequest 項目を丸ごと上書きできる(cfg_scale_text / duration_scale /
+        # seconds / truncation_factor / lora_adapter / t_schedule_mode ...)。GUI が対応していない
+        # Irodori の機能もここから使える。text/caption/ref_*/seed/no_ref は発話ごとにアプリが決める。
+        "sampling": {},
+        # RuntimeKey 側(ロード時に効く。変更はモデル再ロードで反映)
+        "codec_repo": "Aratako/Semantic-DACVAE-Japanese-32dim",
+        "codec_device": None,  # None でモデルと同じ
+        "codec_precision": "fp32",
         "ref_cache_dir": None,  # None で ~/.cache/sttts-gui/ref_latents(Windows は %LOCALAPPDATA%)
     },
     "asr": {

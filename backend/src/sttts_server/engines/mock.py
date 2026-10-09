@@ -56,7 +56,7 @@ class MockTts:
     def load(self, progress=None) -> None:
         time.sleep(0.3)  # ロードを模倣
 
-    def synthesize(self, text, *, caption=None, ref_wavs=None, seed=None, progress=None) -> SynthResult:
+    def synthesize(self, text, *, caption=None, ref_wavs=None, seed=None, progress=None, sampling=None) -> SynthResult:
         t0 = time.perf_counter()
         # 読了時間風: 文字数×90ms + 400ms、上限8秒
         duration = min(0.4 + 0.09 * len(text), 8.0)

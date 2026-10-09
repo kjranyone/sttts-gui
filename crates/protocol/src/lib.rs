@@ -229,6 +229,9 @@ pub struct TtsConfig {
     pub cache_conditions: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_latent_cache: Option<bool>,
+    /// Irodori の SamplingRequest 項目の上書き(cfg_scale_text / duration_scale 等。項目名は Irodori 側と同じ)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
