@@ -115,20 +115,28 @@ cargo run --release -p sttts-gui -- --mock
 cargo run --release -p sttts-gui -- --real
 ```
 
-使い方:
+使い方(画面は「何を話したか / どう伝えるか / どの声で届けるか」を分けて見せます):
 
-1. **入力/出力デバイス**を右パネル上部のセレクタで選択(選択は設定に保存され、
-   入力デバイス変更時はマイクセッションが自動で張り直されます)
-2. **入力レベルメーター**がマイク稼働中は dB 表示とバーで入力レベルを可視化します
-   (ASR に音が入っているかの確認用。緑→黄→赤)
-3. 「発話」パネルにテキストを入力し**発話**ボタン → チャンク合成されて順次再生されます
-4. **マイク開始** → 話すと部分文字起こし(灰色)→ 確定文(白)が表示され、
-   「ASR確定文を自動発話」が ON なら確定文がそのまま TTS されます
-5. モデルは右パネルで切替(`tts.warmup` が有効なら選択直後にロード + 短文合成でウォームアップ)
-6. 「キュー取消」は再生中・未再生の音声と未合成チャンクを破棄します。合成中の1チャンクは
-   Irodori の仕様上中断できませんが、完了後に結果を捨てるので鳴りません
-7. ヘッダ右側に **発話終了→初音**(話し終わってから最初の音声が再生キューに入るまで、
-   直近値と直近20回の中央値)と、ASR確定 / TTS初チャンク / RTF を表示します
+- **ストリーム(中央)**: 1枚のカード = 話した内容(上段・桜色)と、それを届けた声(下段・藤色)。
+  認識の途中経過は薄い文字で、確定すると白になります。届けた後は ▶(もう一度聞く)/
+  ↻(今の声でもう一度話す)/ 訂正(文を入力欄へ移して直す)が使えます
+- **入力欄(下)**: 文字で話すときに入力して **話す**(Ctrl+Enter)。発話中は **止める** で
+  再生中・未再生の音声と未合成チャンクを破棄します(合成中の1チャンクは Irodori の仕様上
+  中断できませんが、完了後に結果を捨てるので鳴りません)
+- **右レール**
+  - **ライブ**: ライブ開始/停止とマイクの入力レベル
+  - **届け方**: 「すぐ話す」(確定したら自動で発話)/「確認してから」(カードで止まり、
+    「この内容で話す」「訂正する」「話さない」を選ぶ)
+  - **声**: 声バンクの選択と、話し方の指示(Irodori の caption)
+  - **認識**: クラウド(Gemini)/ ローカルの切替。Gemini の API キーはここで入力します
+- **タイトルバー**: 全体の状態(準備完了 / 読み込み中 / エラー)、ライブ中の表示、
+  **応答**(話し終わってから最初の音声が再生キューに入るまで。直近値と直近20回の中央値)、
+  ⚙ 詳細設定、ログの開閉
+- **詳細設定(⚙)**: 入出力デバイス、音声合成モデル、seed など、環境で一度決めれば
+  普段は触らない設定。モデルを変えると(`tts.warmup` が有効なら)ロード + 短文合成で
+  ウォームアップします
+- **ステータスバー**: 認識時間 / 初音まで / 合成速度(RTF)。エラーが出るとログのボタンに
+  件数が出ます。ログは `data/gui.log` にも保存されます(起動ごとに作り直し)
 
 > **ヘッドホン推奨**: マイクは TTS 再生中も開いたままです。スピーカー再生だと合成音声を
 > マイクが拾い、それが文字起こし → 自動発話されてループします(エコーキャンセル未実装)。
@@ -149,8 +157,8 @@ uv run --no-sync python -m sttts_server --self-check-asr
 
 ### 声のバンク(voice cloning)
 
-`data/voices/` に参照音声の wav(10秒程度・話者の声)を置くと、GUI の「声」ドロップダウンから
-選択できるようになります(📁 ボタンでフォルダを開けます)。選択すると Irodori-TTS は
+`data/voices/` に参照音声の wav(10秒程度・話者の声)を置くと、GUI の右レール「声」から
+選択できるようになります(フォルダのボタンで開けます)。選択すると Irodori-TTS は
 その音声を話者参照として合成し、話し方を模倣します。未選択(既定の声)は
 キャプション/自動音質での合成になります。選択は `data/config.json` に保存されます。
 
@@ -185,7 +193,7 @@ GUI に UI の無い設定は `data/backend.json`(任意。`STTTS_CONFIG` 環境
 | `asr.nemotron_chunk_ms` | `320` | ストリーミングチャンク。HF パッケージは 320 のみ(1120 は発話確定がさらに速い。下記「Nemotron 1120ms export」参照) |
 | `asr.nemotron_precision` | `fp16` | `int8` は dynamic quantum で精度劣化するため非推奨 |
 | `asr.nemotron_threads` | `4` | onnxruntime の intra_op スレッド数 |
-| `asr.gemini_api_key` | `null` | AI Studio の API キー(null なら環境変数 `GEMINI_API_KEY` / `GOOGLE_API_KEY`) |
+| `asr.gemini_api_key` | `null` | AI Studio の API キー。**通常は GUI で入力する**(「認識」で Gemini を選ぶと「キー」欄が出る。`data/config.json` に Windows DPAPI で暗号化保存され、保存した PC のユーザーでしか復号できない)。GUI 未入力なら backend.json のこの値 → 環境変数 `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
 | `asr.gemini_mode` | `SMART` | `SMART`=フィラー除去・句読点整形 / `VERBATIM`=逐語 |
 | `asr.gemini_timeout_s` | `20` | 1発話の確定待ちタイムアウト |
 | `pipeline.first_chunk_mora_min` / `max` | `8` / `12` | 先頭チャンクを読点または約 8〜12 モーラの文節境界で切る(`max=0` で無効) |
@@ -291,7 +299,7 @@ ASR(`asr.engine`):
 | `kotoba`(既定) | `kotoba-tech/kotoba-whisper-v2.0-faster`(CTranslate2) | CUDA があれば float16、無ければ CPU int8。句読点は出ない |
 | `reazonspeech` | `reazon-research/reazonspeech-k2-v2`(sherpa-onnx、Apache-2.0) | CPU でも非常に速い(下表)。**句読点なし**・**固有名詞/英字略語に弱い**(例:「NLP」→「エネルギー」)・**int8 は短い発話で崩れる**ので fp32 推奨。`uv sync --extra <torch extra> --extra reazonspeech` |
 | `nemotron` | `nemotron-3.5-asr-streaming-0.6b` の ONNX export(cache-aware FastConformer-RNNT / onnxruntime、コード Apache-2.0 / 重み OpenMDW-1.1) | **句読点をネイティブ出力**・whisper large-v3 級の精度・発話確定 **平均 0.31 秒 / 最大 0.51 秒**(i5-12600KF、chunk=1120ms fp16 実測。chunk=320ms は平均 0.56 秒)。モデル ~2.5GB(fp16)。標準依存(`uv sync --extra <torch extra>`)。ストリーディングエンジンは `engines/vendor/nemotron_onnx_streaming.py` として同梱。**既知の弱点: 母音のみの連続(「あいうえお」等)を正しく認識しない**(直渡しでも「i」等に潰れる。kotoba は「アイウエオ」と認識。2026-10-09 検証)。通常の発話(子音を含む)では影響なし |
-| `gemini` | Google AI Studio「Gemini 3.5 Transcribe Live」(`gemini-3.5-transcribe-live` / Live API WebSocket) | **クラウド**。WER ~2.6%、SMART モードでフィラー(えー等)除去・句読点整形。発話単位で API へ送信(ローカル VAD はそのまま)。1発話 0.5〜1.5 秒程度(要実測)。話者分離・単語タイムスタンプ非対応。標準依存 + API キー |
+| `gemini` | Google AI Studio「Gemini 3.5 Transcribe Live」(`gemini-3.5-transcribe-live` / Live API WebSocket) | **クラウド**。WER ~2.6%、SMART モードでフィラー(えー等)除去・句読点整形。発話単位で API へ送信(ローカル VAD はそのまま)。1発話 0.5〜1.5 秒程度(要実測)。話者分離・単語タイムスタンプ非対応。標準依存 + API キー(GUI の「キー」欄で入力・「キーを取得」で AI Studio を開く) |
 
 VAD は silero-vad(ONNX)。VAD 発話終了時にバッファ全体を再デコードして確定文を作り、
 発話中は partial_interval_ms(既定800ms)ごとに部分表示を更新します。

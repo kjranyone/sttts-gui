@@ -262,7 +262,7 @@ mic(48k共有モード)→ soxr → 16k → silero VAD(512frame)
   デッドロックする**(TTS 単独 / ASR 単独では発生しない)。→ backend 起動時に
   scipy を先行 import しておき、後続 import をキャッシュヒットさせる
 - GUI を force-kill した場合、子の python バックエンドは孤児化する
-  (正常終了は「終了」ボタン / BackendHandle::shutdown 経由で行うこと)
+  (正常終了はウィンドウの × → BackendHandle::shutdown 経由で行うこと)
 - ウォーターマーク処理(silentcipher)が 48k→44.1k リサンプルの警告を出すが
   最終出力は 48kHz
 

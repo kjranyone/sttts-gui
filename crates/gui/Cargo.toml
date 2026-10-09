@@ -20,3 +20,7 @@ rodio = "0.21"
 
 [build-dependencies]
 embed-resource = "3"
+
+# API キーの暗号化保存(DPAPI)。gpui と同じ 0.62 系で依存を増やさない
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

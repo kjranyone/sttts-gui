@@ -29,6 +29,9 @@ pub struct AppSettings {
     /// ASR プロバイダ(asr.engine 値。None = nemotron)
     #[serde(default)]
     pub asr_provider: Option<String>,
+    /// Gemini API キー(DPAPI で暗号化した base64。secret::protect の出力)
+    #[serde(default)]
+    pub gemini_api_key_protected: Option<String>,
 }
 
 pub fn config_path(root: &Path) -> PathBuf {

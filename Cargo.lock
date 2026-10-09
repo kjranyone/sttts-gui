@@ -6559,6 +6559,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sttts-protocol",
+ "windows 0.62.2",
 ]
 
 [[package]]
