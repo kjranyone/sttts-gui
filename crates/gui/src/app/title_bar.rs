@@ -114,7 +114,7 @@ impl StttsApp {
                             div()
                                 .text_xs()
                                 .text_color(c(theme::TEXT_FAINT))
-                                .child("応答 —(話し終え → 発音)"),
+                                .child("応答 —"),
                         ),
                     })
                     .child(
@@ -129,7 +129,7 @@ impl StttsApp {
                                     .ghost()
                                     .icon(IconName::Settings)
                                     .selected(self.settings_open)
-                                    .tooltip("詳細設定(デバイス・音声合成モデル)")
+                                    .tooltip("詳細設定")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.settings_open = !this.settings_open;
                                         cx.notify();

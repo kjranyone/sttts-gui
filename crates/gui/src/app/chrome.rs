@@ -110,12 +110,7 @@ impl StttsApp {
                     .items_center()
                     .text_xs()
                     .text_color(c(theme::TEXT_FAINT))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(div().text_color(c(theme::TEXT_MUTED)).child("ログ"))
-                            .child("data/gui.log にも保存"),
-                    )
+                    .child(div().text_color(c(theme::TEXT_MUTED)).child("ログ"))
                     .child(
                         Button::new("close-log")
                             .xsmall()
@@ -152,7 +147,7 @@ impl StttsApp {
         let (title, body) = match self.mic_transition {
             MicTransition::Stopping => (
                 "ライブを停止しています…",
-                div().child(kit::hint("マイクの解放を待っています。直後の再開はしばらく受け付けません。")),
+                div(),
             ),
             _ => (
                 "ライブを準備しています…",

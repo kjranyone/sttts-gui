@@ -10,6 +10,7 @@
 //! 描画や音声再生はここで扱わない(状態遷移だけを持ち、単体テストで固める)。
 
 use std::collections::VecDeque;
+use sttts_protocol::DeliveryInfo;
 
 /// 保持するターン数の上限(古いものから捨てる)
 const MAX_TURNS: usize = 300;
@@ -37,6 +38,8 @@ pub enum TurnStatus {
     Unheard,
     /// 発話しなかった(破棄、または後続の発話が先に受け付けられた)
     Skipped,
+    /// 確定前にライブが止まった
+    Interrupted,
 }
 
 impl TurnStatus {
@@ -71,6 +74,8 @@ pub struct Turn {
     pub e2e_ms: Option<u64>,
     /// 確定文の認識時間
     pub asr_ms: Option<u64>,
+    /// 元音声から推定した表現。転写文とは別に保持する。
+    pub delivery: Option<DeliveryInfo>,
 }
 
 impl Turn {
@@ -107,10 +112,6 @@ impl Turns {
         self.items.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
     pub fn get(&self, id: u64) -> Option<&Turn> {
         self.items.iter().find(|t| t.id == id)
     }
@@ -143,6 +144,7 @@ impl Turns {
             chunks: Vec::new(),
             e2e_ms: None,
             asr_ms: None,
+            delivery: None,
         });
         while self.items.len() > MAX_TURNS {
             self.items.pop_front();
@@ -183,6 +185,18 @@ impl Turns {
         // speak_accepted が先に届いていた場合(投機的 TTS 等)は Speaking を保つ
         if turn.status != TurnStatus::Speaking {
             turn.status = status;
+        }
+    }
+
+    pub fn set_delivery(&mut self, utterance: u64, delivery: Option<DeliveryInfo>) {
+        if let Some(turn) = self.by_utterance(utterance) {
+            turn.delivery = delivery;
+        }
+    }
+
+    pub fn set_delivery_for_id(&mut self, id: u64, delivery: Option<DeliveryInfo>) {
+        if let Some(turn) = self.get_mut(id) {
+            turn.delivery = delivery;
         }
     }
 
@@ -299,6 +313,13 @@ impl Turns {
     }
 
     /// backend の(再)接続。request id は振り直されるので、進行中のターンを切り離す。
+    /// ライブが止まった。確定前の途中経過は確定しないので閉じる。
+    pub fn mic_stopped(&mut self) {
+        for t in self.items.iter_mut().filter(|t| t.status == TurnStatus::Listening) {
+            t.status = TurnStatus::Interrupted;
+        }
+    }
+
     pub fn backend_restarted(&mut self) {
         for t in self.items.iter_mut() {
             if t.status.is_active() || t.status == TurnStatus::Listening {
@@ -336,6 +357,16 @@ mod tests {
 
         t.speak_done(3, false, false);
         assert_eq!(t.iter().next().unwrap().status, TurnStatus::Done);
+    }
+
+    #[test]
+    fn mic_stop_closes_unfinished_partial() {
+        let mut t = Turns::default();
+        t.asr_final(1, "確定".into(), None, true);
+        t.asr_partial(2, "途中".into());
+        t.mic_stopped();
+        let statuses: Vec<_> = t.iter().map(|x| x.status).collect();
+        assert_eq!(statuses, vec![TurnStatus::Queued, TurnStatus::Interrupted]);
     }
 
     #[test]

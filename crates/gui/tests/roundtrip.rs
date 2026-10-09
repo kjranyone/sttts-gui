@@ -132,6 +132,7 @@ fn mock_backend_speak_roundtrip() {
                         ref_wavs: None,
                         seed: None,
                         tag: None,
+                        delivery: None,
                     },
                 );
             }

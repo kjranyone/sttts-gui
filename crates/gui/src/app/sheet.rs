@@ -60,16 +60,11 @@ impl StttsApp {
                             .border_b_1()
                             .border_color(c(theme::BORDER))
                             .child(
-                                v_flex()
-                                    .gap_0p5()
-                                    .child(
-                                        div()
-                                            .text_base()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(c(theme::TEXT))
-                                            .child("詳細設定"),
-                                    )
-                                    .child(kit::hint("環境に合わせて一度決めれば、普段は触らなくてよい設定です。")),
+                                div()
+                                    .text_base()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(c(theme::TEXT))
+                                    .child("詳細設定"),
                             )
                             .child(
                                 Button::new("close-settings")
@@ -104,8 +99,7 @@ impl StttsApp {
             v_flex()
                 .gap_3()
                 .child(kit::field("マイク(入力)", Select::new(&self.input_select).small()))
-                .child(kit::field("スピーカー(出力)", Select::new(&self.output_select).small()))
-                .child(kit::hint("ライブ中に入力を変えると、ライブはいったん停止します。")),
+                .child(kit::field("スピーカー(出力)", Select::new(&self.output_select).small())),
         )
     }
 
@@ -160,7 +154,6 @@ impl StttsApp {
             "音声合成モデル",
             v_flex()
                 .gap_2()
-                .when(rows.is_empty(), |col| col.child(kit::hint("バックエンドに接続すると一覧が表示されます。")))
                 .children(rows)
                 .child(kit::chip(
                     kit::phase_color(&self.tts_state.phase),
@@ -178,33 +171,25 @@ impl StttsApp {
                 .child(
                     Switch::new("random-seed")
                         .checked(self.random_seed)
-                        .label("毎回ランダムにする")
+                        .label("ランダム")
                         .on_click(move |checked, _, cx| {
                             let _ = weak.update(cx, |this, cx| this.set_random_seed(*checked, cx));
                         }),
                 )
-                .when(!self.random_seed, |col| col.child(Input::new(&self.seed_input).small()))
-                .child(kit::hint("固定すると、同じ文・同じ声で同じ抑揚になります。")),
+                .when(!self.random_seed, |col| col.child(Input::new(&self.seed_input).small())),
         )
     }
 
     fn render_advanced(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // tts.sampling / tts.codec_*(data/backend.json)と gui.log の置き場所
         kit::section(
-            "上級者向け",
-            v_flex()
-                .gap_2()
-                .child(kit::hint(
-                    "Irodori-TTS の細かな合成パラメータ(cfg_scale など)や codec の配置は、data/backend.json の tts.sampling / tts.codec_* で指定できます。",
-                ))
-                .child(kit::hint("動作の記録は data/gui.log に保存されます(起動ごとに作り直し)。"))
-                .child(
-                    Button::new("open-data")
-                        .small()
-                        .outline()
-                        .icon(IconName::FolderOpen)
-                        .label("data フォルダを開く")
-                        .on_click(cx.listener(|this, _, _, _| this.open_data_folder())),
-                ),
+            "ファイル",
+            Button::new("open-data")
+                .small()
+                .outline()
+                .icon(IconName::FolderOpen)
+                .label("data")
+                .on_click(cx.listener(|this, _, _, _| this.open_data_folder())),
         )
     }
 }

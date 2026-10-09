@@ -126,7 +126,8 @@ cargo run --release -p sttts-gui -- --real
 - **右レール**
   - **ライブ**: ライブ開始/停止とマイクの入力レベル
   - **届け方**: 「すぐ話す」(確定したら自動で発話)/「確認してから」(カードで止まり、
-    「この内容で話す」「訂正する」「話さない」を選ぶ)
+    「この内容で話す」「訂正する」「話さない」を選ぶ)。「話し方を反映する」は
+    元音声の速さと、任意の感情モデルによる表現を Irodori に渡します
   - **声**: 声バンクの選択と、話し方の指示(Irodori の caption)
   - **認識**: クラウド(Gemini)/ ローカルの切替。Gemini の API キーはここで入力します
 - **タイトルバー**: 全体の状態(準備完了 / 読み込み中 / エラー)、ライブ中の表示、
@@ -137,6 +138,10 @@ cargo run --release -p sttts-gui -- --real
   ウォームアップします
 - **ステータスバー**: 認識時間 / 初音まで / 合成速度(RTF)。エラーが出るとログのボタンに
   件数が出ます。ログは `data/gui.log` にも保存されます(起動ごとに作り直し)
+
+入力欄の「演技」パレット、転写文と合成用絵文字の扱い、対応する全絵文字は
+[Irodori への表現指示](docs/irodori-annotations.md)を参照してください。
+目的、データ経路、現時点の制約は[発話の表現を再構築する設計と実装状況](docs/acting-reconstruction-design.md)に記録しています。
 
 > **ヘッドホン推奨**: マイクは TTS 再生中も開いたままです。スピーカー再生だと合成音声を
 > マイクが拾い、それが文字起こし → 自動発話されてループします(エコーキャンセル未実装)。
@@ -194,13 +199,17 @@ GUI に UI の無い設定は `data/backend.json`(任意。`STTTS_CONFIG` 環境
 | `asr.nemotron_precision` | `fp16` | `int8` は dynamic quantum で精度劣化するため非推奨 |
 | `asr.nemotron_threads` | `4` | onnxruntime の intra_op スレッド数 |
 | `asr.gemini_api_key` | `null` | AI Studio の API キー。**通常は GUI で入力する**(「認識」で Gemini を選ぶと「キー」欄が出る。`data/config.json` に Windows DPAPI で暗号化保存され、保存した PC のユーザーでしか復号できない)。GUI 未入力なら backend.json のこの値 → 環境変数 `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
-| `asr.gemini_mode` | `SMART` | `SMART`=フィラー除去・句読点整形 / `VERBATIM`=逐語 |
+| `asr.gemini_mode` | `VERBATIM` | 話し方を残す逐語転写。`SMART`=フィラー除去・句読点整形 |
 | `asr.gemini_timeout_s` | `20` | 1発話の確定待ちタイムアウト |
 | `pipeline.first_chunk_mora_min` / `max` | `8` / `12` | 先頭チャンクを読点または約 8〜12 モーラの文節境界で切る(`max=0` で無効) |
 | `pipeline.chunk_min_chars` | `16` | 2チャンク目以降の最小文字数 |
 | `pipeline.chunk_max_chars` | `80` | これを超える塊は読点 / 文節境界で分割(句読点の無い ASR 出力対策) |
 | `pipeline.speculative_tts` | `false` | 投機的 TTS(下記) |
 | `pipeline.speculative_stable_partials` | `2` | 同じ先頭チャンクが何回連続したら先行合成するか |
+| `pipeline.performance_enabled` | `true` | 元音声の速さと任意の感情候補を Irodori の発話単位指示へ写す。GUI の「話し方を反映する」で切替 |
+| `pipeline.emotion_engine` | `none` | `emotion2vec` を選ぶと、ローカル CPU モデルを転写と並行実行する。任意 extra `emotion` が必要 |
+| `pipeline.emotion_model_dir` | `null` | 取得済み emotion2vec+ のローカルフォルダ。マイク稼働中にモデルをダウンロードしない |
+| `pipeline.performance_wait_ms` | `150` | ASR 確定後に表現分析を待つ上限。超過時は表現を付けず発話 |
 | `tts.precision` | `auto` | `auto` / `fp32` / `bf16`(auto: CUDA cc<8.0 → fp32、cc≥8.0・XPU → bf16、CPU → fp32) |
 | `tts.warmup` | `true` | モデル決定時にロード + 短文合成を先行して初回の待ちを無くす |
 | `tts.cache_conditions` | `true` | text / caption / 話者エンコードのメモ化(下記) |
@@ -299,9 +308,10 @@ ASR(`asr.engine`):
 | `kotoba`(既定) | `kotoba-tech/kotoba-whisper-v2.0-faster`(CTranslate2) | CUDA があれば float16、無ければ CPU int8。句読点は出ない |
 | `reazonspeech` | `reazon-research/reazonspeech-k2-v2`(sherpa-onnx、Apache-2.0) | CPU でも非常に速い(下表)。**句読点なし**・**固有名詞/英字略語に弱い**(例:「NLP」→「エネルギー」)・**int8 は短い発話で崩れる**ので fp32 推奨。`uv sync --extra <torch extra> --extra reazonspeech` |
 | `nemotron` | `nemotron-3.5-asr-streaming-0.6b` の ONNX export(cache-aware FastConformer-RNNT / onnxruntime、コード Apache-2.0 / 重み OpenMDW-1.1) | **句読点をネイティブ出力**・whisper large-v3 級の精度・発話確定 **平均 0.31 秒 / 最大 0.51 秒**(i5-12600KF、chunk=1120ms fp16 実測。chunk=320ms は平均 0.56 秒)。モデル ~2.5GB(fp16)。標準依存(`uv sync --extra <torch extra>`)。ストリーディングエンジンは `engines/vendor/nemotron_onnx_streaming.py` として同梱。**既知の弱点: 母音のみの連続(「あいうえお」等)を正しく認識しない**(直渡しでも「i」等に潰れる。kotoba は「アイウエオ」と認識。2026-10-09 検証)。通常の発話(子音を含む)では影響なし |
-| `gemini` | Google AI Studio「Gemini 3.5 Transcribe Live」(`gemini-3.5-transcribe-live` / Live API WebSocket) | **クラウド**。WER ~2.6%、SMART モードでフィラー(えー等)除去・句読点整形。発話単位で API へ送信(ローカル VAD はそのまま)。1発話 0.5〜1.5 秒程度(要実測)。話者分離・単語タイムスタンプ非対応。標準依存 + API キー(GUI の「キー」欄で入力・「キーを取得」で AI Studio を開く) |
+| `gemini` | Google AI Studio「Gemini 3.5 Transcribe Live」(`gemini-3.5-transcribe-live` / Live API WebSocket) | **クラウド**。発話中に約100ms単位の PCM を送り、途中結果を表示し、ローカル VAD の終了時に `audio_stream_end` で確定。既定は `VERBATIM`。話者分離・単語タイムスタンプ非対応。標準依存 + API キー(GUI の「キー」欄で入力・「キーを取得」で AI Studio を開く) |
 
-VAD は silero-vad(ONNX)。VAD 発話終了時にバッファ全体を再デコードして確定文を作り、
+VAD は silero-vad(ONNX)。Gemini は発話中に Live セッションへ音声を送り、終了時に確定します。
+ローカル ASR は VAD 発話終了時にバッファ全体を再デコードし、
 発話中は partial_interval_ms(既定800ms)ごとに部分表示を更新します。
 kotoba / reazonspeech は句読点を出さないため、チャンク分割は文節境界の近似と長さで切ります
 (nemotron のみ句読点をネイティブ出力するため、読点で綺麗に切れます)。

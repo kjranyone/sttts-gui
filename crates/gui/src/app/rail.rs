@@ -134,6 +134,7 @@ impl StttsApp {
 
     fn render_delivery(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let auto = self.auto_speak;
+        let expressive = self.performance_enabled;
         kit::section(
             "届け方",
             v_flex()
@@ -152,11 +153,19 @@ impl StttsApp {
                             cx.listener(|this, _, _, cx| this.set_auto_speak(false, cx)),
                         )),
                 )
-                .child(kit::hint(if auto {
-                    "認識が確定したら、すぐその声で話します。誤認識もそのまま届くので、気づいたらカードの「止める」「訂正」で直します。スピーカーで鳴らすとマイクが拾って繰り返すことがあるため、ヘッドホン推奨です。"
-                } else {
-                    "確定した文はカードで止まります。「この内容で話す」か「訂正する」を選んでから届けます。"
-                })),
+                .child(
+                    h_flex()
+                        .gap_0p5()
+                        .p_0p5()
+                        .rounded_md()
+                        .bg(c(theme::ELEVATED))
+                        .child(segment("expression-on", "話し方を反映", expressive).on_click(
+                            cx.listener(|this, _, _, cx| this.set_performance_enabled(true, cx)),
+                        ))
+                        .child(segment("expression-off", "明瞭に読む", !expressive).on_click(
+                            cx.listener(|this, _, _, cx| this.set_performance_enabled(false, cx)),
+                        )),
+                ),
         )
     }
 
@@ -165,8 +174,7 @@ impl StttsApp {
             "声",
             v_flex()
                 .gap_3()
-                .child(kit::field(
-                    "どの声で届けるか",
+                .child(
                     h_flex()
                         .gap_1()
                         .child(div().flex_1().min_w_0().child(Select::new(&self.voice_select).small()))
@@ -175,14 +183,11 @@ impl StttsApp {
                                 .small()
                                 .ghost()
                                 .icon(IconName::FolderOpen)
-                                .tooltip("声フォルダを開く(wav を置くと声として選べます)")
+                                .tooltip("声フォルダ")
                                 .on_click(cx.listener(|this, _, window, cx| this.open_voice_folder(window, cx))),
                         ),
-                ))
-                .child(kit::field("話し方の指示(任意)", Input::new(&self.caption_input).small()))
-                .child(kit::hint(
-                    "声の質や性別ではなく、場面や伝え方を書くと安定します(声そのものは上の選択で決まります)。",
-                )),
+                )
+                .child(kit::field("話し方", Input::new(&self.caption_input).small())),
         )
     }
 
@@ -195,7 +200,7 @@ impl StttsApp {
             v_flex()
                 .gap_2()
                 .child(kit::field(
-                    "Gemini API キー",
+                    "API キー",
                     h_flex()
                         .gap_1()
                         .child(div().flex_1().min_w_0().child(Input::new(&self.gemini_key_input).mask_toggle().small()))
@@ -205,7 +210,7 @@ impl StttsApp {
                                 .ghost()
                                 .icon(IconName::ExternalLink)
                                 .label("取得")
-                                .tooltip("Google AI Studio でキーを発行する")
+                                .tooltip("Google AI Studio")
                                 .on_click(cx.listener(|_, _, _, cx| cx.open_url(GEMINI_KEY_URL))),
                         ),
                 ))
@@ -213,22 +218,17 @@ impl StttsApp {
                     div()
                         .text_xs()
                         .text_color(c(if has_key { theme::LIVE } else { theme::WARN }))
-                        .child(if has_key {
-                            "✓ 保存済み(この PC のユーザーだけが読める形で暗号化)"
-                        } else {
-                            "未設定: 「取得」でキーを発行し、貼り付けて Enter"
-                        }),
+                        .child(if has_key { "保存済み" } else { "未設定" }),
                 )
-                .child(kit::hint("話した音声は発話ごとに Google へ送られます。"))
         } else {
-            v_flex().child(kit::hint("この PC の中で認識します(音声は外部に送りません)。"))
+            v_flex()
         };
 
         kit::section(
             "認識",
             v_flex()
                 .gap_3()
-                .child(kit::field("話した内容を文字にする方法", Select::new(&self.asr_select).small()))
+                .child(Select::new(&self.asr_select).small())
                 .child(detail)
                 .child(kit::chip(
                     kit::phase_color(phase),

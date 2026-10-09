@@ -16,6 +16,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub auto_speak: Option<bool>,
     #[serde(default)]
+    pub performance_enabled: Option<bool>,
+    #[serde(default)]
     pub random_seed: Option<bool>,
     /// 入力デバイス名(None = システム既定)
     #[serde(default)]

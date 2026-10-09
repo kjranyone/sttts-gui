@@ -97,6 +97,11 @@ pub enum BackendMessage {
         /// 発話音声の長さ(ms)
         #[serde(default)]
         audio_ms: Option<u64>,
+        /// 元音声から得た発話単位の表現。転写文には挿入しない。
+        #[serde(default)]
+        delivery: Option<DeliveryInfo>,
+        #[serde(default)]
+        pause_ms: Option<u64>,
     },
     SpeakAccepted {
         request: u64,
@@ -109,6 +114,8 @@ pub enum BackendMessage {
         utterance: Option<u64>,
         #[serde(default)]
         speech_end_ms: Option<f64>,
+        #[serde(default)]
+        delivery: Option<DeliveryInfo>,
     },
     TtsChunkStart {
         request: u64,
@@ -171,6 +178,19 @@ pub enum BackendMessage {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeliveryInfo {
+    #[serde(default)]
+    pub emoji: Option<String>,
+    #[serde(default)]
+    pub style: Option<String>,
+    #[serde(default)]
+    pub duration_scale: Option<f64>,
+    #[serde(default)]
+    pub emotion: Option<String>,
+    pub source: String,
+}
+
 /// GUI → backend メッセージ。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -199,6 +219,9 @@ pub enum GuiMessage {
         seed: Option<i64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tag: Option<String>,
+        /// ASR 発話を確認してから話す場合に表現計画を保持する。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delivery: Option<DeliveryInfo>,
     },
     CancelSpeak,
     Ping {
@@ -294,6 +317,13 @@ pub struct PipelineConfig {
     pub speculative_tts: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speculative_stable_partials: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub performance_enabled: Option<bool>,
+    /// "none" | "emotion2vec"。感情推定は CPU で ASR と並行実行する。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emotion_engine: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub performance_wait_ms: Option<u32>,
 }
 
 /// 既知/未知をまとめて受けるラッパ。未知のtypeはUI側でログ表示に回す。
@@ -425,6 +455,7 @@ mod tests {
             ref_wavs: None,
             seed: None,
             tag: None,
+            delivery: None,
         })
         .unwrap();
         assert_eq!(s, r#"{"type":"speak","text":"こんにちは"}"#);

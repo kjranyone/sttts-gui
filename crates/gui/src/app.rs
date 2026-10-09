@@ -83,6 +83,7 @@ pub struct StttsApp {
     // ---- 届け方
     /// 確定文を自動で話す(false = 確認してから話す)
     auto_speak: bool,
+    performance_enabled: bool,
 
     // ---- 声
     voices: Vec<(String, PathBuf)>,
@@ -146,21 +147,22 @@ impl StttsApp {
         let root = backend::repo_root();
         let saved = settings::AppSettings::load(&root);
         let auto_speak = saved.auto_speak.unwrap_or(true);
+        let performance_enabled = saved.performance_enabled.unwrap_or(true);
         let random_seed = saved.random_seed.unwrap_or(true);
 
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .placeholder("文字で話す(Ctrl+Enter で発話)")
+                .placeholder("文字で話す")
                 .auto_grow(1, 6)
         });
         let caption_input = cx.new(|cx| {
-            let mut state = InputState::new(window, cx).placeholder("例: 落ち着いて、近い距離感で");
+            let mut state = InputState::new(window, cx);
             if let Some(caption) = &saved.caption {
                 state.set_value(caption.as_str(), window, cx);
             }
             state
         });
-        let seed_input = cx.new(|cx| InputState::new(window, cx).placeholder("固定する seed 値"));
+        let seed_input = cx.new(|cx| InputState::new(window, cx).placeholder("seed"));
 
         // --- 入出力デバイス選択
         let saved_input_device = saved.input_device.clone();
@@ -213,7 +215,7 @@ impl StttsApp {
         let gemini_key_input = cx.new(|cx| {
             let mut state = InputState::new(window, cx)
                 .masked(true)
-                .placeholder("AIza… を貼り付けて Enter");
+                .placeholder("AIza…");
             state.set_value(gemini_api_key.as_str(), window, cx);
             state
         });
@@ -242,6 +244,7 @@ impl StttsApp {
             stream_scroll: gpui::ScrollHandle::new(),
             composer,
             auto_speak,
+            performance_enabled,
             voices,
             selected_voice_name: saved_voice,
             voice_select,
@@ -314,6 +317,7 @@ impl StttsApp {
             voice: Some(app.selected_voice_config()),
             pipeline: Some(PipelineConfig {
                 auto_speak: Some(app.auto_speak),
+                performance_enabled: Some(app.performance_enabled),
                 ..Default::default()
             }),
         });
@@ -464,6 +468,9 @@ impl StttsApp {
                 self.status_hint = if mock { "モック接続".into() } else { "実エンジン接続".into() };
             }
             BackendMessage::State { tts, asr, mic_running } => {
+                if self.mic_running && !mic_running {
+                    self.turns.mic_stopped();
+                }
                 self.mic_running = mic_running;
                 // 停止中は State 応答で解除。開始中は TTS と ASR の両方が準備完了/エラーに
                 // なるまでオーバーレイを維持し、ロードの様子を見せる(ASR だけ見ると
@@ -491,11 +498,12 @@ impl StttsApp {
                 self.turns.asr_partial(utterance, text);
                 self.stream_scroll.scroll_to_bottom();
             }
-            BackendMessage::AsrFinal { utterance, text, asr_ms, .. } => {
+            BackendMessage::AsrFinal { utterance, text, asr_ms, delivery, .. } => {
                 if asr_ms.is_some() {
                     self.last_asr_ms = asr_ms;
                 }
                 self.turns.asr_final(utterance, text, asr_ms, self.auto_speak);
+                self.turns.set_delivery(utterance, delivery);
                 self.stream_scroll.scroll_to_bottom();
             }
             BackendMessage::SpeakAccepted { request, origin, tag, utterance, .. } => {
@@ -641,6 +649,7 @@ impl StttsApp {
             ref_wavs: None,
             seed,
             tag: Some(tag_for(turn_id)),
+            delivery: self.turns.get(turn_id).and_then(|turn| turn.delivery.clone()),
         });
         self.stream_scroll.scroll_to_bottom();
     }
@@ -655,6 +664,20 @@ impl StttsApp {
         self.send_speak(text, id, cx);
         self.composer.update(cx, |s, cx| s.set_value("", window, cx));
         self.persist_settings(cx);
+        cx.notify();
+    }
+
+    fn insert_annotation(&mut self, emoji: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.composer.read(cx).value().to_string();
+        let text = if emoji == "⏸️" {
+            format!("{current}{emoji}")
+        } else {
+            format!("{emoji}{current}")
+        };
+        self.composer.update(cx, |s, cx| {
+            s.set_value(&text, window, cx);
+            s.focus(window, cx);
+        });
         cx.notify();
     }
 
@@ -684,11 +707,12 @@ impl StttsApp {
 
     /// 同じ文を今の声・話し方でもう一度話す(新しいターンになる)。
     fn respeak_turn(&mut self, id: u64, cx: &mut Context<Self>) {
-        let Some(text) = self.turns.get(id).map(|t| t.text.clone()) else { return };
+        let Some((text, delivery)) = self.turns.get(id).map(|t| (t.text.clone(), t.delivery.clone())) else { return };
         if text.trim().is_empty() {
             return;
         }
         let new_id = self.turns.push_typed(text.clone());
+        self.turns.set_delivery_for_id(new_id, delivery);
         self.send_speak(text, new_id, cx);
         cx.notify();
     }
@@ -748,6 +772,25 @@ impl StttsApp {
             voice: None,
             pipeline: Some(PipelineConfig {
                 auto_speak: Some(on),
+                ..Default::default()
+            }),
+        });
+        self.persist_settings(cx);
+        cx.notify();
+    }
+
+    fn set_performance_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.performance_enabled == on {
+            return;
+        }
+        self.performance_enabled = on;
+        self.send(GuiMessage::Configure {
+            tts: None,
+            asr: None,
+            audio: None,
+            voice: None,
+            pipeline: Some(PipelineConfig {
+                performance_enabled: Some(on),
                 ..Default::default()
             }),
         });
@@ -979,6 +1022,7 @@ impl StttsApp {
             tts_model: Some(self.selected_model_id.clone()),
             caption: Some(caption),
             auto_speak: Some(self.auto_speak),
+            performance_enabled: Some(self.performance_enabled),
             random_seed: Some(self.random_seed),
             input_device: self.selected_input_name.clone(),
             output_device: self.selected_output_name.clone(),
