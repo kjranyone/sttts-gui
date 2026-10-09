@@ -15,7 +15,7 @@
 .EXAMPLE
     .\dev.ps1                       # モードを対話式で選択して起動
     .\dev.ps1 -Mode real            # 実エンジンモードを直接指定(対話なし)
-    .\dev.ps1 -Mode real -Backend cu128   # NVIDIA GPU (CUDA 12.8) 用に同期して起動(以降は記録される)
+    .\dev.ps1 -Mode real -Backend cu130   # NVIDIA GPU (CUDA 13.0) 用に同期して起動(以降は記録される)
     .\dev.ps1 -DebugBuild -Mode mock
 #>
 [CmdletBinding()]
@@ -25,9 +25,9 @@ param(
     [ValidateSet('mock', 'real')]
     [string]$Mode,
 
-    # PyTorch バックエンド: xpu(Intel Arc・既定) / cu128(NVIDIA CUDA 12.8) / cpu
+    # PyTorch バックエンド: xpu(Intel Arc・既定) / cu130(NVIDIA CUDA 13.0) / cpu
     # 省略時は前回同期したバックエンド(backend/.venv/.sttts-backend)、なければ xpu。
-    [ValidateSet('xpu', 'cu128', 'cpu')]
+    [ValidateSet('xpu', 'cu130', 'cpu')]
     [string]$Backend,
 
     # デバッグプロファイル (target/debug) を使う(既定は release)
@@ -90,7 +90,7 @@ if ($Mode -eq 'real') {
         $Backend = 'xpu'
         if (Test-Path $BackendMarker) {
             $saved = (Get-Content $BackendMarker -Raw).Trim()
-            if ($saved -in @('xpu', 'cu128', 'cpu')) { $Backend = $saved }
+            if ($saved -in @('xpu', 'cu130', 'cpu')) { $Backend = $saved }
         }
     }
     Step "backend の Python 環境を同期します (uv sync --extra $Backend / 初回は数GBのダウンロード)"

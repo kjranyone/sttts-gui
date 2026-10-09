@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "sttts-gui backend: streaming ASR -> chunking -> Irodori-TTS (Intel XPU / NVIDIA CUDA / CPU)"
 requires-python = ">=3.12"
 dependencies = [
-    # PyTorch バックエンドは下の extra(xpu / cu128 / cpu)のどれか1つで選ぶ。
+    # PyTorch バックエンドは下の extra(xpu / cu130 / cpu)のどれか1つで選ぶ。
     # irodori-tts は検証済みコミットに固定(uv.lock と同じ 89f9d8f)。
     "irodori-tts @ git+https://github.com/Aratako/Irodori-TTS@89f9d8fbd4d51ea019867ee1197725ede1df13c5",
     "faster-whisper>=1.1.0",
@@ -21,7 +21,7 @@ dependencies = [
 # PyTorch バックエンド extra は相互排他(どれか1つだけを指定する)。
 # 本家 Irodori-TTS の pyproject をミラーしている。
 #   uv sync --extra xpu    # Intel Arc (B570 等)
-#   uv sync --extra cu128  # NVIDIA CUDA 12.8 (RTX 2080Ti 等)
+#   uv sync --extra cu130  # NVIDIA CUDA 13.0 (RTX 2080Ti 等)
 #   uv sync --extra cpu    # CPU のみ / macOS
 xpu = [
     "torch>=2.14.1,<2.15.0; sys_platform == 'linux' or sys_platform == 'win32'",
@@ -30,11 +30,11 @@ xpu = [
     "torchcodec>=0.17.0,<0.18.0; sys_platform == 'linux' or sys_platform == 'win32'",
     "triton-xpu>=3.8.0; sys_platform == 'linux' or sys_platform == 'win32'",
 ]
-cu128 = [
-    "torch>=2.10.0,<2.11.0",
-    "torchao>=0.16.0,<0.17.0",
-    "torchaudio>=2.10.0,<2.11.0",
-    "torchcodec>=0.10.0,<0.11.0",
+cu130 = [
+    "torch>=2.14.1,<2.15.0",
+    "torchao>=0.18.0,<0.19.0",
+    "torchaudio>=2.11.0,<2.12.0",
+    "torchcodec>=0.17.0,<0.18.0",
 ]
 cpu = [
     "torch>=2.14.1,<2.15.0",
@@ -58,7 +58,7 @@ emotion = ["funasr>=1.4.14"]
 override-dependencies = [
     "sentencepiece>=0.2.0,<0.3",
     # irodori-tts は torchcodec<0.11 を検証範囲として宣言しているが、PyTorch 2.14(xpu extra)には
-    # 0.17 が対応する。cpu extra も同じ。cu128 は index が 2.11 までしかないため 2.10 系のまま(未更新・未検証)。
+    # 0.17 が対応する。cpu / cu130 extra も同じ(cu128 は index が 2.11 止まりのため cu130 に移行)。
     "torchcodec>=0.10.0,<0.18.0",
 ]
 
@@ -66,7 +66,7 @@ override-dependencies = [
 conflicts = [
     [
         { extra = "xpu" },
-        { extra = "cu128" },
+        { extra = "cu130" },
         { extra = "cpu" },
     ],
 ]
@@ -74,12 +74,12 @@ conflicts = [
 [tool.uv.sources]
 torch = [
     { index = "pytorch-xpu", extra = "xpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pytorch-cu130", extra = "cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 torchaudio = [
     { index = "pytorch-xpu", extra = "xpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pytorch-cu130", extra = "cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 triton-xpu = [
@@ -92,8 +92,8 @@ url = "https://download.pytorch.org/whl/xpu"
 explicit = true
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [[tool.uv.index]]
@@ -130,4 +130,9 @@ requires-dist = []
 [[tool.uv.dependency-metadata]]
 name = "torchaudio"
 version = "2.11.0+cpu"
+requires-dist = []
+
+[[tool.uv.dependency-metadata]]
+name = "torchaudio"
+version = "2.11.0+cu130"
 requires-dist = []

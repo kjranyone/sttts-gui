@@ -8,7 +8,7 @@ sttts-gui で作業するエージェントへの指示。人間のコントリ�
 
 ## 開発コマンド
 
-- 起動: `.\dev.ps1`(real は毎回 `uv sync`、続けて差分 `cargo build` → GUI 起動。`-Mode mock|real`、`-Backend xpu|cu128|cpu` は初回のみ指定し以降は記録される。依存は自動同期されるので手動の `uv sync` 不要)
+- 起動: `.\dev.ps1`(real は毎回 `uv sync`、続けて差分 `cargo build` → GUI 起動。`-Mode mock|real`、`-Backend xpu|cu130|cpu` は初回のみ指定し以降は記録される。依存は自動同期されるので手動の `uv sync` 不要)
 - バックエンドテスト: `cd backend && uv run --no-sync pytest`(実モデル不要。fake で全体を検証する設計)
 - Rust: `cargo check` / `cargo build --release`(MSRV 1.95。`rust-version` 宣言済み)
 
