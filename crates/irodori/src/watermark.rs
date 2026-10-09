@@ -76,7 +76,7 @@ impl WatermarkConfig {
 
 /// 1 回の行列積で出力する位置数(固定長。最後の塊は零詰め)。大きすぎると一時メモリが膨らみ、
 /// 小さすぎると演算の数が増える。`[k*k*C, CHUNK]` の im2col が数十 MB に収まる大きさ。
-const CHUNK: usize = 65536;
+const CHUNK: usize = 16384;
 
 /// 活性を「縁取り付きの格子を行優先で平らにした」形 `[C, buf_len]` で持つための寸法。
 ///
