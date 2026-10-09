@@ -24,11 +24,11 @@ dependencies = [
 #   uv sync --extra cu128  # NVIDIA CUDA 12.8 (RTX 2080Ti 等)
 #   uv sync --extra cpu    # CPU のみ / macOS
 xpu = [
-    "torch>=2.10.0,<2.11.0; sys_platform == 'linux' or sys_platform == 'win32'",
-    "torchao>=0.16.0,<0.17.0; sys_platform == 'linux' or sys_platform == 'win32'",
-    "torchaudio>=2.10.0,<2.11.0; sys_platform == 'linux' or sys_platform == 'win32'",
-    "torchcodec>=0.10.0,<0.11.0; sys_platform == 'linux' or sys_platform == 'win32'",
-    "triton-xpu==3.6.0; sys_platform == 'linux' or sys_platform == 'win32'",
+    "torch>=2.14.1,<2.15.0; sys_platform == 'linux' or sys_platform == 'win32'",
+    "torchao>=0.18.0,<0.19.0; sys_platform == 'linux' or sys_platform == 'win32'",
+    "torchaudio>=2.11.0,<2.12.0; sys_platform == 'linux' or sys_platform == 'win32'",
+    "torchcodec>=0.17.0,<0.18.0; sys_platform == 'linux' or sys_platform == 'win32'",
+    "triton-xpu>=3.8.0; sys_platform == 'linux' or sys_platform == 'win32'",
 ]
 cu128 = [
     "torch>=2.10.0,<2.11.0",
@@ -37,10 +37,10 @@ cu128 = [
     "torchcodec>=0.10.0,<0.11.0",
 ]
 cpu = [
-    "torch>=2.10.0,<2.11.0",
-    "torchao>=0.16.0,<0.17.0",
-    "torchaudio>=2.10.0,<2.11.0",
-    "torchcodec>=0.10.0,<0.11.0",
+    "torch>=2.14.1,<2.15.0",
+    "torchao>=0.18.0,<0.19.0",
+    "torchaudio>=2.11.0,<2.12.0",
+    "torchcodec>=0.17.0,<0.18.0",
 ]
 # 任意: ReazonSpeech (sherpa-onnx) ASR エンジン。asr.engine = "reazonspeech" で使う。
 # sherpa-onnx の wheel メタデータは dynamic で、uv.lock に sherpa-onnx-core
@@ -55,7 +55,13 @@ emotion = ["funasr>=1.4.14"]
 [tool.uv]
 # sentencepiece 0.1.x(irodori-tts のピン "<0.2")は cp312 Windows wheel が存在せず、
 # sdist ビルドが現行 CMake(3.5 未満互換削除)で必ず失敗するため 0.2.x へ上書きする。
-override-dependencies = ["sentencepiece>=0.2.0,<0.3"]
+override-dependencies = [
+    "sentencepiece>=0.2.0,<0.3",
+    # irodori-tts は torchcodec<0.11 を検証範囲として宣言しているが、PyTorch 2.14(xpu extra)には
+    # 0.17 が対応する。cpu extra も同じ。cu128 は index が 2.11 までしかないため 2.10 系のまま(未更新・未検証)。
+    "torchcodec>=0.10.0,<0.18.0",
+]
+
 # PyTorch バックエンド extra は同時に指定できない
 conflicts = [
     [
@@ -112,3 +118,16 @@ allow-direct-references = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+# torchaudio は 2.11 が最新で torch==2.11 を宣言するが、2.9 以降は load を torchcodec へ委譲する
+# 薄いパッケージで torch 2.14 でも動く(torchaudio.load / save / functional.resample を確認)。
+# torch の宣言は外し、torch 本体は各 extra が(PyTorch の index から)与える。
+[[tool.uv.dependency-metadata]]
+name = "torchaudio"
+version = "2.11.0+xpu"
+requires-dist = []
+
+[[tool.uv.dependency-metadata]]
+name = "torchaudio"
+version = "2.11.0+cpu"
+requires-dist = []

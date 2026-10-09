@@ -18,11 +18,11 @@ const CARD_MAX_W: f32 = 780.;
 /// Irodori-TTS v4 の入力パレット。依存ピン `89f9d8f` の
 /// `irodori_tts/gradio_emoji_palette.py` `EMOJI_PALETTE_ITEMS` と、
 /// v4 / v4.1 の `EMOJI_ANNOTATIONS.md` と同じ 45 種・同じ順。
-/// 意味は公式表の日本語欄。`⏸️` だけは末尾へ入れることをツールチップに書く。
+/// 意味は公式表の日本語欄。クリックは入力欄のカーソル位置へ入れる。
 const ANNOTATION_CHOICES: &[(&str, &str)] = &[
     ("👂", "囁き、耳元"),
     ("😮‍💨", "吐息、溜息、寝息"),
-    ("⏸️", "間、沈黙。末尾に追加"),
+    ("⏸️", "間、沈黙"),
     ("🤭", "くすくす、含み笑い"),
     ("🥵", "喘ぎ、うめき"),
     ("📢", "エコー、リバーブ"),
@@ -68,17 +68,18 @@ const ANNOTATION_CHOICES: &[(&str, &str)] = &[
 ];
 const _: () = assert!(ANNOTATION_CHOICES.len() == 45);
 
-fn status_label(turn: &Turn) -> (String, u32) {
+fn status_label(turn: &Turn, tts_ready: bool) -> (String, u32) {
     match turn.status {
         TurnStatus::Listening => ("聞き取り中…".into(), theme::INPUT),
         TurnStatus::AwaitingConfirm => ("確認待ち".into(), theme::WARN),
-        TurnStatus::Queued => ("発話待ち".into(), theme::TEXT_MUTED),
+        TurnStatus::Queued if !tts_ready => (format!("音声合成の準備待ち · {}秒", turn.waited_secs()), theme::WARN),
+        TurnStatus::Queued => (format!("発話待ち · {}秒", turn.waited_secs()), theme::TEXT_MUTED),
         TurnStatus::Speaking => {
             let (ready, total) = (turn.ready_chunks(), turn.chunks.len());
             if total > 0 && ready == total {
                 ("再生中".into(), theme::VOICE)
             } else {
-                (format!("合成中 {ready}/{}", total.max(1)), theme::VOICE)
+                (format!("合成中 {ready}/{} · {}秒", total.max(1), turn.waited_secs()), theme::VOICE)
             }
         }
         TurnStatus::Done => ("届けました".into(), theme::LIVE),
@@ -119,7 +120,7 @@ impl StttsApp {
 
     fn render_turn(&self, turn: &Turn, cx: &mut Context<Self>) -> impl IntoElement {
         let id = turn.id;
-        let (status, status_color) = status_label(turn);
+        let (status, status_color) = status_label(turn, self.tts_state.phase == "ready");
         let is_mic = matches!(turn.source, TurnSource::Mic { .. });
         let speaking = turn.status == TurnStatus::Speaking;
         let quiet = matches!(

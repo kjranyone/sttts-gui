@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import base64
-import contextlib
 import json
 import logging
 import os
@@ -40,29 +39,25 @@ logging.basicConfig(
 )
 log = logging.getLogger("sttts")
 
-# irodori / dacvae / silentcipher は print() でプロセスの stdout へ直接書くため、
-# エンジン呼び出し中は fd レベルで stdout→stderr へリダイレクトする。
-# プロトコル出力は起動時に複製した専用 fd へ書くため影響を受けない。
-_FD_REDIRECT_LOCK = threading.Lock()
-
-
-@contextlib.contextmanager
-def _engine_quiet_stdout():
-    with _FD_REDIRECT_LOCK:
-        saved = os.dup(1)
-        try:
-            sys.stdout.flush()
-            os.dup2(2, 1)
-            yield
-        finally:
-            sys.stdout.flush()
-            os.dup2(saved, 1)
-            os.close(saved)
-
-
 def _ms(t: float) -> float:
     """time.monotonic() 秒 → ms(小数1桁)。"""
     return round(t * 1000.0, 1)
+
+
+_DEVICE_FATAL_MARKERS = (
+    "DEVICE_LOST",
+    "OUT_OF_RESOURCES",
+    "OUT_OF_DEVICE_MEMORY",
+    "level_zero backend failed",
+    "CUDA error",
+    "device-side assert",
+)
+
+
+def _is_device_fatal(exc: BaseException) -> bool:
+    """XPU/CUDA のデバイス喪失・資源枯渇か(同一プロセスでは復帰できない種類の失敗)。"""
+    text = str(exc)
+    return any(m in text for m in _DEVICE_FATAL_MARKERS)
 
 
 @dataclass
@@ -157,6 +152,7 @@ class BackendApp:
         self._state_lock = threading.Lock()
 
         self._tts_phase = IDLE
+        self._tts_fatal = False
         self._tts_detail: str | None = None
         self._tts_loaded_model: str | None = None
         self._asr_phase = IDLE
@@ -231,10 +227,11 @@ class BackendApp:
             }
         self.send(msg)
 
-    def _set_tts(self, phase: str, detail: str | None) -> None:
+    def _set_tts(self, phase: str, detail: str | None, *, fatal: bool = False) -> None:
         with self._state_lock:
             self._tts_phase = phase
             self._tts_detail = detail
+            self._tts_fatal = fatal
         self.send_state()
 
     def _set_asr(self, phase: str, detail: str | None, model_id: str | None = None) -> None:
@@ -307,9 +304,11 @@ class BackendApp:
         )
         self._tts_thread.start()
 
-        # backend.json 由来の asr 設定でもプリロードが走るよう起動時にチェックする
-        # (GUI の初期 configure には asr セクションが無いため)
-        self._maybe_schedule_asr_preload()
+        # irodori / dacvae / silentcipher は print() でプロセスの stdout へ直接書く。プロトコルは
+        # __init__ で複製した専用 fd(self._proto)へ書くので、fd 1 は以後ずっと stderr へ向ける。
+        # (呼び出しごとに差し替えるロックは、ASR/TTS のロードと合成を直列化してしまう)
+        sys.stdout.flush()
+        os.dup2(2, 1)
 
         # GUI は UTF-8 の NDJSON を送る。Windows の既定(cp932)で読むと日本語の
         # テキスト・キャプション・声ファイル名が化けて TTS が落ちる
@@ -404,9 +403,8 @@ class BackendApp:
 
     def _preload_asr(self, key) -> None:
         try:
-            with _engine_quiet_stdout():
-                engine = create_asr(self.config["asr"])
-                engine.load(lambda m, f=None: self._set_asr("loading", m))
+            engine = create_asr(self.config["asr"])
+            engine.load(lambda m, f=None: self._set_asr("loading", m))
         except Exception as e:
             log.exception("asr preload failed")
             with self._asr_lock:
@@ -463,6 +461,12 @@ class BackendApp:
         )
 
     def speak(self, msg: dict) -> None:
+        with self._state_lock:
+            tts_dead = self._tts_phase == ERROR and self._tts_fatal
+            tts_detail = self._tts_detail
+        if tts_dead:
+            self.send_error("tts", tts_detail or "音声合成デバイスが停止しています", recoverable=False)
+            return
         text = (msg.get("text") or "").strip()
         if not text:
             self.send_error("tts", "空のテキストです")
@@ -740,17 +744,15 @@ class BackendApp:
 
     def _synthesize(self, job: TtsJob) -> SynthResult:
         with self._engine_lock:
-            with _engine_quiet_stdout():
-                self._load_engine_locked()
-        with _engine_quiet_stdout():
-            return self._engine.synthesize(
-                job.text,
-                caption=job.caption,
-                ref_wavs=job.ref_wavs,
-                seed=job.seed,
-                progress=ProgressFn(self, "tts"),
-                sampling=job.sampling if job.sampling is not None else self.config["tts"].get("sampling"),
-            )
+            self._load_engine_locked()
+        return self._engine.synthesize(
+            job.text,
+            caption=job.caption,
+            ref_wavs=job.ref_wavs,
+            seed=job.seed,
+            progress=ProgressFn(self, "tts"),
+            sampling=job.sampling if job.sampling is not None else self.config["tts"].get("sampling"),
+        )
 
     def _emit_chunk(
         self,
@@ -853,7 +855,14 @@ class BackendApp:
             result = self._synthesize(job)
         except Exception as e:
             log.exception("synthesis failed")
-            self.send_error("tts", f"合成失敗: {e}", recoverable=True)
+            if _is_device_fatal(e):
+                # デバイス喪失は同一プロセス内では復帰しない。状態を ERROR にして GUI へ見せ、
+                # 以降の発話は speak() で即座に拒否する(死んだデバイスへ投げ続けない)。
+                msg = f"音声合成デバイスが停止しました。アプリを再起動してください: {e}"
+                self._set_tts(ERROR, msg, fatal=True)
+                self.send_error("tts", msg, recoverable=False)
+            else:
+                self.send_error("tts", f"合成失敗: {e}", recoverable=True)
             self._mark_chunk_done(job.request, failed=True)
             return
         self._emit_chunk(job.request, job.chunk, job.text, result, queue_wait_ms=queue_wait_ms)
@@ -1003,10 +1012,8 @@ class BackendApp:
                 if self._emotion_model is None:
                     from .performance import Emotion2VecClassifier  # noqa: PLC0415
 
-                    with _engine_quiet_stdout():
-                        self._emotion_model = Emotion2VecClassifier(str(model_dir))
-                with _engine_quiet_stdout():
-                    emotion = self._emotion_model.classify(audio)
+                    self._emotion_model = Emotion2VecClassifier(str(model_dir))
+                emotion = self._emotion_model.classify(audio)
             except Exception as e:
                 log.warning("local emotion analysis unavailable: %s", e)
                 self._emotion_model = None
@@ -1107,8 +1114,7 @@ class BackendApp:
         with self._engine_lock:
             if self._engine is not None:
                 try:
-                    with _engine_quiet_stdout():
-                        self._engine.unload()
+                    self._engine.unload()
                 except Exception:
                     log.exception("engine unload failed")
                 self._engine = None

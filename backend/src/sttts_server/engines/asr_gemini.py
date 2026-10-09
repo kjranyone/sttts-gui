@@ -5,8 +5,10 @@ API キーは asr.gemini_api_key(data/backend.json)または環境変数 GEMINI_
 GOOGLE_API_KEY から解決する。
 
 統合形態: ローカル silero VAD の start で発話専用 Live セッションを開き、
-録音中から 100ms 単位で送り、end で audio_stream_end を送って確定を待つ。
-サーバ側自動 VAD に任せないので、VAD 挙動はローカルエンジンと一致する。
+activity_start → 録音中から 100ms 単位で音声 → end で activity_end を送って確定を待つ。
+サーバ側自動 VAD は無効化する(`_live_config`)。有効のままだと、発話後の無音でサーバが
+先に確定(input_transcription + generation_complete)を返し、その後の audio_stream_end には
+何も返らないため、確定待ちが毎回タイムアウトしていた(2026-10-09 実 API で確認)。
 """
 
 from __future__ import annotations
@@ -24,6 +26,17 @@ import numpy as np
 log = logging.getLogger("sttts.asr")
 
 DEFAULT_MODEL = "gemini-3.5-transcribe-live"
+
+
+def _live_config(types, language: str, mode: str):
+    """発話区切りはローカル VAD が決める(サーバ自動 VAD 無効、activity_start/end を明示送信)。"""
+    return types.LiveConnectConfig(
+        response_modalities=["TEXT"],
+        input_audio_transcription=types.AudioTranscriptionConfig(language_codes=[language], mode=mode),
+        realtime_input_config=types.RealtimeInputConfig(
+            automatic_activity_detection=types.AutomaticActivityDetection(disabled=True)
+        ),
+    )
 
 
 def resolve_api_key(configured: str | None) -> str | None:
@@ -157,19 +170,13 @@ class GeminiLiveAsr:
     async def _run(self, raw_pcm: bytes) -> str:
         from google.genai import types  # noqa: PLC0415
 
-        config = types.LiveConnectConfig(
-            response_modalities=["TEXT"],
-            input_audio_transcription=types.AudioTranscriptionConfig(
-                language_codes=[self.language],
-                mode=self.mode,
-            ),
-        )
-        timeout = self.timeout_s
+        config = _live_config(types, self.language, self.mode)
         async with self._client.aio.live.connect(model=self.model_id, config=config) as session:
+            await session.send_realtime_input(activity_start=types.ActivityStart())
             await session.send_realtime_input(
                 audio=types.Blob(data=raw_pcm, mime_type="audio/pcm;rate=16000")
             )
-            await session.send_realtime_input(audio_stream_end=True)
+            await session.send_realtime_input(activity_end=types.ActivityEnd())
             final_text = ""
             async for response in session.receive():
                 sc = response.server_content
@@ -177,8 +184,6 @@ class GeminiLiveAsr:
                     continue
                 if sc.input_transcription and sc.input_transcription.text:
                     final_text = sc.input_transcription.text
-                # 確定(または入力終了)後にサーバがストリームを閉じるのを待つが、
-                # 応答が続くケースに備えタイムアウトで抜ける
                 if sc.turn_complete or sc.generation_complete:
                     break
             return final_text.strip()
@@ -230,6 +235,10 @@ class _LiveUtterance:
     def result(self, timeout_s: float) -> str:
         if not self._done.wait(timeout_s):
             self.abort()
+            if self._text:
+                # 確定シグナルは来なかったが確定テキストは受け取っている。捨てずに使う
+                log.warning("Gemini Live: %.0fs 内に完了シグナルなし。受信済みの確定テキストを使う", timeout_s)
+                return self._text.strip()
             raise TimeoutError("Gemini Live transcription timed out")
         self._thread.join(timeout=1)
         if self._error is not None:
@@ -253,16 +262,12 @@ class _LiveUtterance:
         self._task = asyncio.current_task()
         if self._aborted:
             return
-        config = types.LiveConnectConfig(
-            response_modalities=["TEXT"],
-            input_audio_transcription=types.AudioTranscriptionConfig(
-                language_codes=[self.asr.language], mode=self.asr.mode
-            ),
-        )
+        config = _live_config(types, self.asr.language, self.asr.mode)
         async with self.asr._client.aio.live.connect(model=self.asr.model_id, config=config) as session:
             sender_done = asyncio.Event()
 
             async def sender() -> None:
+                await session.send_realtime_input(activity_start=types.ActivityStart())
                 pending = bytearray()
                 last_send = time.monotonic()
                 while True:
@@ -273,7 +278,7 @@ class _LiveUtterance:
                             await session.send_realtime_input(
                                 audio=types.Blob(data=bytes(pending), mime_type="audio/pcm;rate=16000")
                             )
-                        await session.send_realtime_input(audio_stream_end=True)
+                        await session.send_realtime_input(activity_end=types.ActivityEnd())
                         sender_done.set()
                         return
                     if item is not ...:

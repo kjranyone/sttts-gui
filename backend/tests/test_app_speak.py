@@ -38,3 +38,41 @@ def test_speak_uses_pipeline_chunk_config(mock_app):
     mock_app.config["pipeline"]["first_chunk_mora_max"] = 12
     mock_app.speak({"text": "こんにちは、今日はいい天気ですね。"})
     assert [j.text for j in _drain(mock_app)] == ["こんにちは、", "今日はいい天気ですね。"]
+
+
+def test_device_lost_marks_tts_error_and_rejects_further_speaks(mock_app):
+    from sttts_server.protocol import ERROR
+
+    def boom(job):
+        raise RuntimeError("level_zero backend failed with error: 20 (UR_RESULT_ERROR_DEVICE_LOST)")
+
+    mock_app._synthesize = boom
+    mock_app.speak({"text": "テストです。"})
+    for job in _drain(mock_app):
+        mock_app._run_job(job)
+
+    assert mock_app._tts_phase == ERROR
+    errors = mock_app.of_type("error")
+    assert errors and errors[-1]["recoverable"] is False
+    states = mock_app.of_type("state")
+    assert states[-1]["tts"]["phase"] == "error"
+
+    # 以降の発話は受け付けず(speak_accepted を出さず)、キューにも積まない
+    before = len(mock_app.of_type("speak_accepted"))
+    mock_app.speak({"text": "もう一度です。"})
+    assert len(mock_app.of_type("speak_accepted")) == before
+    assert _drain(mock_app) == []
+
+
+def test_ordinary_synthesis_failure_stays_recoverable(mock_app):
+    from sttts_server.protocol import ERROR
+
+    def boom(job):
+        raise RuntimeError("something odd")
+
+    mock_app._synthesize = boom
+    mock_app.speak({"text": "テストです。"})
+    for job in _drain(mock_app):
+        mock_app._run_job(job)
+    assert mock_app._tts_phase != ERROR
+    assert mock_app.of_type("error")[-1]["recoverable"] is True

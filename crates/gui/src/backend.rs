@@ -135,6 +135,7 @@ pub fn find_venv_python(root: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 
 pub struct BackendHandle {
+    pid: u32,
     child: Mutex<Child>,
     stdin: Mutex<ChildStdin>,
 }
@@ -201,9 +202,14 @@ impl BackendHandle {
             })?;
 
         Ok(Self {
+            pid: child.id(),
             child: Mutex::new(child),
             stdin: Mutex::new(stdin),
         })
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.pid
     }
 
     pub fn send(&self, msg: &GuiMessage) -> Result<()> {

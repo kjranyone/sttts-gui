@@ -43,7 +43,7 @@ Irodori-TTS は文単位の非ストリーミング合成のため、**確定文
 - [uv](https://docs.astral.sh/uv/) と git
 
 ```bat
-:: 1) Python 環境(torch 2.10 XPU 含む。初回は数GBダウンロード)
+:: 1) Python 環境(torch 2.14 XPU 含む。初回は数GBダウンロード)
 cd backend
 uv sync --extra xpu
 

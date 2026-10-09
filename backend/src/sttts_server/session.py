@@ -26,7 +26,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .app import _engine_quiet_stdout
 from .engines.asr import create_asr
 from .engines.vad_silero import FRAME, SileroVad
 
@@ -403,8 +402,7 @@ class LiveSession:
                 asr_ready.set()
                 return
             try:
-                with _engine_quiet_stdout():
-                    self.asr.load(lambda m, f=None: self.app._set_asr("loading", m))
+                self.asr.load(lambda m, f=None: self.app._set_asr("loading", m))
             except Exception as e:
                 log.exception("asr load failed")
                 self.app.on_asr_error(f"ASRモデルのロードに失敗: {e}")
