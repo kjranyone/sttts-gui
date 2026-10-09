@@ -36,3 +36,15 @@ rand = "0.9"
 rand_distr = "0.5"
 thiserror = "2"
 regex = "1"
+
+[[example]]
+name = "gpu_bench"
+required-features = ["gpu"]
+
+[[example]]
+name = "gpu_ops_check"
+required-features = ["gpu"]
+
+[[example]]
+name = "shape_probe"
+required-features = ["gpu"]

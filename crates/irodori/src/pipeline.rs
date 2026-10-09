@@ -13,7 +13,7 @@ use crate::condition::{TextConditioner, caption_inputs};
 use crate::config::ModelConfig;
 use crate::dit::{Conditions, Dit};
 use crate::duration::{DurationInputs, DurationPredictor, frames_from_log};
-use crate::sampler::{find_flattening_point, sample_euler_meanflow, unpatchify_latent};
+use crate::sampler::{find_flattening_point, sample_euler_meanflow_padded, unpatchify_latent};
 use crate::text::normalize_text;
 use crate::tokenizer::Tokenizer;
 use crate::watermark::{IRODORI_PAYLOAD, Watermarker};
@@ -121,6 +121,15 @@ pub struct Trace {
 const DECODE_WINDOW: usize = 25;
 const DECODE_CONTEXT: usize = 8;
 
+/// ウォームアップ用の文(トークン数・音声長・奇偶の違う長さを散らす)
+const WARMUP_TEXTS: &[&str] = &[
+    "あ。",
+    "こんにちは。",
+    "今日はいい天気ですね。",
+    "えーと、明日の会議の資料を準備しておいてください。",
+    "これは少し長めの文章で、途中に読点を含みながら最後まで読み上げられるかを確認します。",
+];
+
 pub struct Tts {
     pub cfg: ModelConfig,
     tokenizer: Tokenizer,
@@ -147,6 +156,17 @@ impl Tts {
             None => None,
         };
         Ok(Self { cfg, tokenizer, cond, dit, duration, codec, watermarker, device: device.clone() })
+    }
+
+    /// GPU のカーネルを先にコンパイルしておく(長さの違うダミー発話を数回合成して捨てる)。
+    /// GPU は形状の整列クラスごとにカーネルを作るため、起動直後の数発話は 1〜数秒余計にかかる。
+    /// アプリ起動時にバックグラウンドで呼ぶと、利用者の最初の発話から定常の速度になる。
+    pub fn warmup(&self) -> Result<()> {
+        for text in WARMUP_TEXTS {
+            let req = SamplingRequest { text: (*text).to_string(), no_ref: true, seed: Some(0), ..Default::default() };
+            self.synthesize(&req)?;
+        }
+        Ok(())
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -190,9 +210,12 @@ impl Tts {
         let (ids, mask) = self.tokenizer.batch_encode(&[text.clone()], self.cfg.max_text_len, self.cfg.text_add_bos)?;
         // パディングは右詰めで、無効トークンは注意から完全に除外される(マスク -1e9 → 確率 0)ので、
         // 有効な先頭部分だけで計算しても結果は同じ。256 トークン固定のまま回すより桁違いに速い。
+        // ただし長さは段階(バケット)に揃えてパディングする。GPU のカーネルは形状ごとに作られ、初回は
+        // 1 本数百 ms かかるので、系列長を数段階に絞ると発話ごとのコンパイルがほぼ無くなる。
         let n_text = mask[0].iter().filter(|&&b| b).count().max(1);
-        let ids = vec![ids[0][..n_text].to_vec()];
-        let mask = vec![vec![true; n_text]];
+        let nb = bucket(n_text).min(ids[0].len());
+        let ids = vec![ids[0][..nb].to_vec()];
+        let mask = vec![mask[0][..nb].to_vec()];
         let has_caption_text = self.cfg.use_caption_condition && req.caption.as_deref().is_some_and(|c| !c.trim().is_empty());
         let text_state = self.cond.encode_text(&ids, &mask);
         let text_mask = mask_tensor(&mask, &self.device);
@@ -200,8 +223,9 @@ impl Tts {
         let (caption_state, caption_mask) = if has_caption_text {
             let (cids, cmask) = caption_inputs(&self.tokenizer, req.caption.as_deref(), 1, self.cond.max_caption_len(), self.cond.caption_add_bos())?;
             let n = cmask[0].iter().filter(|&&b| b).count().max(1);
-            let cids = vec![cids[0][..n].to_vec()];
-            let cmask = vec![vec![true; n]];
+            let nb = bucket(n).min(cids[0].len());
+            let cids = vec![cids[0][..nb].to_vec()];
+            let cmask = vec![cmask[0][..nb].to_vec()];
             let state = self.cond.encode_caption(&cids, &cmask);
             let mask_t = mask_tensor(&cmask, &self.device);
             (state, Some(mask_t))
@@ -307,7 +331,9 @@ impl Tts {
         };
         let patch = self.cfg.latent_patch_size;
         let patched_steps = latent_steps.div_ceil(patch);
-        let z_patched = sample_euler_meanflow(&self.dit, &cond, patched_steps, req.num_steps, noise, used_seed)?;
+        let padded_steps = bucket(patched_steps);
+        let z_patched = sample_euler_meanflow_padded(&self.dit, &cond, patched_steps, padded_steps, req.num_steps, noise, used_seed)?
+            .narrow(1, 0, patched_steps);
         let z = unpatchify_latent(z_patched, patch, self.cfg.latent_dim);
         let z = z.narrow(1, 0, latent_steps);
         let z_host: Vec<f32> = z.clone().into_data().convert::<f32>().try_to_vec::<f32>().unwrap();
@@ -392,6 +418,12 @@ impl Tts {
         }
         Ok(latent)
     }
+}
+
+/// 系列長を数段階に丸める(1.33〜1.5 倍刻み)。計算量の増加は最大 1.5 倍で、形状の種類は対数で済む。
+fn bucket(n: usize) -> usize {
+    const STEPS: &[usize] = &[16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024];
+    STEPS.iter().copied().find(|&b| b >= n).unwrap_or_else(|| n.div_ceil(256) * 256)
 }
 
 fn mask_tensor(mask: &[Vec<bool>], device: &Device) -> Tensor<2> {

@@ -37,7 +37,22 @@ pub fn sample_euler_meanflow(
     noise: Option<Tensor<3>>,
     seed: u64,
 ) -> Result<Tensor<3>> {
+    sample_euler_meanflow_padded(dit, cond, seq_len, seq_len, steps, noise, seed)
+}
+
+/// [`sample_euler_meanflow`] を、系列を `padded_len` に零詰めして実行する版。有効なのは先頭 `seq_len` 位置で、
+/// パディング位置は自己注意から除外されるので、有効位置の結果は零詰め無しと同じ。戻り値は `[B, padded_len, dim]`。
+pub fn sample_euler_meanflow_padded(
+    dit: &Dit,
+    cond: &Conditions,
+    seq_len: usize,
+    padded_len: usize,
+    steps: usize,
+    noise: Option<Tensor<3>>,
+    seed: u64,
+) -> Result<Tensor<3>> {
     ensure!(steps > 0, "MeanFlow steps must be positive");
+    ensure!(padded_len >= seq_len, "padded_len < seq_len");
     let batch = cond.batch();
     let dim = dit.cfg.patched_latent_dim();
     let dev = dit.device();
@@ -48,13 +63,16 @@ pub fn sample_euler_meanflow(
         }
         None => initial_noise(batch, seq_len, dim, seed, dev),
     };
+    if padded_len > seq_len {
+        x = Tensor::cat(vec![x, Tensor::<3>::zeros([batch, padded_len - seq_len, dim], dev)], 1);
+    }
     let kv = dit.build_context_kv_cache(cond)?;
     let sched = meanflow_schedule(steps);
     for i in 0..steps {
         let (t, next) = (sched[i], sched[i + 1]);
         let t_vec = Tensor::<1>::from_data(TensorData::new(vec![t; batch], vec![batch]), dev);
         let d_vec = Tensor::<1>::from_data(TensorData::new(vec![t - next; batch], vec![batch]), dev);
-        let v = dit.forward_with_encoded_conditions(x.clone(), t_vec, d_vec, cond, Some(&kv))?;
+        let v = dit.forward_padded(x.clone(), t_vec, d_vec, cond, Some(&kv), seq_len)?;
         x = x.add(v.mul_scalar(next - t));
     }
     Ok(x)

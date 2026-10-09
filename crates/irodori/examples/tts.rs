@@ -17,12 +17,14 @@ fn main() -> Result<()> {
     let mut req = SamplingRequest::default();
     let mut device_kind = "gpu".to_string();
     let mut repeat = 1usize;
+    let mut warmup = false;
+    let mut texts: Vec<String> = Vec::new();
     let mut out: Option<PathBuf> = None;
     req.no_ref = true;
     while let Some(a) = args.next() {
         let mut val = |name: &str| args.next().with_context(|| format!("{name} needs a value"));
         match a.as_str() {
-            "--text" => req.text = val("--text")?,
+            "--text" => texts.push(val("--text")?),
             "--caption" => req.caption = Some(val("--caption")?),
             "--ref" => {
                 req.ref_wav = Some(PathBuf::from(val("--ref")?));
@@ -35,11 +37,12 @@ fn main() -> Result<()> {
             "--repeat" => repeat = val("--repeat")?.parse()?,
             "--out" => out = Some(PathBuf::from(val("--out")?)),
             "--no-watermark" => req.watermark = false,
+            "--warmup" => warmup = true,
             other => bail!("unknown argument {other}"),
         }
     }
-    if req.text.is_empty() {
-        bail!("--text is required");
+    if texts.is_empty() {
+        bail!("--text is required (repeatable; the texts are cycled over --repeat)");
     }
 
     let device = match device_kind.as_str() {
@@ -55,13 +58,19 @@ fn main() -> Result<()> {
     let tts = Tts::load(&paths, &device)?;
     eprintln!("load: {:.1}s (watermark: {})", t0.elapsed().as_secs_f64(), tts.has_watermark());
 
+    if warmup {
+        let t = std::time::Instant::now();
+        tts.warmup()?;
+        eprintln!("warmup: {:.1}s", t.elapsed().as_secs_f64());
+    }
     for i in 0..repeat {
+        req.text = texts[i % texts.len()].clone();
         let t = std::time::Instant::now();
         let res = tts.synthesize(&req)?;
         let wall = t.elapsed().as_secs_f64();
         let dur = res.audio.len() as f64 / res.sample_rate as f64;
         let stages: Vec<String> = res.timings.iter().map(|(n, s)| format!("{n} {s:.2}s")).collect();
-        eprintln!("#{i}: {wall:.2}s for {dur:.2}s of audio (RTF {:.2}) seed={} | {}", wall / dur, res.used_seed, stages.join(", "));
+        eprintln!("#{i} [{} chars]: {wall:.2}s for {dur:.2}s of audio (RTF {:.2}) seed={} | {}", req.text.chars().count(), wall / dur, res.used_seed, stages.join(", "));
         for m in &res.messages {
             eprintln!("   {m}");
         }

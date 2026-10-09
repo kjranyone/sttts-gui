@@ -610,7 +610,24 @@ impl Dit {
         cond: &Conditions,
         kv: Option<&ContextKv>,
     ) -> Result<Tensor<3>> {
+        let s = x_t.dims()[1];
+        self.forward_padded(x_t, t, delta_t, cond, kv, s)
+    }
+
+    /// `x_t` の先頭 `valid_len` 位置だけが有効で、残りはパディング(自己注意のキーから除外する)。
+    /// 有効位置の出力はパディング無しと同じになる。系列長を決まった段階に揃えて(バケット化)、
+    /// GPU のカーネルが発話ごとに作り直されないようにするために使う。
+    pub fn forward_padded(
+        &self,
+        x_t: Tensor<3>,
+        t: Tensor<1>,
+        delta_t: Tensor<1>,
+        cond: &Conditions,
+        kv: Option<&ContextKv>,
+        valid_len: usize,
+    ) -> Result<Tensor<3>> {
         let [b, s, _] = x_t.dims();
+        ensure!(valid_len >= 1 && valid_len <= s, "valid_len {valid_len} out of range 1..={s}");
         let dev = &self.device;
         let ted = self.cfg.timestep_embed_dim;
         let tv = host_vec(t)?;
@@ -633,7 +650,12 @@ impl Dit {
         let heads = self.cfg.num_heads;
         // 連結キー = [自己(全有効), text, speaker, caption]
         let ctx_mask = cond.context_mask();
-        let key_mask = Tensor::cat(vec![Tensor::<2>::ones([b, s], dev), ctx_mask], 1);
+        let self_mask = if valid_len == s {
+            Tensor::<2>::ones([b, s], dev)
+        } else {
+            Tensor::cat(vec![Tensor::<2>::ones([b, valid_len], dev), Tensor::<2>::zeros([b, s - valid_len], dev)], 1)
+        };
+        let key_mask = Tensor::cat(vec![self_mask, ctx_mask], 1);
         let bias = mask_to_bias(key_mask, heads, s);
 
         let rope = Rope::new(self.cfg.model_dim / heads, s, dev);

@@ -404,22 +404,25 @@ impl DacVae {
     }
 
     /// 時間窓ごとに分割してデコードする。`window` フレームを 1 窓の「採用範囲」とし、前後に
-    /// `context` フレームの文脈を付けてデコードして採用範囲だけを切り出して連結する。
+    /// `context` フレームの文脈を付けた(固定長 `window + 2*context` の)窓をデコードして、採用範囲だけを切り出して連結する。
     /// 先頭・末尾は全体版と同じゼロ詰めになる(文脈は信号の端でクリップ)。
     /// 受容野より `context` が大きければ全体版とほぼ一致する。
     pub fn decode_latent_windowed(&self, z: Tensor<3>, window: usize, context: usize) -> Tensor<3> {
         let [_, t, _] = z.dims();
         let window = window.max(1);
-        if t <= window {
+        // どの窓も同じ長さ(window + 2*context フレーム)でデコードする。GPU のカーネルは形状の
+        // 整列クラスごとに作り直されるので、窓の長さを固定すると初回以外はコンパイルが起きない。
+        // 端の窓は文脈を内側にずらして取る(文脈が受容野以上なら全体デコードと同じ結果)。
+        let win = window + 2 * context;
+        if t <= win {
             return self.decode_latent(z);
         }
         let mut parts = Vec::new();
         let mut s = 0;
         while s < t {
             let e = (s + window).min(t);
-            let a = s.saturating_sub(context);
-            let b = (e + context).min(t);
-            let out = self.decode_latent(z.clone().narrow(1, a, b - a));
+            let a = s.saturating_sub(context).min(t - win);
+            let out = self.decode_latent(z.clone().narrow(1, a, win));
             parts.push(out.narrow(2, (s - a) * self.hop, (e - s) * self.hop));
             s = e;
         }

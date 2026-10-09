@@ -106,11 +106,20 @@ fn conv2d_mm(x: Tensor<4>, w: Tensor<4>, b: Tensor<1>, pad: usize) -> Tensor<4> 
     let (ho, wo) = (h + 2 * pad - (kh - 1), wd + 2 * pad - (kw - 1));
     let w2 = w.permute([0, 2, 3, 1]).reshape([co, kh * kw * c]); // 並びは (dy, dx, c)
     // 全体の im2col は数百 MB になるので、出力の行(周波数フレーム)ごとの塊に分けて行列積にする
+    // どの塊も同じ行数にして(最後の塊は下に零行を足して揃え、出力は捨てる)、GPU のカーネルが
+    // 発話の長さに依らず同じ形状で動くようにする(形状の整列クラスごとにコンパイルが走るため)。
     let rows_per_chunk = (CONV_CHUNK_COLS / wo).max(1);
+    let extra = (rows_per_chunk - ho % rows_per_chunk) % rows_per_chunk;
+    let xp = if extra > 0 {
+        let wp = xp.dims()[3];
+        Tensor::cat(vec![xp, Tensor::<4>::zeros([1, c, extra, wp], &dev)], 2)
+    } else {
+        xp
+    };
     let mut pieces = Vec::new();
     let mut r0 = 0;
     while r0 < ho {
-        let nr = rows_per_chunk.min(ho - r0);
+        let nr = rows_per_chunk;
         let mut parts = Vec::with_capacity(kh * kw);
         for dy in 0..kh {
             for dx in 0..kw {
@@ -122,6 +131,7 @@ fn conv2d_mm(x: Tensor<4>, w: Tensor<4>, b: Tensor<1>, pad: usize) -> Tensor<4> 
         r0 += nr;
     }
     let y = if pieces.len() == 1 { pieces.pop().unwrap() } else { Tensor::cat(pieces, 1) };
+    let y = if y.dims()[1] > ho { y.narrow(1, 0, ho) } else { y };
     (y + b.reshape([co, 1, 1])).reshape([1, co, ho, wo])
 }
 
