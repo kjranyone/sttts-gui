@@ -299,7 +299,7 @@ impl Watermarker {
         for l in &self.dec {
             d = l.forward(&d, &geo);
         }
-        let flat = d.into_data().convert::<f32>().try_to_vec::<f32>().map_err(|e| anyhow!("{e:?}"))?;
+        let flat = d.try_into_data().map_err(|e| anyhow!("GPU からの読み戻しに失敗しました: {e:?}"))?.convert::<f32>().try_to_vec::<f32>().map_err(|e| anyhow!("{e:?}"))?;
         let mut info = geo.extract(&flat);
         ensure!(info.len() == nb * frames, "unexpected decoder output size");
 

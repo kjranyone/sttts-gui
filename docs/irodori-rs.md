@@ -125,3 +125,10 @@ cd backend && uv run --no-sync python scripts/dump_irodori_ref.py     # → targ
 - unsafe を増やさない。`anyhow::Result` を返す。重い処理をテスト内で重複させない(重みのロードは 1 テストに 1 回)。
 - ハードウェア方針(AGENTS.md): **マイク・実 GPU に触れる検証を書かない**(GPU の検証は私=メインが行う)。テストは flex(CPU)のみ。
 - コミットは自分のブランチ/ワークツリーに。メッセージ末尾に `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`。
+
+## 設計上の判断とフォローアップ(レビュー指摘の整理)
+
+- `flex`(CPU)バックエンドは PyTorch 参照とのパリティテスト用。本番の推論は GPU(`gpu` feature)で行い、アプリ側に CPU へのフォールバックは作らない。
+- 参照データ・チェックポイントが無い環境ではパリティテストは `eprintln!` して戻る(CI を落とさない)。数値検証が必要なときは `IRODORI_REF_DIR` を設定して実行する。
+- 参照音声は wav / flac のみ。mp3 などは未対応(変換して渡す)。
+- フォローアップ: `Linear` / `RmsNorm` / 読み戻しヘルパの共通 `nn` モジュール化、`Conv` の重み二重保持の解消(VRAM 削減)、`gpu_device()` の `Result` 化。

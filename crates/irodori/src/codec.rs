@@ -419,7 +419,7 @@ impl DacVae {
         ensure_max: bool,
     ) -> Result<Tensor<3>> {
         let [b, c, n] = wav.dims();
-        let data = wav.into_data().convert::<f32>().try_to_vec::<f32>().map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let data = wav.try_into_data().map_err(|e| anyhow::anyhow!("GPU からの読み戻しに失敗しました: {e:?}"))?.convert::<f32>().try_to_vec::<f32>().map_err(|e| anyhow::anyhow!("{e:?}"))?;
         let mut all: Vec<f32> = Vec::new();
         let mut len = 0usize;
         for bi in 0..b {

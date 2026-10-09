@@ -427,7 +427,8 @@ fn bucket(n: usize) -> usize {
 
 /// GPU のテンソルをホストへ読み戻す(デバイスの異常はパニックにせず `Err` で返す)。
 fn to_host<const D: usize>(t: Tensor<D>) -> Result<Vec<f32>> {
-    t.into_data()
+    t.try_into_data()
+        .map_err(|e| anyhow::anyhow!("GPU からの読み戻しに失敗しました: {e:?}"))?
         .convert::<f32>()
         .try_to_vec::<f32>()
         .map_err(|e| anyhow::anyhow!("GPU からの読み戻しに失敗しました: {e:?}"))

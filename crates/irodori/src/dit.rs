@@ -488,7 +488,7 @@ pub struct Dit {
     device: Device,
     blocks: Vec<DiffusionBlock>,
     cond_module: CondMlp,
-    delta_cond_module: Option<CondMlp>,
+    delta_cond_module: CondMlp,
     in_proj: Linear,
     out_norm: RmsNorm<3>,
     out_proj: Linear,
@@ -511,7 +511,11 @@ fn timestep_embedding(t: &[f32], dim: usize, dev: &Device) -> Tensor<2> {
 }
 
 fn host_vec(t: Tensor<1>) -> Result<Vec<f32>> {
-    t.into_data().convert::<f32>().try_to_vec::<f32>().map_err(|e| anyhow::anyhow!("{e:?}"))
+    t.try_into_data()
+        .map_err(|e| anyhow::anyhow!("GPU からの読み戻しに失敗しました: {e:?}"))?
+        .convert::<f32>()
+        .try_to_vec::<f32>()
+        .map_err(|e| anyhow::anyhow!("{e:?}"))
 }
 
 impl Dit {
@@ -544,7 +548,7 @@ impl Dit {
             device: device.clone(),
             blocks,
             cond_module: CondMlp::load(w, "cond_module", device)?,
-            delta_cond_module: Some(CondMlp::load(w, "delta_cond_module", device)?),
+            delta_cond_module: CondMlp::load(w, "delta_cond_module", device)?,
             in_proj: Linear::load(w, "in_proj", true, device)?,
             out_norm: RmsNorm::from_weights(w, "out_norm.weight", [1, 1, cfg.model_dim], eps, device)?,
             out_proj: Linear::load(w, "out_proj", true, device)?,
@@ -685,8 +689,7 @@ impl Dit {
         let dev = &self.device;
         let ted = self.cfg.timestep_embed_dim;
         let mut cond_embed = self.cond_module.forward(timestep_embedding(t, ted, dev));
-        let delta = self.delta_cond_module.as_ref().context("MeanFlow delta_cond_module missing")?;
-        cond_embed = cond_embed.add(delta.forward(timestep_embedding(delta_t, ted, dev)));
+        cond_embed = cond_embed.add(self.delta_cond_module.forward(timestep_embedding(delta_t, ted, dev)));
 
         let mut x = self.in_proj.forward3(x_t);
         for (blk, lkv) in self.blocks.iter().zip(&p.kv.layers) {

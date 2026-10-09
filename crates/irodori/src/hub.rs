@@ -1,4 +1,4 @@
-//! HuggingFace キャッシュ上のモデルの場所。`HF_HUB_CACHE` / `HF_HOME` を尊重し、スナップショットが複数あるときは
+//! HuggingFace キャッシュ上のモデルの場所。`huggingface_hub` と同じ環境変数(`HF_HUB_CACHE` / `HF_HOME` / `XDG_CACHE_HOME`)を尊重し、スナップショットが複数あるときは
 //! 必要なファイルを持つ最新のものを選ぶ。
 
 use std::path::PathBuf;
@@ -6,11 +6,16 @@ use std::time::SystemTime;
 
 /// キャッシュのルート(`.../huggingface/hub`)
 pub fn hub_dir() -> Option<PathBuf> {
-    if let Some(d) = std::env::var_os("HF_HUB_CACHE") {
-        return Some(PathBuf::from(d));
+    for k in ["HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"] {
+        if let Some(d) = std::env::var_os(k) {
+            return Some(PathBuf::from(d));
+        }
     }
     if let Some(d) = std::env::var_os("HF_HOME") {
         return Some(PathBuf::from(d).join("hub"));
+    }
+    if let Some(d) = std::env::var_os("XDG_CACHE_HOME") {
+        return Some(PathBuf::from(d).join("huggingface").join("hub"));
     }
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
     Some(PathBuf::from(home).join(".cache").join("huggingface").join("hub"))
