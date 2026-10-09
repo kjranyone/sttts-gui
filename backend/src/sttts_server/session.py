@@ -37,6 +37,7 @@ MIN_UTTERANCE_SECONDS = 0.25
 MIN_PARTIAL_SECONDS = 0.6
 MAX_PARTIAL_SECONDS = 12.0
 LEVEL_INTERVAL = 0.1
+PREROLL_FRAMES = 5  # Silero の start 判定直前 160ms も Gemini に送る
 
 
 @dataclass
@@ -101,6 +102,12 @@ class AsrWorker:
                 self.stats["partials_dropped"] += 1
             self._cv.notify()
 
+    def stream_partial(self, utterance: int, text: str) -> None:
+        with self._cv:
+            stale = utterance <= self._finalized_upto or self._stop
+        if not stale:
+            self.on_partial(utterance, text, 0)
+
     def pending(self) -> int:
         with self._cv:
             return len(self._finals) + (1 if self._partial is not None else 0)
@@ -148,13 +155,19 @@ class AsrWorker:
         t0 = time.perf_counter()
         try:
             if kind == "final":
-                text = self.asr.transcribe_utterance(job.audio)
+                text = (
+                    self.asr.finish_stream(job.utterance, job.audio)
+                    if hasattr(self.asr, "finish_stream")
+                    else self.asr.transcribe_utterance(job.audio)
+                )
             else:
                 text = self.asr.transcribe_partial(job.audio)
         except Exception as e:  # 1件の失敗でワーカーを止めない
             log.exception("asr decode failed")
             if self.on_error is not None:
                 self.on_error(f"ASR デコード失敗: {e}")
+            if kind == "final":
+                self.on_final(job, "", int((time.perf_counter() - t0) * 1000))
             return
         asr_ms = int((time.perf_counter() - t0) * 1000)
         if kind == "final":
@@ -180,15 +193,22 @@ class VadSegmenter:
         *,
         partial_interval: float,
         on_level=None,
+        on_utterance=None,
+        stream_asr=None,
+        utterance_start: int = 1,
         clock=time.monotonic,
     ) -> None:
         self.vad = vad
         self.worker = worker
         self.partial_interval = partial_interval  # <=0 で partial 無効
         self.on_level = on_level
+        self.on_utterance = on_utterance
+        self.stream_asr = stream_asr
         self.clock = clock
-        self.utterance_id = 1
+        self.utterance_id = utterance_start
         self._utterance: list[np.ndarray] = []
+        self._preroll: deque[np.ndarray] = deque(maxlen=PREROLL_FRAMES)
+        self._spoken_samples = 0
         self._speaking = False
         self._last_partial = 0.0
         self._last_level = 0.0
@@ -215,10 +235,21 @@ class VadSegmenter:
             self._samples_fed += FRAME
             if event and "start" in event:
                 self._speaking = True
-                self._utterance = []
+                self._utterance = list(self._preroll)
+                self._preroll.clear()
+                self._spoken_samples = 0
                 self._last_partial = now
+                if self.stream_asr is not None:
+                    self.stream_asr.begin_stream(self.utterance_id, self.worker.stream_partial)
+                    for leading_frame in self._utterance:
+                        self.stream_asr.feed_stream(self.utterance_id, leading_frame)
             if self._speaking:
                 self._utterance.append(frame)
+                self._spoken_samples += FRAME
+                if self.stream_asr is not None:
+                    self.stream_asr.feed_stream(self.utterance_id, frame)
+            else:
+                self._preroll.append(frame)
             if event and "end" in event:
                 end_abs = self._vad_base + int(event["end"])
                 speech_end = arrival - max(0, block_end_abs - end_abs) / SAMPLE_RATE
@@ -239,7 +270,17 @@ class VadSegmenter:
         self._speaking = False
         audio = np.concatenate(self._utterance) if self._utterance else np.zeros(0, dtype=np.float32)
         self._utterance = []
-        if audio.size >= SAMPLE_RATE * MIN_UTTERANCE_SECONDS:
+        self._preroll.clear()
+        valid = self._spoken_samples >= SAMPLE_RATE * MIN_UTTERANCE_SECONDS
+        self._spoken_samples = 0
+        if self.stream_asr is not None:
+            if valid:
+                self.stream_asr.end_stream(self.utterance_id)
+            else:
+                self.stream_asr.abort_stream(self.utterance_id)
+        if valid:
+            if self.on_utterance is not None:
+                self.on_utterance(self.utterance_id, audio)
             self.worker.submit_final(
                 FinalJob(
                     utterance=self.utterance_id,
@@ -291,6 +332,8 @@ class LiveSession:
         引き起こす(2026-10 の BugCheck 0xD1)。
         """
         self._stop.set()
+        if hasattr(self.asr, "abort_all_streams"):
+            self.asr.abort_all_streams()
         self.audio_q.put(None)
         if self._thread is not None:
             self._thread.join(timeout=10)
@@ -301,6 +344,9 @@ class LiveSession:
                 self._source.stop()
             except Exception:
                 log.exception("source close failed during stop")
+        # stop と競合して VAD が新しいストリームを作った場合も回収する。
+        if hasattr(self.asr, "abort_all_streams"):
+            self.asr.abort_all_streams()
 
     # ---------- 実装 ----------
 
@@ -331,10 +377,7 @@ class LiveSession:
             "asr_ms": asr_ms,
             "audio_ms": job.meta.get("audio_ms"),
         }
-        if text:
-            self.app.on_asr_final(job.utterance, text, timing=timing)
-        else:
-            self.app.on_asr_partial(job.utterance, "", asr_ms=asr_ms)
+        self.app.on_asr_final(job.utterance, text, timing=timing)
 
     def _on_partial(self, utterance: int, text: str, asr_ms: int) -> None:
         self.app.on_asr_partial(utterance, text, asr_ms=asr_ms)
@@ -400,8 +443,11 @@ class LiveSession:
             return VadSegmenter(
                 vad,
                 self.worker,
-                partial_interval=self.partial_interval,
+                partial_interval=0.0 if hasattr(self.asr, "begin_stream") else self.partial_interval,
                 on_level=self.app.on_mic_level,
+                on_utterance=getattr(self.app, "on_utterance_audio", None),
+                stream_asr=self.asr if hasattr(self.asr, "begin_stream") else None,
+                utterance_start=max(1, int(getattr(self.app, "_utterance_seq", 0)) * 1_000_000),
             )
 
         def _drain_pending(s: VadSegmenter) -> bool:
@@ -452,6 +498,8 @@ class LiveSession:
 
         if self._source is not None:
             self._source.stop()
+        if not self._stop.is_set() and hasattr(self.asr, "abort_all_streams"):
+            self.asr.abort_all_streams()
         if self.worker is not None:
             self.worker.stop()
             log.info("live session stopped (asr stats: %s)", self.worker.stats)

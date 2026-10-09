@@ -68,7 +68,7 @@ DEFAULTS: dict[str, Any] = {
         # Gemini Live API(asr.engine = "gemini")用。APIキーは環境変数 GEMINI_API_KEY でも可
         "gemini_model": "gemini-3.5-transcribe-live",
         "gemini_api_key": None,  # AI Studio のキー。null なら GEMINI_API_KEY/GOOGLE_API_KEY 環境変数
-        "gemini_mode": "SMART",  # SMART=フィラー除去・句読点整形 / VERBATIM=逐語
+        "gemini_mode": "VERBATIM",  # 話し方を保持。SMART=フィラー除去・句読点整形
         "gemini_timeout_s": 20.0,
     },
     "audio": {
@@ -91,6 +91,13 @@ DEFAULTS: dict[str, Any] = {
         # 確定文の先頭チャンクと完全一致した場合だけ再生に回す(不一致なら破棄)
         "speculative_tts": False,
         "speculative_stable_partials": 2,
+        # 元音声の表現を発話単位で Irodori へ渡す。ASR の文字列は書き換えない。
+        "performance_enabled": True,
+        # "none" | "emotion2vec"。emotion2vec は任意 extra の CPU モデル。
+        "emotion_engine": "none",
+        "emotion_model_dir": None,  # ローカルに取得済みの emotion2vec+ ディレクトリ
+        # ASR 確定後、並行解析の完了を待つ上限。超過時は明瞭読み上げ。
+        "performance_wait_ms": 150,
     },
 }
 

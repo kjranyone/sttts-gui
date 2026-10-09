@@ -15,10 +15,13 @@ import logging
 import os
 import queue
 import secrets
+import statistics
 import sys
 import threading
 import time
 import uuid
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +29,7 @@ from . import BACKEND_VERSION
 from .chunker import split_chunks
 from .config import default_config, load_user_config, merge_config
 from .engines.asr import create_asr
+from .performance import AcousticObservation, Delivery, observe, plan_delivery
 from .protocol import ERROR, IDLE, LOADING, MODEL_CATALOG, PROTOCOL_VERSION, READY
 
 # stderr 用ロガー(stdout はプロトコル専用のため)
@@ -101,6 +105,7 @@ class TtsJob:
     spec: SpecEntry | None = None  # 投機ジョブ(request=0)の場合のみ
     warmup: bool = False  # ウォームアップ合成(結果は送らない)
     enqueued: float = 0.0  # time.monotonic()(queue_wait_ms 計測用)
+    sampling: dict | None = None  # 発話単位の上書き(元の設定は変更しない)
 
 
 WARMUP_TEXT = "こんにちは、よろしくお願いします。"
@@ -187,6 +192,12 @@ class BackendApp:
         self._asr_preload_key = None
 
         self._stop = threading.Event()
+        self._performance_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="performance")
+        self._performance_pending: dict[int, Future] = {}
+        self._performance_lock = threading.Lock()
+        self._recent_rates: deque[float] = deque(maxlen=8)
+        self._emotion_model = None
+        self._emotion_missing_reported = False
 
     # ---------- 出力系 ----------
 
@@ -462,6 +473,14 @@ class BackendApp:
             return
 
         caption, ref_wavs = self._resolve_voice(msg)
+        delivery: Delivery | None = msg.get("_delivery")
+        if delivery is None and isinstance(msg.get("delivery"), dict):
+            delivery = Delivery.from_mapping(msg["delivery"])
+        if delivery is not None:
+            caption = delivery.caption(caption)
+        sampling = dict(self.config["tts"].get("sampling") or {})
+        if delivery is not None and delivery.duration_scale is not None:
+            sampling["duration_scale"] = delivery.duration_scale
 
         with self._pending_lock:
             self._request_seq += 1
@@ -484,6 +503,7 @@ class BackendApp:
                 "tag": msg.get("tag"),
                 "utterance": msg.get("utterance"),
                 "speech_end_ms": _ms(speech_end) if speech_end is not None else None,
+                "delivery": delivery.summary() if delivery else None,
             }
         )
         seed = self._request_seed(msg.get("seed"))
@@ -491,7 +511,7 @@ class BackendApp:
         # 投機的 TTS の束縛: 確定文の先頭チャンクと完全一致し、声・設定が同じときだけ流用する
         first = 0
         utterance = msg.get("utterance")
-        if utterance is not None and msg.get("seed") is None:
+        if utterance is not None and msg.get("seed") is None and delivery is None:
             spec, emit_now = self._bind_spec(int(utterance), request, chunks[0], self._voice_key(caption, ref_wavs))
             if spec is not None:
                 seed = spec.seed
@@ -503,6 +523,8 @@ class BackendApp:
         for i, chunk_text in enumerate(chunks):
             if i < first:
                 continue
+            if delivery is not None:
+                chunk_text = delivery.annotated_text(chunk_text)
             self._tts_queue.put(
                 TtsJob(
                     request=request,
@@ -512,6 +534,7 @@ class BackendApp:
                     ref_wavs=ref_wavs,
                     seed=seed,
                     enqueued=time.monotonic(),
+                    sampling=sampling,
                 )
             )
 
@@ -726,7 +749,7 @@ class BackendApp:
                 ref_wavs=job.ref_wavs,
                 seed=job.seed,
                 progress=ProgressFn(self, "tts"),
-                sampling=self.config["tts"].get("sampling"),
+                sampling=job.sampling if job.sampling is not None else self.config["tts"].get("sampling"),
             )
 
     def _emit_chunk(
@@ -930,6 +953,10 @@ class BackendApp:
             return
         self._session.stop()
         self._session = None
+        with self._performance_lock:
+            for future in self._performance_pending.values():
+                future.cancel()
+            self._performance_pending.clear()
         self._last_session_stop_at = time.monotonic()
         with self._state_lock:
             self._mic_running = False
@@ -949,6 +976,71 @@ class BackendApp:
     def on_mic_level(self, rms: float, db: float) -> None:
         self.send({"type": "mic_level", "rms": rms, "db": db})
 
+    def on_utterance_audio(self, utterance: int, audio) -> None:
+        """VAD 確定時に呼ぶ。ASR と並列で解析し、VAD スレッドでは推論しない。"""
+        if not self.config["pipeline"].get("performance_enabled", True) or self._spec_enabled():
+            return
+        with self._performance_lock:
+            # 混雑時は古い未処理結果を破棄し、マイクや ASR を待たせない。
+            for old in list(self._performance_pending):
+                if old < utterance - 2:
+                    self._performance_pending.pop(old).cancel()
+            self._performance_pending[utterance] = self._performance_pool.submit(
+                self._analyze_performance, audio.copy()
+            )
+
+    def _analyze_performance(self, audio) -> tuple[AcousticObservation, str | None]:
+        observation = observe(audio)
+        emotion = None
+        if self.config["pipeline"].get("emotion_engine") == "emotion2vec":
+            model_dir = self.config["pipeline"].get("emotion_model_dir")
+            if not model_dir or not Path(model_dir).is_dir():
+                if not self._emotion_missing_reported:
+                    self._emotion_missing_reported = True
+                    self.send_error("performance", "emotion2vec のローカルモデルフォルダを pipeline.emotion_model_dir に指定してください")
+                return observation, None
+            try:
+                if self._emotion_model is None:
+                    from .performance import Emotion2VecClassifier  # noqa: PLC0415
+
+                    with _engine_quiet_stdout():
+                        self._emotion_model = Emotion2VecClassifier(str(model_dir))
+                with _engine_quiet_stdout():
+                    emotion = self._emotion_model.classify(audio)
+            except Exception as e:
+                log.warning("local emotion analysis unavailable: %s", e)
+                self._emotion_model = None
+        return observation, emotion
+
+    def _delivery_for(self, utterance: int, text: str) -> tuple[Delivery | None, AcousticObservation | None]:
+        if not self.config["pipeline"].get("performance_enabled", True) or self._spec_enabled():
+            return None, None
+        with self._performance_lock:
+            future = self._performance_pending.pop(utterance, None)
+        if future is None:
+            return None, None
+        try:
+            observation, emotion = future.result(
+                timeout=max(0, int(self.config["pipeline"].get("performance_wait_ms", 150))) / 1000
+            )
+        except FutureTimeout:
+            future.cancel()
+            return None, None
+        except Exception:
+            log.exception("performance analysis failed")
+            return None, None
+        from .chunker import count_mora  # noqa: PLC0415
+
+        rate = count_mora(text) / (observation.active_ms / 1000) if observation.active_ms >= 400 else None
+        observation = AcousticObservation(
+            observation.audio_ms, observation.active_ms, observation.pause_ms, observation.rms, rate
+        )
+        baseline = float(statistics.median(self._recent_rates)) if len(self._recent_rates) >= 3 else None
+        delivery = plan_delivery(observation, emotion=emotion, baseline_mora_per_s=baseline)
+        if rate is not None and observation.active_ms >= 800:
+            self._recent_rates.append(rate)
+        return delivery, observation
+
     def on_asr_partial(self, utterance: int, text: str, asr_ms: int | None = None) -> None:
         self.send({"type": "asr_partial", "utterance": utterance, "text": text, "asr_ms": asr_ms})
         try:
@@ -960,6 +1052,14 @@ class BackendApp:
         timing = timing or {}
         speech_end = timing.get("speech_end")
         vad_end = timing.get("vad_end")
+        if text.strip():
+            delivery, observation = self._delivery_for(utterance, text)
+        else:
+            with self._performance_lock:
+                future = self._performance_pending.pop(utterance, None)
+            if future is not None:
+                future.cancel()
+            delivery, observation = None, None
         self.send(
             {
                 "type": "asr_final",
@@ -970,10 +1070,12 @@ class BackendApp:
                 "vad_wait_ms": int((vad_end - speech_end) * 1000) if (speech_end and vad_end) else None,
                 "asr_ms": timing.get("asr_ms"),
                 "audio_ms": timing.get("audio_ms"),
+                "delivery": delivery.summary() if delivery else None,
+                "pause_ms": observation.pause_ms if observation else None,
             }
         )
         if self.config["pipeline"]["auto_speak"] and text.strip():
-            self.speak({"text": text, "origin": "auto", "utterance": utterance, "speech_end": speech_end})
+            self.speak({"text": text, "origin": "auto", "utterance": utterance, "speech_end": speech_end, "_delivery": delivery})
         else:
             self._discard_specs()
 
@@ -986,6 +1088,11 @@ class BackendApp:
                 self._session.stop()
         except Exception:
             log.exception("session stop failed")
+        with self._performance_lock:
+            for future in self._performance_pending.values():
+                future.cancel()
+            self._performance_pending.clear()
+        self._performance_pool.shutdown(wait=True, cancel_futures=True)
         self._tts_queue.put(None)  # ワーカー起床用
         if self._tts_thread is not None:
             # 合成中の1チャンクは中断できないため、完了を待ってから解放する

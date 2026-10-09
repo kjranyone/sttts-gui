@@ -139,7 +139,7 @@ def test_create_gemini_engine_without_loading():
     asr = create_asr(cfg)
     assert isinstance(asr, GeminiLiveAsr)
     assert asr.model_id == DEFAULT_MODEL
-    assert asr.mode == "SMART"
+    assert asr.mode == "VERBATIM"
     assert asr.language == "ja-JP"  # "ja" は BCP-47 へ正規化
     assert asr.engine_name == "gemini"
 

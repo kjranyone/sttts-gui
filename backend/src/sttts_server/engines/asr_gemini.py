@@ -4,14 +4,9 @@ asr.engine = "gemini" で選択。google-genai は標準依存。
 API キーは asr.gemini_api_key(data/backend.json)または環境変数 GEMINI_API_KEY /
 GOOGLE_API_KEY から解決する。
 
-統合形態: うちはローカル silero VAD で発話を切り出すため、Live API は
-「1発話 = 1セッション」で使う(音声を流しきり audio_stream_end で確定を待つ)。
+統合形態: ローカル silero VAD の start で発話専用 Live セッションを開き、
+録音中から 100ms 単位で送り、end で audio_stream_end を送って確定を待つ。
 サーバ側自動 VAD に任せないので、VAD 挙動はローカルエンジンと一致する。
-
-- 精度: WER ~2.6%(公式発表)。SMART モードはフィラー(えー等)除去・句読点整形を行う。
-- 遅延: ネットワーク + 確定までの解析込みで 0.5〜1.5 秒程度(要実測)。
-- 制限: ストリーミング 10 分/セッション(発話単位運用では実質無関係)。
-    話者分離・単語タイムスタンプは非対応。
 """
 
 from __future__ import annotations
@@ -19,6 +14,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
+import time
+from collections import deque
+from collections.abc import Callable
 
 import numpy as np
 
@@ -42,7 +41,7 @@ class GeminiLiveAsr:
         model_id: str = DEFAULT_MODEL,
         api_key: str | None = None,
         language: str = "ja-JP",
-        mode: str = "SMART",
+        mode: str = "VERBATIM",
         timeout_s: float = 20.0,
     ) -> None:
         self.model_id = model_id or DEFAULT_MODEL
@@ -52,24 +51,26 @@ class GeminiLiveAsr:
         self.mode = "SMART" if str(mode).upper() == "SMART" else "VERBATIM"
         self.timeout_s = float(timeout_s)
         self._client = None
+        self._streams: dict[int, _LiveUtterance] = {}
+        self._streams_lock = threading.Lock()
 
     @property
     def model_id_resolved(self) -> str:
         return self.model_id
 
     def load(self, progress=None) -> None:
-        try:
-            from google import genai  # noqa: PLC0415
-        except ImportError as e:
-            raise RuntimeError(
-                "Gemini エンジンには google-genai が必要です: uv sync を実行してください"
-            ) from e
         key = resolve_api_key(self.api_key)
         if not key:
             raise RuntimeError(
                 "Gemini API キーがありません。GUI の「キー」欄に AI Studio で発行したキーを"
                 "入力してください(data/backend.json の asr.gemini_api_key / 環境変数 GEMINI_API_KEY でも可)"
             )
+        try:
+            from google import genai  # noqa: PLC0415
+        except ImportError as e:
+            raise RuntimeError(
+                "Gemini エンジンには google-genai が必要です: uv sync を実行してください"
+            ) from e
         if progress is not None:
             progress(f"Gemini 接続準備: {self.model_id} ({self.mode})")
         self._client = genai.Client(api_key=key)
@@ -83,6 +84,55 @@ class GeminiLiveAsr:
     def transcribe_partial(self, audio: np.ndarray) -> str:
         # 発話途中バッファも同様に一括送信する(interim は使わず確定を返す)
         return self._transcribe(audio)
+
+    def begin_stream(self, utterance: int, on_partial: Callable[[int, str], None]) -> None:
+        if self._client is None:
+            raise RuntimeError("ASR not loaded")
+        stream = _LiveUtterance(self, utterance, on_partial)
+        with self._streams_lock:
+            if utterance in self._streams:
+                raise RuntimeError(f"duplicate Gemini utterance {utterance}")
+            self._streams[utterance] = stream
+        stream.start()
+
+    def feed_stream(self, utterance: int, audio: np.ndarray) -> None:
+        with self._streams_lock:
+            stream = self._streams.get(utterance)
+        if stream is not None:
+            pcm = np.clip(audio, -1.0, 1.0)
+            stream.feed((pcm * 32767.0).astype("<i2").tobytes())
+
+    def end_stream(self, utterance: int) -> None:
+        with self._streams_lock:
+            stream = self._streams.get(utterance)
+        if stream is not None:
+            stream.end()
+
+    def finish_stream(self, utterance: int, audio: np.ndarray) -> str:
+        with self._streams_lock:
+            stream = self._streams.get(utterance)
+        if stream is None:
+            raise RuntimeError(f"Gemini stream unavailable for utterance {utterance}")
+        stream.end()
+        try:
+            return stream.result(self.timeout_s)
+        finally:
+            with self._streams_lock:
+                if self._streams.get(utterance) is stream:
+                    self._streams.pop(utterance, None)
+
+    def abort_stream(self, utterance: int) -> None:
+        with self._streams_lock:
+            stream = self._streams.pop(utterance, None)
+        if stream is not None:
+            stream.abort()
+
+    def abort_all_streams(self) -> None:
+        with self._streams_lock:
+            streams = list(self._streams.values())
+            self._streams.clear()
+        for stream in streams:
+            stream.abort()
 
     # ---------- 実装 ----------
 
@@ -132,3 +182,135 @@ class GeminiLiveAsr:
                 if sc.turn_complete or sc.generation_complete:
                     break
             return final_text.strip()
+
+
+class _LiveUtterance:
+    """1発話の Gemini 接続。VAD 側からの feed/end は待機しない。"""
+
+    def __init__(self, asr: GeminiLiveAsr, utterance: int, on_partial: Callable[[int, str], None]) -> None:
+        self.asr = asr
+        self.utterance = utterance
+        self.on_partial = on_partial
+        self._queue: deque[bytes | None] = deque()
+        self._lock = threading.Lock()
+        self._ended = False
+        self._aborted = False
+        self._done = threading.Event()
+        self._thread = threading.Thread(target=self._thread_main, name=f"gemini-live-{utterance}", daemon=True)
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._task: asyncio.Task | None = None
+        self._text = ""
+        self._error: BaseException | None = None
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def feed(self, raw: bytes) -> None:
+        with self._lock:
+            if not self._ended and not self._aborted:
+                self._queue.append(raw)
+
+    def end(self) -> None:
+        with self._lock:
+            if not self._ended:
+                self._ended = True
+                self._queue.append(None)
+
+    def abort(self) -> None:
+        with self._lock:
+            self._aborted = True
+            self._queue.clear()
+            self._queue.append(None)
+            loop, task = self._loop, self._task
+        if loop is not None and task is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(task.cancel)
+        if self._thread is not threading.current_thread():
+            self._thread.join(timeout=5)
+
+    def result(self, timeout_s: float) -> str:
+        if not self._done.wait(timeout_s):
+            self.abort()
+            raise TimeoutError("Gemini Live transcription timed out")
+        self._thread.join(timeout=1)
+        if self._error is not None:
+            raise RuntimeError(f"Gemini Live transcription failed: {self._error}") from self._error
+        return self._text.strip()
+
+    def _thread_main(self) -> None:
+        try:
+            asyncio.run(self._run())
+        except asyncio.CancelledError:
+            pass
+        except BaseException as e:
+            self._error = e
+        finally:
+            self._done.set()
+
+    async def _run(self) -> None:
+        from google.genai import types  # noqa: PLC0415
+
+        self._loop = asyncio.get_running_loop()
+        self._task = asyncio.current_task()
+        if self._aborted:
+            return
+        config = types.LiveConnectConfig(
+            response_modalities=["TEXT"],
+            input_audio_transcription=types.AudioTranscriptionConfig(
+                language_codes=[self.asr.language], mode=self.asr.mode
+            ),
+        )
+        async with self.asr._client.aio.live.connect(model=self.asr.model_id, config=config) as session:
+            sender_done = asyncio.Event()
+
+            async def sender() -> None:
+                pending = bytearray()
+                last_send = time.monotonic()
+                while True:
+                    with self._lock:
+                        item = self._queue.popleft() if self._queue else ...
+                    if item is None:
+                        if pending:
+                            await session.send_realtime_input(
+                                audio=types.Blob(data=bytes(pending), mime_type="audio/pcm;rate=16000")
+                            )
+                        await session.send_realtime_input(audio_stream_end=True)
+                        sender_done.set()
+                        return
+                    if item is not ...:
+                        pending.extend(item)
+                    if len(pending) >= 3200 or (pending and time.monotonic() - last_send >= 0.1):
+                        await session.send_realtime_input(
+                            audio=types.Blob(data=bytes(pending), mime_type="audio/pcm;rate=16000")
+                        )
+                        pending.clear()
+                        last_send = time.monotonic()
+                    if item is ...:
+                        await asyncio.sleep(0.01)
+
+            async def receiver() -> None:
+                while True:
+                    async for response in session.receive():
+                        sc = response.server_content
+                        if sc is None:
+                            continue
+                        interim = getattr(sc, "interim_input_transcription", None)
+                        if interim is not None and interim.text:
+                            try:
+                                self.on_partial(self.utterance, interim.text)
+                            except Exception:
+                                log.exception("Gemini interim callback failed")
+                        final = sc.input_transcription
+                        if final is not None and final.text:
+                            fragment = final.text.strip()
+                            if fragment and fragment != self._text:
+                                if self._text and fragment.startswith(self._text):
+                                    self._text = fragment
+                                else:
+                                    self._text = f"{self._text} {fragment}".strip() if self._text else fragment
+                        if (sc.turn_complete or sc.generation_complete) and sender_done.is_set():
+                            return
+                    if sender_done.is_set():
+                        return
+                    await asyncio.sleep(0.01)
+
+            await asyncio.gather(sender(), receiver())

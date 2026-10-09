@@ -26,6 +26,17 @@ TIMING_FIELDS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Rust の DeliveryInfo と同期。転写文とは別の発話単位メタデータとして運ぶ。
+# asr_final に delivery / pause_ms、speak と speak_accepted に delivery を付ける。
+DELIVERY_FIELDS: tuple[str, ...] = (
+    "emoji", "style", "duration_scale", "emotion", "source",
+)
+EXPRESSION_FIELDS: dict[str, tuple[str, ...]] = {
+    "asr_final": ("delivery", "pause_ms"),
+    "speak": ("delivery",),
+    "speak_accepted": ("delivery",),
+}
+
 # エンジン phase
 IDLE = "idle"
 LOADING = "loading"

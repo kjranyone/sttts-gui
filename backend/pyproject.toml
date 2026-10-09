@@ -49,6 +49,8 @@ reazonspeech = [
     "sherpa-onnx>=1.13.8,<1.14",
     "sherpa-onnx-core>=1.13.8,<1.14",
 ]
+# 任意: CPU で音声感情認識。backend.json の pipeline.emotion_engine="emotion2vec" で使う。
+emotion = ["funasr>=1.4.14"]
 
 [tool.uv]
 # sentencepiece 0.1.x(irodori-tts のピン "<0.2")は cp312 Windows wheel が存在せず、

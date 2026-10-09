@@ -150,11 +150,70 @@ def test_segmenter_emits_final_with_speech_end_timestamp():
     assert len(worker.finals) == 1
     job = worker.finals[0]
     assert job.utterance == 1
-    assert job.audio.size == FRAME * 39  # frame 2..40
+    assert job.audio.size == FRAME * 41  # start 前の 2 フレームを含む
     # ブロック末尾(41 フレーム)が arrival。end は 30 フレーム → 11 フレーム前
     assert abs(job.speech_end - (100.0 - 11 * FRAME / 16000)) < 1e-6
     assert seg.utterance_id == 2
     assert vad.resets == 1
+
+
+def test_segmenter_streams_during_speech_and_ends_before_final_job():
+    events = []
+
+    class Stream:
+        def begin_stream(self, utterance, callback):
+            events.append(("begin", utterance))
+
+        def feed_stream(self, utterance, audio):
+            events.append(("audio", len(audio)))
+
+        def end_stream(self, utterance):
+            events.append(("end", utterance))
+
+    class Worker(RecordingWorker):
+        def stream_partial(self, *_):
+            pass
+
+        def submit_final(self, job):
+            events.append(("final", job.utterance))
+            super().submit_final(job)
+
+    worker = Worker()
+    vad = ScriptVad({(0, 0): {"start": 0}, (0, 20): {"end": 15 * FRAME}})
+    seg = VadSegmenter(vad, worker, stream_asr=Stream(), partial_interval=0.0)
+    seg.feed(np.ones(FRAME * 10, dtype=np.float32))
+    assert events[0] == ("begin", 1)
+    assert any(kind == "audio" for kind, _ in events)
+    assert not worker.finals
+    seg.feed(np.ones(FRAME * 11, dtype=np.float32))
+    assert events[-2:] == [("end", 1), ("final", 1)]
+
+
+def test_segmenter_stream_includes_audio_before_vad_start():
+    streamed = []
+
+    class Stream:
+        def begin_stream(self, *_):
+            pass
+
+        def feed_stream(self, _, audio):
+            streamed.append(int(audio[0]))
+
+        def end_stream(self, *_):
+            pass
+
+    class Worker(RecordingWorker):
+        def stream_partial(self, *_):
+            pass
+
+    worker = Worker()
+    vad = ScriptVad({(0, 3): {"start": 3 * FRAME}, (0, 20): {"end": 16 * FRAME}})
+    seg = VadSegmenter(vad, worker, stream_asr=Stream(), partial_interval=0.0)
+    audio = np.repeat(np.arange(21, dtype=np.float32), FRAME)
+    seg.feed(audio)
+    assert streamed[:4] == [0, 1, 2, 3]
+    assert len(worker.finals) == 1
+    assert list(worker.finals[0].audio[:FRAME * 4:FRAME]) == [0, 1, 2, 3]
 
 
 def test_segmenter_speech_end_after_reset_uses_absolute_position():
