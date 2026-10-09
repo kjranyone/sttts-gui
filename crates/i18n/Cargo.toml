@@ -1,0 +1,9 @@
+[package]
+name = "sttts-i18n"
+description = "UI language selection and inline translations (en / ja / zh) for sttts-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]

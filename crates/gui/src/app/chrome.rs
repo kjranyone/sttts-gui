@@ -4,6 +4,7 @@ use gpui_kit::component::button::*;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use sttts_i18n::{tr, trf};
 
 use super::{MicTransition, StttsApp, is_error_line, kit, phase_label};
 use crate::theme::{self, c, ca};
@@ -13,8 +14,8 @@ impl StttsApp {
     /// エラーは赤、読み込み中は黄(経過秒つき)。
     fn render_engine_error(&self) -> Option<Div> {
         let engines = [
-            ("音声合成", &self.tts_state, self.tts_loading_since),
-            ("認識", &self.asr_state, self.asr_loading_since),
+            (tr!("Speech synthesis", "音声合成", "语音合成"), &self.tts_state, self.tts_loading_since),
+            (tr!("Recognition", "認識", "识别"), &self.asr_state, self.asr_loading_since),
         ];
         let (what, state, since, is_error) = engines
             .iter()
@@ -27,9 +28,16 @@ impl StttsApp {
                     .map(|(w, s, t)| (*w, *s, *t, false))
             })?;
         let color = if is_error { theme::ERROR } else { theme::WARN };
-        let mut detail = state.detail.clone().unwrap_or_else(|| if is_error { "エラー".into() } else { "読み込み中".into() });
+        let mut detail = state.detail.clone().unwrap_or_else(|| {
+            if is_error {
+                tr!("Error", "エラー", "错误").into()
+            } else {
+                tr!("Loading", "読み込み中", "加载中").into()
+            }
+        });
         if let Some(t) = since.filter(|_| !is_error) {
-            detail = format!("{detail} · {}秒", t.elapsed().as_secs());
+            let secs = t.elapsed().as_secs();
+            detail = trf!("{detail} · {secs}s", "{detail} · {secs}秒", "{detail} · {secs}秒");
         }
         Some(
             h_flex()
@@ -116,12 +124,14 @@ impl StttsApp {
                     .child(div().size(px(6.)).rounded_full().bg(c(conn_dot)))
                     .child(self.status_hint.clone()),
             )
-            .child(format!(
-                "認識 {} · 初音まで {} · 合成速度 RTF {}",
-                fmt(self.last_asr_ms),
-                fmt(self.last_first_chunk_ms),
-                rtf
-            ))
+            .child({
+                let (asr, first) = (fmt(self.last_asr_ms), fmt(self.last_first_chunk_ms));
+                trf!(
+                    "ASR {asr} · first audio {first} · synthesis RTF {rtf}",
+                    "認識 {asr} · 初音まで {first} · 合成速度 RTF {rtf}",
+                    "识别 {asr} · 首音 {first} · 合成速度 RTF {rtf}"
+                )
+            })
             .when_some(self.sys, |d, s| {
                 let hot = s.vram_ratio().is_some_and(|r| r >= 0.9)
                     || (s.ram_total > 0 && s.ram_used as f64 / s.ram_total as f64 >= 0.9);
@@ -134,16 +144,22 @@ impl StttsApp {
             .child(div().flex_1())
             .child({
                 let (queued, speaking) = self.turns.queue_counts();
-                format!("待機 {queued} · 合成/再生 {speaking} · {} ターン", self.turns.len())
+                let turns = self.turns.len();
+                trf!(
+                    "Queued {queued} · synthesizing/playing {speaking} · {turns} turns",
+                    "待機 {queued} · 合成/再生 {speaking} · {turns} ターン",
+                    "排队 {queued} · 合成/播放 {speaking} · {turns} 轮"
+                )
             })
             .child(
                 Button::new("status-log")
                     .xsmall()
                     .ghost()
                     .label(if self.unread_errors > 0 {
-                        format!("ログ ⚠ {}", self.unread_errors)
+                        let n = self.unread_errors;
+                        trf!("Log ⚠ {n}", "ログ ⚠ {n}", "日志 ⚠ {n}")
                     } else {
-                        "ログ".into()
+                        tr!("Log", "ログ", "日志").into()
                     })
                     .when(self.unread_errors > 0, |b| b.text_color(c(theme::ERROR)))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_log(cx))),
@@ -165,12 +181,12 @@ impl StttsApp {
                     .items_center()
                     .text_xs()
                     .text_color(c(theme::TEXT_FAINT))
-                    .child(div().text_color(c(theme::TEXT_MUTED)).child("ログ"))
+                    .child(div().text_color(c(theme::TEXT_MUTED)).child(tr!("Log", "ログ", "日志")))
                     .child(
                         Button::new("close-log")
                             .xsmall()
                             .ghost()
-                            .label("閉じる")
+                            .label(tr!("Close", "閉じる", "关闭"))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_log(cx))),
                     ),
             )
@@ -201,21 +217,21 @@ impl StttsApp {
         }
         let (title, body) = match self.mic_transition {
             MicTransition::Stopping => (
-                "ライブを停止しています…",
+                tr!("Stopping live…", "ライブを停止しています…", "正在停止直播…"),
                 div(),
             ),
             _ => (
-                "ライブを準備しています…",
+                tr!("Preparing live…", "ライブを準備しています…", "正在准备直播…"),
                 div().child(
                     h_flex()
                         .gap_2()
                         .child(kit::chip(
                             kit::phase_color(&self.tts_state.phase),
-                            format!("音声合成 · {}", phase_label(&self.tts_state)),
+                            format!("{} · {}", tr!("Speech synthesis", "音声合成", "语音合成"), phase_label(&self.tts_state)),
                         ))
                         .child(kit::chip(
                             kit::phase_color(&self.asr_state.phase),
-                            format!("認識 · {}", phase_label(&self.asr_state)),
+                            format!("{} · {}", tr!("Recognition", "認識", "识别"), phase_label(&self.asr_state)),
                         )),
                 ),
             ),

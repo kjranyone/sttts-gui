@@ -8,6 +8,7 @@ use gpui_kit::component::button::*;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use sttts_i18n::tr;
 
 use super::{MicTransition, StttsApp, kit};
 use crate::theme::{self, c, ca};
@@ -27,22 +28,29 @@ impl StttsApp {
     /// 全体の状態を1つにまとめる(個別の TTS / 認識の状態はレールと詳細設定で見せる)
     fn health(&self) -> (u32, &'static str) {
         if self.backend.is_none() {
-            return (theme::ERROR, "バックエンド起動エラー");
+            return (theme::ERROR, tr!("Backend failed to start", "バックエンド起動エラー", "后端启动错误"));
         }
         if !self.connected {
-            return (theme::TEXT_FAINT, "接続中…");
+            return (theme::TEXT_FAINT, tr!("Connecting…", "接続中…", "连接中…"));
         }
         let (tts, asr) = (self.tts_state.phase.as_str(), self.asr_state.phase.as_str());
         if tts == "error" {
-            (theme::ERROR, "音声合成エラー")
+            (theme::ERROR, tr!("Speech synthesis error", "音声合成エラー", "语音合成错误"))
         } else if asr == "error" {
-            (theme::ERROR, "認識エラー")
+            (theme::ERROR, tr!("Recognition error", "認識エラー", "识别错误"))
         } else if tts == "loading" || asr == "loading" {
-            (theme::WARN, "読み込み中…")
+            (theme::WARN, tr!("Loading…", "読み込み中…", "加载中…"))
         } else if tts == "ready" {
-            (theme::LIVE, if self.mock { "準備完了(モック)" } else { "準備完了" })
+            (
+                theme::LIVE,
+                if self.mock {
+                    tr!("Ready (mock)", "準備完了(モック)", "就绪(模拟)")
+                } else {
+                    tr!("Ready", "準備完了", "就绪")
+                },
+            )
         } else {
-            (theme::TEXT_FAINT, "待機中")
+            (theme::TEXT_FAINT, tr!("Idle", "待機中", "待机"))
         }
     }
 
@@ -82,7 +90,7 @@ impl StttsApp {
                                         .text_xs()
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(c(theme::LIVE))
-                                        .child("ライブ中"),
+                                        .child(tr!("Live", "ライブ中", "直播中")),
                                 ),
                         )
                     }),
@@ -96,7 +104,7 @@ impl StttsApp {
                         Some((last, median)) => h_flex()
                             .gap_1p5()
                             .items_baseline()
-                            .child(div().text_xs().text_color(c(theme::TEXT_FAINT)).child("応答"))
+                            .child(div().text_xs().text_color(c(theme::TEXT_FAINT)).child(tr!("Latency", "応答", "响应")))
                             .child(
                                 div()
                                     .text_sm()
@@ -108,13 +116,13 @@ impl StttsApp {
                                 div()
                                     .text_xs()
                                     .text_color(c(theme::TEXT_FAINT))
-                                    .child(format!("中央値 {median}ms")),
+                                    .child(format!("{} {median}ms", tr!("median", "中央値", "中位数"))),
                             ),
                         None => h_flex().child(
                             div()
                                 .text_xs()
                                 .text_color(c(theme::TEXT_FAINT))
-                                .child("応答 —"),
+                                .child(format!("{} —", tr!("Latency", "応答", "响应"))),
                         ),
                     })
                     .child(
@@ -129,7 +137,7 @@ impl StttsApp {
                                     .ghost()
                                     .icon(IconName::Settings)
                                     .selected(self.settings_open)
-                                    .tooltip("詳細設定")
+                                    .tooltip(tr!("Settings", "詳細設定", "详细设置"))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.settings_open = !this.settings_open;
                                         cx.notify();
@@ -141,7 +149,7 @@ impl StttsApp {
                                     .ghost()
                                     .icon(IconName::PanelBottom)
                                     .selected(self.log_open)
-                                    .tooltip("ログ")
+                                    .tooltip(tr!("Log", "ログ", "日志"))
                                     .on_click(cx.listener(|this, _, _, cx| this.toggle_log(cx))),
                             ),
                     ),

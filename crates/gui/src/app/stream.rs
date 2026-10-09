@@ -8,6 +8,7 @@ use gpui_kit::component::input::Textarea;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use sttts_i18n::{tr, trf};
 
 use super::help::HelpTopic;
 use super::{StttsApp, voice_phrase};
@@ -18,53 +19,54 @@ const CARD_MAX_W: f32 = 780.;
 /// Irodori-TTS v4 の入力パレット。依存ピン `89f9d8f` の
 /// `irodori_tts/gradio_emoji_palette.py` `EMOJI_PALETTE_ITEMS` と、
 /// v4 / v4.1 の `EMOJI_ANNOTATIONS.md` と同じ 45 種・同じ順。
-/// 意味は公式表の日本語欄。クリックは入力欄のカーソル位置へ入れる。
-const ANNOTATION_CHOICES: &[(&str, &str)] = &[
-    ("👂", "囁き、耳元"),
-    ("😮‍💨", "吐息、溜息、寝息"),
-    ("⏸️", "間、沈黙"),
-    ("🤭", "くすくす、含み笑い"),
-    ("🥵", "喘ぎ、うめき"),
-    ("📢", "エコー、リバーブ"),
-    ("😏", "からかう、甘える"),
-    ("🥺", "声を震わせて、自信なさげ"),
-    ("🌬️", "息切れ、荒い息"),
-    ("😮", "息をのむ"),
-    ("👅", "舐める音、咀嚼音"),
-    ("💋", "リップノイズ"),
-    ("🫶", "優しく"),
-    ("😭", "泣き声、悲しみ"),
-    ("😱", "悲鳴、叫び"),
-    ("😪", "眠そう、気だるげ"),
-    ("😴", "寝言、いびき"),
-    ("⏩", "早口"),
-    ("📞", "電話越し、スピーカー越し"),
-    ("🐢", "ゆっくり"),
-    ("🥤", "唾を飲み込む"),
-    ("🤧", "咳、くしゃみ、鼻をすする"),
-    ("😒", "舌打ち"),
-    ("😰", "慌て、緊張、どもり"),
-    ("😆", "喜びながら"),
-    ("💥", "勢いよく"),
-    ("😠", "怒り、不満"),
-    ("😲", "驚き"),
-    ("🥱", "あくび"),
-    ("😖", "苦しげ"),
-    ("😟", "心配そう"),
-    ("🫣", "恥ずかしそう、照れ"),
-    ("🙄", "呆れて"),
-    ("😊", "楽しげ"),
-    ("😎", "得意げ、自信ありげ"),
-    ("👌", "相槌"),
-    ("🙏", "懇願"),
-    ("🥴", "酔っ払って"),
-    ("🎵", "鼻歌"),
-    ("🤐", "口を塞がれて"),
-    ("😌", "安堵、満足"),
-    ("🤔", "疑問"),
-    ("💪", "力強く"),
-    ("👃", "匂いを嗅ぐ"),
-    ("📖", "ナレーション、独白"),
+/// 意味は公式表の日本語欄(英語・中国語はその訳)。クリックは入力欄のカーソル位置へ入れる。
+/// 並びは (絵文字, 英語, 日本語, 中国語)。
+const ANNOTATION_CHOICES: &[(&str, &str, &str, &str)] = &[
+    ("👂", "Whisper, close to the ear", "囁き、耳元", "耳语、贴耳"),
+    ("😮‍💨", "Breath, sigh, sleeping breath", "吐息、溜息、寝息", "吐气、叹气、睡眠呼吸"),
+    ("⏸️", "Pause, silence", "間、沈黙", "停顿、沉默"),
+    ("🤭", "Giggle, suppressed laugh", "くすくす、含み笑い", "窃笑、偷笑"),
+    ("🥵", "Panting, groaning", "喘ぎ、うめき", "喘息、呻吟"),
+    ("📢", "Echo, reverb", "エコー、リバーブ", "回声、混响"),
+    ("😏", "Teasing, coaxing", "からかう、甘える", "调侃、撒娇"),
+    ("🥺", "Trembling voice, unsure", "声を震わせて、自信なさげ", "声音颤抖、没有自信"),
+    ("🌬️", "Out of breath, heavy breathing", "息切れ、荒い息", "气喘、粗重呼吸"),
+    ("😮", "Gasp", "息をのむ", "倒吸一口气"),
+    ("👅", "Licking, chewing sounds", "舐める音、咀嚼音", "舔舐声、咀嚼声"),
+    ("💋", "Lip noise", "リップノイズ", "唇齿音"),
+    ("🫶", "Gently", "優しく", "温柔地"),
+    ("😭", "Crying, sadness", "泣き声、悲しみ", "哭声、悲伤"),
+    ("😱", "Scream, shout", "悲鳴、叫び", "尖叫、呼喊"),
+    ("😪", "Sleepy, languid", "眠そう、気だるげ", "困倦、慵懒"),
+    ("😴", "Sleep talking, snoring", "寝言、いびき", "梦话、打鼾"),
+    ("⏩", "Fast talking", "早口", "语速快"),
+    ("📞", "Over the phone, through a speaker", "電話越し、スピーカー越し", "电话里、扬声器里"),
+    ("🐢", "Slowly", "ゆっくり", "慢慢地"),
+    ("🥤", "Swallowing", "唾を飲み込む", "咽口水"),
+    ("🤧", "Cough, sneeze, sniffle", "咳、くしゃみ、鼻をすする", "咳嗽、打喷嚏、吸鼻子"),
+    ("😒", "Tongue click", "舌打ち", "咂舌"),
+    ("😰", "Flustered, nervous, stammering", "慌て、緊張、どもり", "慌张、紧张、结巴"),
+    ("😆", "Joyfully", "喜びながら", "高兴地"),
+    ("💥", "Forcefully", "勢いよく", "有气势地"),
+    ("😠", "Anger, discontent", "怒り、不満", "愤怒、不满"),
+    ("😲", "Surprise", "驚き", "惊讶"),
+    ("🥱", "Yawn", "あくび", "打哈欠"),
+    ("😖", "In distress", "苦しげ", "痛苦地"),
+    ("😟", "Worried", "心配そう", "担心地"),
+    ("🫣", "Embarrassed, shy", "恥ずかしそう、照れ", "害羞、难为情"),
+    ("🙄", "Exasperated", "呆れて", "无语地"),
+    ("😊", "Cheerful", "楽しげ", "愉快地"),
+    ("😎", "Proud, confident", "得意げ、自信ありげ", "得意、自信"),
+    ("👌", "Backchannel (uh-huh)", "相槌", "附和"),
+    ("🙏", "Pleading", "懇願", "恳求"),
+    ("🥴", "Drunk", "酔っ払って", "醉醺醺地"),
+    ("🎵", "Humming", "鼻歌", "哼歌"),
+    ("🤐", "Mouth covered", "口を塞がれて", "被捂住嘴"),
+    ("😌", "Relief, satisfaction", "安堵、満足", "安心、满足"),
+    ("🤔", "Questioning", "疑問", "疑问"),
+    ("💪", "Powerfully", "力強く", "有力地"),
+    ("👃", "Sniffing", "匂いを嗅ぐ", "闻气味"),
+    ("📖", "Narration, monologue", "ナレーション、独白", "旁白、独白"),
 ];
 const _: () = assert!(ANNOTATION_CHOICES.len() == 45);
 
@@ -109,27 +111,40 @@ fn playing_highlights(turn: &Turn, playing: u32) -> Option<Vec<(std::ops::Range<
 fn status_label(turn: &Turn, tts_ready: bool, playing: Option<u32>) -> (String, u32) {
     if let Some(index) = playing {
         let position = turn.chunks.iter().position(|ch| ch.index == index).map_or(1, |p| p + 1);
-        return (format!("再生中 {position}/{}", turn.chunks.len().max(position)), theme::VOICE);
+        let total = turn.chunks.len().max(position);
+        return (trf!("Playing {position}/{total}", "再生中 {position}/{total}", "播放中 {position}/{total}"), theme::VOICE);
     }
+    let secs = turn.waited_secs();
     match turn.status {
-        TurnStatus::Listening => ("聞き取り中…".into(), theme::INPUT),
-        TurnStatus::AwaitingConfirm => ("確認待ち".into(), theme::WARN),
-        TurnStatus::Queued if !tts_ready => (format!("音声合成の準備待ち · {}秒", turn.waited_secs()), theme::WARN),
-        TurnStatus::Queued => (format!("発話待ち · {}秒", turn.waited_secs()), theme::TEXT_MUTED),
+        TurnStatus::Listening => (tr!("Listening…", "聞き取り中…", "正在聆听…").into(), theme::INPUT),
+        TurnStatus::AwaitingConfirm => (tr!("Awaiting confirmation", "確認待ち", "等待确认").into(), theme::WARN),
+        TurnStatus::Queued if !tts_ready => (
+            trf!("Waiting for TTS · {secs}s", "音声合成の準備待ち · {secs}秒", "等待语音合成就绪 · {secs}秒"),
+            theme::WARN,
+        ),
+        TurnStatus::Queued => (trf!("Queued · {secs}s", "発話待ち · {secs}秒", "等待发话 · {secs}秒"), theme::TEXT_MUTED),
         TurnStatus::Speaking => {
             let (ready, total) = (turn.ready_chunks(), turn.chunks.len());
             if total > 0 && ready == total {
-                ("再生待ち".into(), theme::VOICE)
+                (tr!("Waiting to play", "再生待ち", "等待播放").into(), theme::VOICE)
             } else {
-                (format!("合成中 {ready}/{} · {}秒", total.max(1), turn.waited_secs()), theme::VOICE)
+                let total = total.max(1);
+                (
+                    trf!(
+                        "Synthesizing {ready}/{total} · {secs}s",
+                        "合成中 {ready}/{total} · {secs}秒",
+                        "合成中 {ready}/{total} · {secs}秒"
+                    ),
+                    theme::VOICE,
+                )
             }
         }
-        TurnStatus::Done => ("届けました".into(), theme::LIVE),
-        TurnStatus::Cancelled => ("中止".into(), theme::TEXT_FAINT),
-        TurnStatus::Failed => ("失敗".into(), theme::ERROR),
-        TurnStatus::Unheard => ("聞き取れませんでした".into(), theme::TEXT_FAINT),
-        TurnStatus::Skipped => ("話していません".into(), theme::TEXT_FAINT),
-        TurnStatus::Interrupted => ("中断".into(), theme::TEXT_FAINT),
+        TurnStatus::Done => (tr!("Delivered", "届けました", "已送达").into(), theme::LIVE),
+        TurnStatus::Cancelled => (tr!("Cancelled", "中止", "已取消").into(), theme::TEXT_FAINT),
+        TurnStatus::Failed => (tr!("Failed", "失敗", "失败").into(), theme::ERROR),
+        TurnStatus::Unheard => (tr!("Couldn't catch that", "聞き取れませんでした", "没有听清").into(), theme::TEXT_FAINT),
+        TurnStatus::Skipped => (tr!("Not spoken", "話していません", "未发话").into(), theme::TEXT_FAINT),
+        TurnStatus::Interrupted => (tr!("Interrupted", "中断", "已中断").into(), theme::TEXT_FAINT),
     }
 }
 
@@ -186,9 +201,10 @@ impl StttsApp {
             let emoji = d.emoji.as_deref().unwrap_or("");
             let style = d.style.as_deref().unwrap_or("");
             if !emoji.is_empty() || !style.is_empty() {
-                Some(format!("表現 {emoji} {style}"))
+                Some(trf!("Expression {emoji} {style}", "表現 {emoji} {style}", "表现 {emoji} {style}"))
             } else if let Some(scale) = d.duration_scale {
-                Some(format!("話速 {:.0}%", 100.0 / scale))
+                let rate = 100.0 / scale;
+                Some(trf!("Speed {rate:.0}%", "話速 {rate:.0}%", "语速 {rate:.0}%"))
             } else {
                 None
             }
@@ -218,9 +234,9 @@ impl StttsApp {
                                 .xsmall(),
                             )
                             .child(div().text_xs().child(if is_mic {
-                                "マイク"
+                                tr!("Mic", "マイク", "麦克风")
                             } else {
-                                "文字入力"
+                                tr!("Typed", "文字入力", "文字输入")
                             })),
                     )
                     .child(
@@ -266,14 +282,14 @@ impl StttsApp {
                         .small()
                         .primary()
                         .icon(IconName::Play)
-                        .label("この内容で話す")
+                        .label(tr!("Speak this", "この内容で話す", "按此内容发话"))
                         .on_click(cx.listener(move |this, _, _, cx| this.confirm_turn(id, cx))),
                 )
                 .child(
                     Button::new(SharedString::from(format!("edit-{id}")))
                         .small()
                         .ghost()
-                        .label("訂正する")
+                        .label(tr!("Correct", "訂正する", "修改"))
                         .on_click(
                             cx.listener(move |this, _, window, cx| this.edit_turn(id, window, cx)),
                         ),
@@ -282,7 +298,7 @@ impl StttsApp {
                     Button::new(SharedString::from(format!("dismiss-{id}")))
                         .small()
                         .ghost()
-                        .label("話さない")
+                        .label(tr!("Don't speak", "話さない", "不发话"))
                         .on_click(cx.listener(move |this, _, _, cx| this.dismiss_turn(id, cx))),
                 )
         });
@@ -349,7 +365,7 @@ impl StttsApp {
                             .whitespace_nowrap()
                             .text_xs()
                             .text_color(c(theme::TEXT_FAINT))
-                            .child(format!("応答 {ms}ms")),
+                            .child(trf!("Latency {ms}ms", "応答 {ms}ms", "响应 {ms}ms")),
                     )
                 })
                 .child(div().flex_1())
@@ -359,7 +375,7 @@ impl StttsApp {
                             .xsmall()
                             .ghost()
                             .icon(IconName::Square)
-                            .label("止める")
+                            .label(tr!("Stop", "止める", "停止"))
                             .on_click(cx.listener(|this, _, _, cx| this.cancel_speak(cx))),
                     )
                 })
@@ -370,7 +386,7 @@ impl StttsApp {
                                 .xsmall()
                                 .ghost()
                                 .icon(IconName::Play)
-                                .tooltip("再生")
+                                .tooltip(tr!("Play again", "再生", "重新播放"))
                                 .on_click(cx.listener(move |this, _, _, _| this.replay_turn(id))),
                         )
                     })
@@ -379,14 +395,14 @@ impl StttsApp {
                             .xsmall()
                             .ghost()
                             .icon(IconName::RefreshCw)
-                            .tooltip("再発話")
+                            .tooltip(tr!("Speak again with the current voice", "再発話", "用当前声音重新发话"))
                             .on_click(cx.listener(move |this, _, _, cx| this.respeak_turn(id, cx))),
                     )
                     .child(
                         Button::new(SharedString::from(format!("fix-{id}")))
                             .xsmall()
                             .ghost()
-                            .label("訂正")
+                            .label(tr!("Correct", "訂正", "修改"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.edit_turn(id, window, cx)
                             })),
@@ -455,11 +471,12 @@ impl StttsApp {
                         div()
                             .text_xs()
                             .text_color(c(theme::TEXT_FAINT))
-                            .child("演技"),
+                            .child(tr!("Acting", "演技", "表演")),
                     )
                     .child(self.help_icon(HelpTopic::Acting, cx))
                     .children(ANNOTATION_CHOICES.iter().enumerate().map(
-                        |(i, &(emoji, description))| {
+                        |(i, &(emoji, en, ja, zh))| {
+                            let description = tr!(en, ja, zh);
                             Button::new(SharedString::from(format!("annotation-{i}")))
                                 .xsmall()
                                 .ghost()
@@ -486,7 +503,7 @@ impl StttsApp {
                         Button::new("speak")
                             .primary()
                             .icon(IconName::Play)
-                            .label("話す")
+                            .label(tr!("Speak", "話す", "发话"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.speak_from_composer(window, cx)
                             })),

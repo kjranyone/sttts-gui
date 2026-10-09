@@ -37,18 +37,26 @@ use sttts_protocol::{
     PipelineConfig, TtsConfig, VoiceConfig,
 };
 
+use sttts_i18n::{tr, trf};
+
 use crate::turns::{Playback, Turns, tag_for};
 use crate::device_picker::Dir;
-use crate::{audio, backend, secret, settings, sysmon};
+use crate::locale::Lang;
+use crate::{audio, backend, locale, secret, settings, sysmon};
 
-pub(crate) const DEFAULT_VOICE_LABEL: &str = "既定の声";
+/// 声の選択欄で「声の見本を使わない」を表す項目
+pub(crate) fn default_voice_label() -> &'static str {
+    tr!("Default voice", "既定の声", "默认声音")
+}
 
 /// ASR プロバイダ選択(表示名, asr.engine 値)。ローカルとクラウドを選べる。
-pub(crate) const ASR_PROVIDERS: &[(&str, &str)] = &[
-    ("クラウド(Gemini)", "gemini"),
-    ("ローカル(Nemotron)", "nemotron"),
-    ("ローカル(kotoba)", "kotoba"),
-];
+pub(crate) fn asr_providers() -> [(&'static str, &'static str); 3] {
+    [
+        (tr!("Cloud (Gemini)", "クラウド(Gemini)", "云端(Gemini)"), "gemini"),
+        (tr!("Local (Nemotron)", "ローカル(Nemotron)", "本地(Nemotron)"), "nemotron"),
+        (tr!("Local (kotoba)", "ローカル(kotoba)", "本地(kotoba)"), "kotoba"),
+    ]
+}
 
 /// Gemini API キーの発行ページ(Google AI Studio)
 pub(crate) const GEMINI_KEY_URL: &str = "https://aistudio.google.com/apikey";
@@ -122,6 +130,9 @@ pub struct StttsApp {
 
     // ---- 詳細設定(環境で一度決まるもの)
     settings_open: bool,
+    /// 利用者が選んだ表示言語(None = OS の表示言語に従う。保存もしない)
+    language: Option<Lang>,
+    language_select: Entity<SelectState<Vec<String>>>,
     /// 「?」から開いている解説
     help_topic: Option<help::HelpTopic>,
     /// 入力デバイス(ドライバ → デバイス / ASIO チャンネル)。一覧はエンジンから届く
@@ -172,7 +183,7 @@ impl StttsApp {
 
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .placeholder("文字で話す")
+                .placeholder(composer_placeholder())
                 .auto_grow(1, 6)
         });
         let caption_input = cx.new(|cx| {
@@ -208,7 +219,7 @@ impl StttsApp {
             .voice
             .clone()
             .filter(|n| voices.iter().any(|(vn, _)| vn == n));
-        let mut voice_items = vec![DEFAULT_VOICE_LABEL.to_string()];
+        let mut voice_items = vec![default_voice_label().to_string()];
         voice_items.extend(voices.iter().map(|(n, _)| n.clone()));
         let voice_sel_ix = saved_voice
             .as_ref()
@@ -218,13 +229,19 @@ impl StttsApp {
         let voice_select = cx.new(|cx| SelectState::new(voice_items, voice_sel_ix, window, cx));
 
         // --- ASR プロバイダ選択(ローカル/クラウド)
-        let asr_items: Vec<String> = ASR_PROVIDERS.iter().map(|(l, _)| l.to_string()).collect();
+        let asr_items: Vec<String> = asr_providers().iter().map(|(l, _)| l.to_string()).collect();
         let saved_asr = saved.asr_provider.clone().unwrap_or_else(|| "nemotron".into());
-        let asr_sel_ix = ASR_PROVIDERS
+        let asr_sel_ix = asr_providers()
             .iter()
             .position(|(_, e)| *e == saved_asr)
             .map(IndexPath::new);
         let asr_select = cx.new(|cx| SelectState::new(asr_items, asr_sel_ix, window, cx));
+
+        // --- 表示言語(項目は各言語の自称なので、切り替えても作り直さない)
+        let language = saved.language.as_deref().and_then(Lang::from_tag);
+        let language_items: Vec<String> = Lang::ALL.iter().map(|l| l.native_name().to_string()).collect();
+        let language_ix = Lang::ALL.iter().position(|l| *l == sttts_i18n::lang()).map(IndexPath::new);
+        let language_select = cx.new(|cx| SelectState::new(language_items, language_ix, window, cx));
 
         // --- Gemini API キー(data/config.json に DPAPI 暗号化で保存)
         let saved_gemini_key = saved.gemini_api_key_protected.as_deref().map(secret::unprotect);
@@ -248,7 +265,14 @@ impl StttsApp {
                 // 保存済みのデバイスを開けなければシステム既定で鳴らす
                 output_dev.select_default();
                 match audio::AudioOut::open(None, &[]) {
-                    Ok(a) => (Some(a), Some(format!("{first:#}(既定の出力デバイスで再生します)"))),
+                    Ok(a) => (
+                        Some(a),
+                        Some(trf!(
+                            "{first:#} (playing on the default output device)",
+                            "{first:#}(既定の出力デバイスで再生します)",
+                            "{first:#}(改用默认输出设备播放)"
+                        )),
+                    ),
                     Err(e) => (None, Some(format!("{e:#}"))),
                 }
             }
@@ -290,6 +314,8 @@ impl StttsApp {
             gemini_key_protected,
             gemini_key_edit_seq: 0,
             settings_open: false,
+            language,
+            language_select,
             help_topic: None,
             input_dev,
             output_dev,
@@ -311,16 +337,24 @@ impl StttsApp {
             cancelled_upto: 0,
             audio,
             subscriptions: Vec::new(),
-            status_hint: "バックエンドを起動中…".into(),
+            status_hint: tr!("Starting backend…", "バックエンドを起動中…", "正在启动后端…").into(),
             root,
         };
         if let Some(err) = audio_error {
-            app.push_log(format!("出力デバイスを開けませんでした: {err}"));
+            app.push_log(trf!(
+                "[error:audio] Could not open the output device: {err}",
+                "[error:audio] 出力デバイスを開けませんでした: {err}",
+                "[error:audio] 无法打开输出设备:{err}"
+            ));
         }
         if gemini_key_unreadable {
             app.push_log(
-                "保存済みの Gemini API キーを復号できませんでした(別のPC/ユーザーで保存されたもの)。再入力してください"
-                    .into(),
+                tr!(
+                    "[warn] Could not decrypt the saved Gemini API key (it was saved on another PC or user). Please enter it again",
+                    "[warn] 保存済みの Gemini API キーを復号できませんでした(別のPC/ユーザーで保存されたもの)。再入力してください",
+                    "[warn] 无法解密已保存的 Gemini API 密钥(它是在其他电脑或用户下保存的)。请重新输入"
+                )
+                .into(),
             );
         }
         app.start_backend(cx);
@@ -380,6 +414,11 @@ impl StttsApp {
             window.subscribe(&self.output_dev.choice_select, cx, on_confirm(weak.clone(), |a, n, _, cx| a.apply_output_choice(n, cx))),
             window.subscribe(&self.voice_select, cx, on_confirm(weak.clone(), |a, n, _, cx| a.apply_voice(n, cx))),
             window.subscribe(&self.asr_select, cx, on_confirm(weak.clone(), |a, n, _, cx| a.apply_asr_provider(n, cx))),
+            window.subscribe(&self.language_select, cx, on_confirm(weak.clone(), |a, n, window, cx| {
+                if let Some(lang) = Lang::from_native_name(&n) {
+                    a.set_language(lang, window, cx);
+                }
+            })),
             window.subscribe(&self.gemini_key_input, cx, {
                 let weak = weak.clone();
                 move |_, event: &InputEvent, _window, cx| match event {
@@ -475,7 +514,7 @@ impl StttsApp {
         .detach();
 
         let (tx_events, rx_events) = async_channel::unbounded::<AnyMessage>();
-        self.status_hint = "バックエンド起動中…".into();
+        self.status_hint = tr!("Starting backend…", "バックエンド起動中…", "正在启动后端…").into();
         self.launch_backend(tx_events, rx_events, cx);
     }
 
@@ -510,7 +549,7 @@ impl StttsApp {
         let handle = backend::BackendHandle::start(self.mock, &self.root, &output_dir, tx_events);
         self.backend_pid.store(handle.pid(), Ordering::Relaxed);
         self.backend = Some(handle);
-        self.status_hint = "バックエンド接続待ち…".into();
+        self.status_hint = tr!("Waiting for backend…", "バックエンド接続待ち…", "等待后端连接…").into();
 
         // backend → UI の取り込みループ
         cx.spawn(async move |this, cx| {
@@ -521,8 +560,15 @@ impl StttsApp {
             }
             // チャネル閉鎖 = バックエンド終了
             let _ = this.update(cx, |app, cx| {
-                app.push_log("バックエンドとの接続が切れました".into());
-                app.status_hint = "バックエンド停止".into();
+                app.push_log(
+                    tr!(
+                        "[error:backend] Lost connection to the backend",
+                        "[error:backend] バックエンドとの接続が切れました",
+                        "[error:backend] 与后端的连接已断开"
+                    )
+                    .into(),
+                );
+                app.status_hint = tr!("Backend stopped", "バックエンド停止", "后端已停止").into();
                 app.connected = false;
                 app.mic_running = false;
                 app.mic_transition = MicTransition::None;
@@ -537,7 +583,7 @@ impl StttsApp {
         if let Some(b) = &self.backend {
             b.send(&msg);
         } else {
-            self.push_log("バックエンド未接続".into());
+            self.push_log(tr!("[error:backend] Backend not connected", "[error:backend] バックエンド未接続", "[error:backend] 后端未连接").into());
         }
     }
 
@@ -552,9 +598,11 @@ impl StttsApp {
         match msg {
             BackendMessage::Hello { protocol, mock, models, .. } => {
                 if protocol != sttts_protocol::PROTOCOL_VERSION {
-                    self.push_log(format!(
-                        "プロトコル不一致: backend={protocol} gui={}",
-                        sttts_protocol::PROTOCOL_VERSION
+                    let gui = sttts_protocol::PROTOCOL_VERSION;
+                    self.push_log(trf!(
+                        "[warn] Protocol mismatch: backend={protocol} gui={gui}",
+                        "[warn] プロトコル不一致: backend={protocol} gui={gui}",
+                        "[warn] 协议不一致:backend={protocol} gui={gui}"
                     ));
                 }
                 self.connected = true;
@@ -564,9 +612,11 @@ impl StttsApp {
                 if !self.models.iter().any(|m| m.id == self.selected_model_id)
                     && let Some(first) = self.models.first().cloned()
                 {
-                    self.push_log(format!(
-                        "音声合成モデル {} は使えないため {} に切り替えました",
-                        self.selected_model_id, first.label
+                    let (old, new) = (&self.selected_model_id, &first.label);
+                    self.push_log(trf!(
+                        "TTS model {old} is not available; switched to {new}",
+                        "音声合成モデル {old} は使えないため {new} に切り替えました",
+                        "语音合成模型 {old} 不可用,已切换为 {new}"
                     ));
                     self.selected_model_id.clone_from(&first.id);
                     self.send(GuiMessage::Configure {
@@ -581,7 +631,11 @@ impl StttsApp {
                 self.last_accepted_request = 0;
                 self.cancelled_upto = 0;
                 self.turns.backend_restarted();
-                self.status_hint = if mock { "モック接続".into() } else { "実エンジン接続".into() };
+                self.status_hint = if mock {
+                    tr!("Connected (mock)", "モック接続", "已连接(模拟)").into()
+                } else {
+                    tr!("Connected", "実エンジン接続", "已连接").into()
+                };
             }
             BackendMessage::State { tts, asr, mic_running } => {
                 if self.mic_running && !mic_running {
@@ -630,7 +684,11 @@ impl StttsApp {
             BackendMessage::SpeakAccepted { request, origin, tag, utterance, .. } => {
                 self.last_accepted_request = self.last_accepted_request.max(request);
                 self.turns.speak_accepted(request, tag.as_deref(), utterance, self.selected_voice_name.clone());
-                self.push_log(format!("発話受付 request={request} origin={origin}"));
+                self.push_log(trf!(
+                    "Speech accepted request={request} origin={origin}",
+                    "発話受付 request={request} origin={origin}",
+                    "已接受发话 request={request} origin={origin}"
+                ));
                 self.stream_scroll.scroll_to_bottom();
             }
             BackendMessage::TtsChunkStart { request, chunk, text } => {
@@ -650,14 +708,22 @@ impl StttsApp {
             } => {
                 let received = Instant::now();
                 if request <= self.cancelled_upto {
-                    self.push_log(format!("キャンセル済み request={request} の音声を破棄"));
+                    self.push_log(trf!(
+                        "Discarded audio of cancelled request={request}",
+                        "キャンセル済み request={request} の音声を破棄",
+                        "已丢弃已取消 request={request} 的音频"
+                    ));
                     return;
                 }
                 if let Some(audio) = &self.audio {
                     match audio.enqueue_wav_base64(&wav_base64) {
                         // ターン不明でも Sink の残数と揃えるため積む(id 0 はどのターンにも一致しない)
                         Ok(()) => self.playback.push(self.turns.id_for_request(request).unwrap_or(0), chunk),
-                        Err(e) => self.push_log(format!("音声キュー追加失敗: {e}")),
+                        Err(e) => self.push_log(trf!(
+                            "[error:audio] Failed to queue audio: {e}",
+                            "[error:audio] 音声キュー追加失敗: {e}",
+                            "[error:audio] 加入音频队列失败:{e}"
+                        )),
                     }
                 }
                 let mut total_e2e = None;
@@ -681,8 +747,10 @@ impl StttsApp {
             BackendMessage::TtsChunkDone { .. } => {}
             BackendMessage::SpeakDone { request, chunks, cancelled, failed } => {
                 self.turns.speak_done(request, cancelled, failed);
-                self.push_log(format!(
-                    "発話完了 request={request} chunks={chunks} cancelled={cancelled} failed={failed}"
+                self.push_log(trf!(
+                    "Speech done request={request} chunks={chunks} cancelled={cancelled} failed={failed}",
+                    "発話完了 request={request} chunks={chunks} cancelled={cancelled} failed={failed}",
+                    "发话完成 request={request} chunks={chunks} cancelled={cancelled} failed={failed}"
                 ));
             }
             BackendMessage::Error { scope, message, .. } => {
@@ -711,12 +779,20 @@ impl StttsApp {
             return;
         }
         let (transition, msg, timeout_log) = if self.mic_running {
-            (MicTransition::Stopping, GuiMessage::StopSession, "ライブの停止がタイムアウトしました")
+            (
+                MicTransition::Stopping,
+                GuiMessage::StopSession,
+                tr!("[warn] Stopping live timed out", "[warn] ライブの停止がタイムアウトしました", "[warn] 停止直播超时"),
+            )
         } else {
             (
                 MicTransition::Starting,
                 GuiMessage::StartSession,
-                "ライブの開始がタイムアウトしました(もう一度お試しください)",
+                tr!(
+                    "[warn] Starting live timed out (please try again)",
+                    "[warn] ライブの開始がタイムアウトしました(もう一度お試しください)",
+                    "[warn] 开始直播超时(请重试)"
+                ),
             )
         };
         self.mic_transition = transition;
@@ -820,7 +896,10 @@ impl StttsApp {
         let paths: Vec<(u32, String)> =
             turn.chunks.iter().filter_map(|c| Some((c.index, c.path.clone()?))).collect();
         let Some(audio) = &self.audio else {
-            self.push_log("出力デバイスが開かれていません".into());
+            self.push_log(
+                tr!("[error:audio] The output device is not open", "[error:audio] 出力デバイスが開かれていません", "[error:audio] 输出设备未打开")
+                    .into(),
+            );
             return;
         };
         let mut errors = Vec::new();
@@ -828,9 +907,17 @@ impl StttsApp {
             match std::fs::read(path) {
                 Ok(bytes) => match audio.enqueue_wav_bytes(bytes) {
                     Ok(()) => self.playback.push(id, *chunk),
-                    Err(e) => errors.push(format!("再生失敗: {e}")),
+                    Err(e) => errors.push(trf!(
+                        "[error:audio] Playback failed: {e}",
+                        "[error:audio] 再生失敗: {e}",
+                        "[error:audio] 播放失败:{e}"
+                    )),
                 },
-                Err(e) => errors.push(format!("ファイル読込失敗 {path}: {e}")),
+                Err(e) => errors.push(trf!(
+                    "[error:audio] Failed to read {path}: {e}",
+                    "[error:audio] ファイル読込失敗 {path}: {e}",
+                    "[error:audio] 读取文件失败 {path}:{e}"
+                )),
             }
         }
         for e in errors {
@@ -922,11 +1009,22 @@ impl StttsApp {
 
     /// 声バンクの選択適用。参照音声が変わるとウォームアップもやり直される。
     fn apply_voice(&mut self, name: String, cx: &mut Context<Self>) {
-        self.selected_voice_name = (name != DEFAULT_VOICE_LABEL).then_some(name);
+        self.selected_voice_name = (name != default_voice_label()).then_some(name);
         self.send_voice_config(cx);
         match &self.selected_voice_name {
-            Some(n) => self.push_log(format!("声を切替: {n}(参照音声で合成します)")),
-            None => self.push_log("声を既定に戻しました(話し方の指示/自動音質で合成)".into()),
+            Some(n) => self.push_log(trf!(
+                "Voice: {n} (synthesizing from the reference audio)",
+                "声を切替: {n}(参照音声で合成します)",
+                "已切换声音:{n}(使用参考音频合成)"
+            )),
+            None => self.push_log(
+                tr!(
+                    "Back to the default voice (synthesizing from the style prompt / automatic voice)",
+                    "声を既定に戻しました(話し方の指示/自動音質で合成)",
+                    "已恢复默认声音(按说话方式提示/自动音色合成)"
+                )
+                .into(),
+            ),
         }
         self.persist_settings(cx);
     }
@@ -937,7 +1035,11 @@ impl StttsApp {
     fn import_voice_files(&mut self, paths: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
         let dir = self.root.join("data").join("voices");
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            self.push_log(format!("[error:voice] 声フォルダを作れません: {e}"));
+            self.push_log(trf!(
+                "[error:voice] Cannot create the voice folder: {e}",
+                "[error:voice] 声フォルダを作れません: {e}",
+                "[error:voice] 无法创建声音文件夹:{e}"
+            ));
             return;
         }
         let (audio, rest): (Vec<_>, Vec<_>) = paths.iter().partition(|p| is_voice_audio(p));
@@ -945,7 +1047,7 @@ impl StttsApp {
         for src in audio {
             match copy_into_voice_bank(src, &dir) {
                 Ok(name) => {
-                    self.push_log(format!("声を追加: {name}"));
+                    self.push_log(trf!("Voice added: {name}", "声を追加: {name}", "已添加声音:{name}"));
                     imported = Some(name);
                 }
                 Err(e) => self.push_log(format!("[error:voice] {}: {e}", src.display())),
@@ -957,15 +1059,27 @@ impl StttsApp {
         }
         for src in rest {
             if !is_voice_image(src) {
-                self.push_log(format!("[error:voice] 非対応のファイル: {}", src.display()));
+                let file = src.display();
+                self.push_log(trf!(
+                    "[error:voice] Unsupported file: {file}",
+                    "[error:voice] 非対応のファイル: {file}",
+                    "[error:voice] 不支持的文件:{file}"
+                ));
                 continue;
             }
             let Some(name) = self.selected_voice_name.clone() else {
-                self.push_log("[error:voice] 画像は声を選んでから追加してください".into());
+                self.push_log(
+                    tr!(
+                        "[error:voice] Select a voice before adding an image",
+                        "[error:voice] 画像は声を選んでから追加してください",
+                        "[error:voice] 请先选择声音再添加图片"
+                    )
+                    .into(),
+                );
                 continue;
             };
             match set_voice_image(src, &dir, &name) {
-                Ok(()) => self.push_log(format!("声のアイコンを設定: {name}")),
+                Ok(()) => self.push_log(trf!("Voice icon set: {name}", "声のアイコンを設定: {name}", "已设置声音图标:{name}")),
                 Err(e) => self.push_log(format!("[error:voice] {}: {e}", src.display())),
             }
         }
@@ -1000,22 +1114,22 @@ impl StttsApp {
             let _ = std::fs::remove_file(path);
         }
         remove_voice_images(&dir, &name);
-        self.push_log(format!("声を削除: {name}"));
+        self.push_log(trf!("Voice deleted: {name}", "声を削除: {name}", "已删除声音:{name}"));
         self.refresh_voices(None, window, cx);
-        self.apply_voice(DEFAULT_VOICE_LABEL.to_string(), cx);
+        self.apply_voice(default_voice_label().to_string(), cx);
         cx.notify();
     }
 
     /// data/voices を再スキャンして選択肢を更新する(`select` が None なら現在の選択を維持)。
     fn refresh_voices(&mut self, select: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
         self.voices = scan_voice_bank(&self.root);
-        let mut items = vec![DEFAULT_VOICE_LABEL.to_string()];
+        let mut items = vec![default_voice_label().to_string()];
         items.extend(self.voices.iter().map(|(n, _)| n.clone()));
         let selected = select
             .map(str::to_string)
             .or_else(|| self.selected_voice_name.clone())
             .filter(|n| self.voices.iter().any(|(vn, _)| vn == n))
-            .unwrap_or_else(|| DEFAULT_VOICE_LABEL.to_string());
+            .unwrap_or_else(|| default_voice_label().to_string());
         self.voice_select.update(cx, |s, cx| {
             s.set_items(items, window, cx);
             s.set_selected_value(&selected, window, cx);
@@ -1030,7 +1144,7 @@ impl StttsApp {
     /// ASR プロバイダの選択適用(ローカル/クラウド)。次回のライブ開始から新エンジンで動く
     /// (preload も組み直される)。
     fn apply_asr_provider(&mut self, label: String, cx: &mut Context<Self>) {
-        let Some((_, engine)) = ASR_PROVIDERS.iter().find(|(l, _)| *l == label) else {
+        let Some((_, engine)) = asr_providers().into_iter().find(|(l, _)| *l == label) else {
             return;
         };
         self.selected_asr_engine = engine.to_string();
@@ -1044,10 +1158,19 @@ impl StttsApp {
             voice: None,
             pipeline: None,
         });
-        self.push_log(if *engine == "gemini" {
-            "認識をクラウド(Gemini Live API)に切替しました(発話ごとにクラウドへ送信されます)".into()
+        self.push_log(if engine == "gemini" {
+            tr!(
+                "Recognition switched to the cloud (Gemini Live API). Each utterance is sent to the cloud",
+                "認識をクラウド(Gemini Live API)に切替しました(発話ごとにクラウドへ送信されます)",
+                "识别已切换到云端(Gemini Live API),每段发话都会发送到云端"
+            )
+            .into()
         } else {
-            format!("認識をローカル({engine})に切替しました")
+            trf!(
+                "Recognition switched to local ({engine})",
+                "認識をローカル({engine})に切替しました",
+                "识别已切换到本地({engine})"
+            )
         });
         self.persist_settings(cx);
         cx.notify();
@@ -1077,7 +1200,14 @@ impl StttsApp {
         }
         self.gemini_key_protected = if key.is_empty() { None } else { secret::protect(&key) };
         if !key.is_empty() && self.gemini_key_protected.is_none() {
-            self.push_log("Gemini API キーを暗号化保存できませんでした(この起動中のみ有効)".into());
+            self.push_log(
+                tr!(
+                    "[warn] Could not save the Gemini API key encrypted (valid only until the app exits)",
+                    "[warn] Gemini API キーを暗号化保存できませんでした(この起動中のみ有効)",
+                    "[warn] 无法加密保存 Gemini API 密钥(仅在本次运行中有效)"
+                )
+                .into(),
+            );
         }
         self.gemini_api_key = key;
         // 空文字 = GUI では未設定(backend は環境変数にフォールバック)
@@ -1092,9 +1222,14 @@ impl StttsApp {
             pipeline: None,
         });
         self.push_log(if self.gemini_api_key.is_empty() {
-            "Gemini API キーを削除しました".into()
+            tr!("Gemini API key removed", "Gemini API キーを削除しました", "已删除 Gemini API 密钥").into()
         } else {
-            "Gemini API キーを保存しました(このPCのユーザーでのみ復号できる形で暗号化)".into()
+            tr!(
+                "Gemini API key saved (encrypted so only this user on this PC can decrypt it)",
+                "Gemini API キーを保存しました(このPCのユーザーでのみ復号できる形で暗号化)",
+                "已保存 Gemini API 密钥(已加密,仅本电脑的当前用户可解密)"
+            )
+            .into()
         });
         self.persist_settings(cx);
         cx.notify();
@@ -1116,9 +1251,42 @@ impl StttsApp {
             voice: None,
             pipeline: None,
         });
-        self.push_log(format!("モデル切替: {label}"));
+        self.push_log(trf!("Model: {label}", "モデル切替: {label}", "已切换模型:{label}"));
         self.persist_settings(cx);
         cx.notify();
+    }
+
+    /// 表示言語を切り替える。描画のたびに引く文言はすぐ変わる。選択欄の項目や入力欄の
+    /// 案内文のように作成時に渡した文言は、ここで作り直す。
+    fn set_language(&mut self, lang: Lang, window: &mut Window, cx: &mut Context<Self>) {
+        self.language = Some(lang);
+        if sttts_i18n::lang() != lang {
+            locale::apply(lang);
+            self.relocalize(window, cx);
+        }
+        self.persist_settings(cx);
+        cx.notify();
+    }
+
+    fn relocalize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer.update(cx, |s, cx| s.set_placeholder(composer_placeholder(), window, cx));
+        self.refresh_voices(None, window, cx);
+        let asr_items: Vec<String> = asr_providers().iter().map(|(l, _)| l.to_string()).collect();
+        let asr_label = self.asr_provider_label().to_string();
+        self.asr_select.update(cx, |s, cx| {
+            s.set_items(asr_items, window, cx);
+            s.set_selected_value(&asr_label, window, cx);
+        });
+        self.input_dev.relocalize();
+        self.output_dev.relocalize();
+        self.relocalize_sampling(window, cx);
+        // モデルの表示名は hello で届いたもの。エンジンは同じプロセスなので、カタログを引き直す
+        let catalog = sttts_engine::app::model_catalog();
+        for m in &mut self.models {
+            if let Some(fresh) = catalog.iter().find(|c| c.id == m.id) {
+                m.clone_from(fresh);
+            }
+        }
     }
 
     fn set_random_seed(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -1162,6 +1330,7 @@ impl StttsApp {
     fn persist_settings(&self, cx: &App) {
         let caption = self.caption_input.read(cx).value().to_string();
         let saved = settings::AppSettings {
+            language: self.language.map(|l| l.code().to_string()),
             mock: Some(self.mock),
             tts_model: Some(self.selected_model_id.clone()),
             caption: Some(caption),
@@ -1204,12 +1373,16 @@ impl StttsApp {
     }
 
     fn asr_provider_label(&self) -> &'static str {
-        ASR_PROVIDERS
-            .iter()
+        asr_providers()
+            .into_iter()
             .find(|(_, e)| *e == self.selected_asr_engine)
-            .map(|(l, _)| *l)
-            .unwrap_or("ローカル")
+            .map(|(l, _)| l)
+            .unwrap_or(tr!("Local", "ローカル", "本地"))
     }
+}
+
+fn composer_placeholder() -> &'static str {
+    tr!("Type to speak", "文字で話す", "输入文字来说话")
 }
 
 fn idle_state() -> EngineState {
@@ -1223,16 +1396,17 @@ fn idle_state() -> EngineState {
 /// 声の表示名(None = 既定の声)。「〜で届けます」等に続けて使う
 pub(crate) fn voice_phrase(name: Option<&str>) -> String {
     match name {
-        Some(n) => format!("{n} の声"),
-        None => DEFAULT_VOICE_LABEL.to_string(),
+        Some(n) => trf!("Voice: {n}", "{n} の声", "{n} 的声音"),
+        None => default_voice_label().to_string(),
     }
 }
 
-/// エラー表示(赤字・未読バッジ)の対象行
+/// エラー表示(赤字・未読バッジ)の対象行。GUI が出す行は `[error:…]` / `[warn]` を付ける。
+/// 下位クレートのエラー文(日本語)が info で届くこともあるので、その語も見る。
 pub(crate) fn is_error_line(line: &str) -> bool {
-    line.starts_with("[error")
-        || line.starts_with("[ERROR")
-        || line.starts_with("[WARN")
+    let head = line.get(..6).unwrap_or(line).to_ascii_lowercase();
+    head.starts_with("[error")
+        || head.starts_with("[warn")
         || line.contains("エラー")
         || line.contains("失敗")
         || line.contains("切れました")
@@ -1241,10 +1415,10 @@ pub(crate) fn is_error_line(line: &str) -> bool {
 /// エンジン状態の短い表示(固定語のみ。detail のような長い文字列はログで確認する)
 pub(crate) fn phase_label(state: &EngineState) -> &'static str {
     match state.phase.as_str() {
-        "ready" => "準備完了",
-        "loading" => "読み込み中…",
-        "error" => "エラー",
-        _ => "未読み込み",
+        "ready" => tr!("Ready", "準備完了", "就绪"),
+        "loading" => tr!("Loading…", "読み込み中…", "加载中…"),
+        "error" => tr!("Error", "エラー", "错误"),
+        _ => tr!("Not loaded", "未読み込み", "未加载"),
     }
 }
 
@@ -1346,7 +1520,13 @@ pub(crate) fn format_sample(s: &sysmon::SysSample) -> String {
     let gb = |b: u64| b as f64 / GIB;
     let mut parts = Vec::new();
     if s.vram_total > 0 {
-        let app = s.app_vram.map(|a| format!(" (アプリ {:.1}GB)", gb(a))).unwrap_or_default();
+        let app = s
+            .app_vram
+            .map(|a| {
+                let a = gb(a);
+                trf!(" (app {a:.1}GB)", " (アプリ {a:.1}GB)", " (应用 {a:.1}GB)")
+            })
+            .unwrap_or_default();
         parts.push(format!("VRAM {:.1}/{:.1}GB{app}", gb(s.vram_used), gb(s.vram_total)));
     }
     if s.ram_total > 0 {

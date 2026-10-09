@@ -5,7 +5,7 @@ sttts-gui で作業するエージェントへの指示。人間のコントリ�
 ## プロジェクト概要
 
 音声対話 GUI。Rust(GPUI / gpui-kit)の 1 プロセスで、マイク → Silero VAD → ASR(Nemotron / kotoba-whisper / Gemini)→ Irodori-TTS を動かす。
-Python は使わない。ターゲット環境は Windows + Intel Arc GPU(Vulkan / wgpu)。詳細は `README.md` と `docs/irodori-rs.md` を参照。
+Python は使わない。ターゲット環境は Windows + Intel Arc GPU(Vulkan / wgpu)。詳細は `README.ja.md`(英語版 `README.md`・中国語版 `README.zh-CN.md`)と `docs/irodori-rs.md` を参照。
 
 - `crates/gui` — GPUI クライアント(`backend.rs` がエンジンをプロセス内で起動する)
 - `crates/engine` — バックエンド本体(設定・チャンク分割・TTS ワーカー・セッション・投機的 TTS)。外界は `Platform` トレイトで注入(テストは偽物)
@@ -13,6 +13,7 @@ Python は使わない。ターゲット環境は Windows + Intel Arc GPU(Vulkan
 - `crates/whisper` / `crates/nemotron` / `crates/gemini` — ASR エンジン
 - `crates/audio` — マイク(cpal)・リサンプル・Silero VAD・WAV ソース
 - `crates/protocol` — GUI⇄エンジンのメッセージ型
+- `crates/i18n` — 表示言語(en / ja / zh)と `tr!` / `trf!` マクロ
 
 ## 開発コマンド
 
@@ -51,4 +52,6 @@ Python は使わない。ターゲット環境は Windows + Intel Arc GPU(Vulkan
 - **後方互換シムを書かない。** 依存の破壊的変更はフロア引き上げで対処する。
 - エンジンのスレッド構成(マイク → VAD スレッド → ASR ワーカー)は `crates/engine/src/session.rs` の docs を参照。**ASR ロードはマイクオープンと並行**(mic-first)であり、レベルメーターはいかなるブロッキング中も止まらないこと。この挙動のテスト(`mic_first_*`)があるので変更時は通すこと。
 - GUI⇄エンジン間のメッセージは `crates/protocol/src/lib.rs` が唯一の定義。
+- **利用者に見える文言は 3 言語で書く。** GUI の表示・ログ、エンジンが GUI へ送る状態・ログ・エラーは `sttts_i18n::tr!("English", "日本語", "中文")` / `trf!`(書式付き。変数は `{name}` で埋め込む)を使う。Irodori へ渡す caption や話し方の語(`performance.rs`)は日本語のまま(モデルの入力であって UI ではない)。GUI が自前で出すエラー行は `[error:…]` / `[warn]` を先頭に付ける(言語に依らず赤字・未読バッジになる)。
+- README を変えたら `README.md`(英語)・`README.ja.md`・`README.zh-CN.md` の 3 つをそろえる。
 - 自動発話(auto_speak)はスピーカー音の再取り込みでループしうる。挙動を変える際はヘッドセット運用を壊さないこと。

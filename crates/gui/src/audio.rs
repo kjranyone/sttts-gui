@@ -13,6 +13,7 @@ use rodio::cpal::traits::{DeviceTrait as _, StreamTrait as _};
 use rodio::cpal::{FromSample, I24, SampleFormat, SizedSample};
 use rodio::{Decoder, DeviceSinkBuilder, Player};
 use sttts_audio::{DeviceInfo, OpenedDevice};
+use sttts_i18n::tr;
 
 /// 再生可能な出力デバイスの一覧(既定ホスト = WASAPI と ASIO)。
 pub fn list_output_devices() -> Vec<DeviceInfo> {
@@ -58,15 +59,18 @@ impl AudioOut {
         // 選んだチャンネルにだけ書き込むストリームを自前で張る
         let supported = device.device.default_output_config()?;
         let (config, pick) = device.stream_config(&supported, channels, false)?;
-        let mix_channels = NonZero::new(pick.len() as u16).ok_or_else(|| anyhow!("出力チャンネルが空です"))?;
-        let rate = NonZero::new(config.sample_rate).ok_or_else(|| anyhow!("サンプルレートが 0 です"))?;
+        let mix_channels = NonZero::new(pick.len() as u16).ok_or_else(|| anyhow!("{}", tr!("No output channels selected", "出力チャンネルが空です", "未选择输出声道")))?;
+        let rate = NonZero::new(config.sample_rate).ok_or_else(|| anyhow!("{}", tr!("The sample rate is 0", "サンプルレートが 0 です", "采样率为 0")))?;
         let (mixer, source) = rodio::mixer::mixer(mix_channels, rate);
         let stream = match supported.sample_format() {
             SampleFormat::F32 => build_routed::<f32>(&device, &config, pick, source),
             SampleFormat::I16 => build_routed::<i16>(&device, &config, pick, source),
             SampleFormat::I24 => build_routed::<I24>(&device, &config, pick, source),
             SampleFormat::I32 => build_routed::<i32>(&device, &config, pick, source),
-            other => Err(anyhow!("未対応のサンプル形式です: {other:?}")),
+            other => Err(anyhow!(
+                "{}: {other:?}",
+                tr!("Unsupported sample format", "未対応のサンプル形式です", "不支持的采样格式")
+            )),
         }?;
         stream.play()?;
         let player = Player::connect_new(&mixer);

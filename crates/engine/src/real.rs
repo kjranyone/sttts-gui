@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use serde_json::Value;
+use sttts_i18n::trf;
 use sttts_protocol::AudioDeviceInfo;
 
 use crate::app::{Platform, TtsProgress};
@@ -36,7 +37,16 @@ impl Platform for RealPlatform {
         let channels = match get(cfg, "audio", "input_channels") {
             Value::Null => Vec::new(),
             v => serde_json::from_value::<Vec<u16>>(v.clone())
-                .map_err(|e| anyhow!("audio.input_channels は 0 始まりのチャンネル番号の配列です: {e}"))?,
+                .map_err(|e| {
+                    anyhow!(
+                        "{}",
+                        trf!(
+                            "audio.input_channels must be an array of 0-based channel numbers: {e}",
+                            "audio.input_channels は 0 始まりのチャンネル番号の配列です: {e}",
+                            "audio.input_channels 必须是从 0 开始的声道编号数组:{e}"
+                        )
+                    )
+                })?,
         };
         Ok(Box::new(MicSrc { mic: sttts_audio::MicStream::new(), device, channels, on_block }))
     }

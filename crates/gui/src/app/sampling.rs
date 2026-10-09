@@ -13,6 +13,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use serde_json::{Map, Value};
 use sttts_engine::config;
+use sttts_i18n::{tr, trf};
 use sttts_engine::tts::{SamplingField, SamplingKind, sampling_fields};
 use sttts_protocol::{GuiMessage, TtsConfig};
 
@@ -45,7 +46,7 @@ impl SamplingEditor {
             .map(|f| {
                 (f.kind != SamplingKind::Bool).then(|| {
                     cx.new(|cx| {
-                        let mut state = InputState::new(window, cx).placeholder(format!("既定 {}", show(&f.default)));
+                        let mut state = InputState::new(window, cx).placeholder(default_placeholder(f));
                         if let Some(v) = values.get(f.key).filter(|v| v.is_number()) {
                             state.set_value(show(v), window, cx);
                         }
@@ -71,9 +72,15 @@ impl SamplingEditor {
 /// 値の表示(null は「なし」)
 fn show(v: &Value) -> String {
     match v {
-        Value::Null => "なし".into(),
+        Value::Null => tr!("none", "なし", "无").into(),
         other => other.to_string(),
     }
+}
+
+/// 数値欄の案内(Irodori の既定値)
+fn default_placeholder(field: &SamplingField) -> String {
+    let v = show(&field.default);
+    trf!("default {v}", "既定 {v}", "默认 {v}")
 }
 
 /// 入力欄の文字列を項目の値へ。空欄は None(上書きしない)。
@@ -86,10 +93,20 @@ fn parse(field: &SamplingField, text: &str) -> Result<Option<Value>, String> {
         SamplingKind::Int => text
             .parse::<u64>()
             .map(|n| Some(Value::from(n)))
-            .map_err(|_| format!("{}: 0 以上の整数で入力してください", field.label)),
+            .map_err(|_| {
+                let label = field.label;
+                trf!(
+                    "{label}: enter a whole number (0 or more)",
+                    "{label}: 0 以上の整数で入力してください",
+                    "{label}:请输入 0 以上的整数"
+                )
+            }),
         SamplingKind::Float => match text.parse::<f64>() {
             Ok(x) if x.is_finite() => Ok(Some(Value::from(x))),
-            _ => Err(format!("{}: 数値で入力してください", field.label)),
+            _ => {
+                let label = field.label;
+                Err(trf!("{label}: enter a number", "{label}: 数値で入力してください", "{label}:请输入数值"))
+            }
         },
         SamplingKind::Bool => Ok(None),
     }
@@ -112,6 +129,19 @@ impl StttsApp {
             });
             self.subscriptions.push(sub);
         }
+    }
+
+    /// 表示言語の切替後: 項目名(エンジンが今の言語で返す)と案内文を作り直す。
+    pub(super) fn relocalize_sampling(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sampling.fields = sampling_fields();
+        for (field, input) in self.sampling.fields.iter().zip(&self.sampling.inputs) {
+            if let Some(input) = input {
+                let placeholder = default_placeholder(field);
+                input.update(cx, |s, cx| s.set_placeholder(placeholder, window, cx));
+            }
+        }
+        // 入力値の誤りは次の確定時に今の言語で出し直す
+        self.sampling.error = None;
     }
 
     fn schedule_sampling_apply(&mut self, cx: &mut Context<Self>) {
@@ -211,7 +241,11 @@ impl StttsApp {
         let path = config::default_user_config_path(&self.root);
         if let Err(e) = config::set_user_config_value(&path, "tts", "sampling", Value::Object(next.clone())) {
             // 保存できなくても、この起動中は効かせる
-            self.sampling.error = Some(format!("保存できませんでした(この起動中のみ有効): {e:#}"));
+            self.sampling.error = Some(trf!(
+                "Could not save (valid only until the app exits): {e:#}",
+                "保存できませんでした(この起動中のみ有効): {e:#}",
+                "无法保存(仅在本次运行中有效):{e:#}"
+            ));
         }
         self.sampling.values = next;
         self.send(GuiMessage::Configure {
@@ -221,7 +255,8 @@ impl StttsApp {
             voice: None,
             pipeline: None,
         });
-        self.push_log(format!("合成パラメータ: {}", Value::Object(self.sampling.values.clone())));
+        let values = Value::Object(self.sampling.values.clone());
+        self.push_log(trf!("Synthesis parameters: {values}", "合成パラメータ: {values}", "合成参数:{values}"));
         cx.notify();
     }
 
@@ -233,7 +268,15 @@ impl StttsApp {
             .xsmall()
             .ghost()
             .icon(if editor.open { IconName::ChevronDown } else { IconName::ChevronRight })
-            .label(if changed > 0 { format!("合成パラメータ · {changed} 項目を変更") } else { "合成パラメータ".to_string() })
+            .label(if changed > 0 {
+                trf!(
+                    "Synthesis parameters · {changed} changed",
+                    "合成パラメータ · {changed} 項目を変更",
+                    "合成参数 · 已更改 {changed} 项"
+                )
+            } else {
+                tr!("Synthesis parameters", "合成パラメータ", "合成参数").to_string()
+            })
             .on_click(cx.listener(|this, _, _, cx| {
                 this.sampling.open = !this.sampling.open;
                 cx.notify();
@@ -252,7 +295,12 @@ impl StttsApp {
                     col.child(div().text_xs().text_color(c(theme::ERROR)).child(e))
                 })
                 .when(!unknown.is_empty(), |col| {
-                    col.child(kit::hint(format!("GUI に欄の無い項目(backend.json の値を使用): {}", unknown.join(", "))))
+                    let keys = unknown.join(", ");
+                    col.child(kit::hint(trf!(
+                        "Keys without a field here (using the values in backend.json): {keys}",
+                        "GUI に欄の無い項目(backend.json の値を使用): {keys}",
+                        "此处没有输入栏的项(使用 backend.json 中的值):{keys}"
+                    )))
                 })
                 .child(
                     h_flex()
@@ -263,7 +311,7 @@ impl StttsApp {
                                 .xsmall()
                                 .ghost()
                                 .icon(IconName::Undo2)
-                                .label("既定に戻す")
+                                .label(tr!("Reset to defaults", "既定に戻す", "恢复默认"))
                                 .disabled(changed == unknown.len())
                                 .on_click(cx.listener(|this, _, window, cx| this.reset_sampling(window, cx))),
                         )
@@ -272,7 +320,11 @@ impl StttsApp {
                                 .xsmall()
                                 .ghost()
                                 .icon(IconName::FolderOpen)
-                                .tooltip("data/backend.json の tts.sampling に保存されます")
+                                .tooltip(tr!(
+                                    "Saved to tts.sampling in data/backend.json",
+                                    "data/backend.json の tts.sampling に保存されます",
+                                    "保存在 data/backend.json 的 tts.sampling 中"
+                                ))
                                 .on_click(cx.listener(|this, _, _, _| this.open_data_folder())),
                         ),
                 )

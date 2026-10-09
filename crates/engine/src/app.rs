@@ -19,6 +19,7 @@ use anyhow::Result;
 use base64::Engine as _;
 use rand::Rng as _;
 use serde_json::{Map, Value, json};
+use sttts_i18n::{tr, trf};
 use sttts_protocol::{AudioDeviceInfo, BackendMessage, EngineState, GuiMessage, ModelInfo, PROTOCOL_VERSION};
 
 use crate::asr::{AsrEngine, Progress};
@@ -59,13 +60,22 @@ pub fn is_device_fatal(err: &str) -> bool {
     DEVICE_FATAL_MARKERS.iter().any(|m| err.contains(m))
 }
 
+fn device_stopped() -> &'static str {
+    tr!("The speech synthesis device has stopped", "音声合成デバイスが停止しています", "语音合成设备已停止")
+}
+
 /// GUI のモデル選択に出すカタログ
 pub fn model_catalog() -> Vec<ModelInfo> {
     vec![ModelInfo {
         id: "v4.1-small-mf".into(),
-        label: "Irodori v4.1 Small MeanFlow(高速・会話向け)".into(),
-        size: Some("約766M / 4steps".into()),
-        note: Some("ストリーミング会話の既定".into()),
+        label: tr!(
+            "Irodori v4.1 Small MeanFlow (fast, for conversation)",
+            "Irodori v4.1 Small MeanFlow(高速・会話向け)",
+            "Irodori v4.1 Small MeanFlow(高速、适合对话)"
+        )
+        .into(),
+        size: Some(tr!("about 766M / 4 steps", "約766M / 4steps", "约 766M / 4 步").into()),
+        note: Some(tr!("Default for streaming conversation", "ストリーミング会話の既定", "流式对话的默认模型").into()),
     }]
 }
 
@@ -345,7 +355,15 @@ impl Backend {
                         let inner2 = Arc::clone(&inner);
                         // 1 件の失敗でディスパッチを止めない
                         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| inner2.dispatch(msg))).is_err() {
-                            inner.sink.error("backend", "内部エラー(メッセージ処理中に panic しました)", true);
+                            inner.sink.error(
+                                "backend",
+                                tr!(
+                                    "Internal error (panicked while handling a message)",
+                                    "内部エラー(メッセージ処理中に panic しました)",
+                                    "内部错误(处理消息时发生 panic)"
+                                ),
+                                true,
+                            );
                         }
                         if shutdown || inner.stop.load(Ordering::SeqCst) {
                             break;
@@ -618,7 +636,11 @@ impl Inner {
                     }
                     a.preload_key = None; // 再試験できるように
                 }
-                self.set_asr(ERROR, Some(format!("ASRプリロード失敗: {e:#}")), None);
+                self.set_asr(
+                    ERROR,
+                    Some(trf!("ASR preload failed: {e:#}", "ASRプリロード失敗: {e:#}", "ASR 预加载失败:{e:#}")),
+                    None,
+                );
                 return;
             }
         };
@@ -641,7 +663,8 @@ impl Inner {
             o.unload();
         }
         self.set_asr(READY, None, Some(engine.model_id()));
-        self.sink.info(format!("ASR プリロード完了: {}", engine.model_id()));
+        let model = engine.model_id();
+        self.sink.info(trf!("ASR preloaded: {model}", "ASR プリロード完了: {model}", "ASR 预加载完成:{model}"));
     }
 
     // ---------- TTS ----------
@@ -710,17 +733,21 @@ impl Inner {
             (st.tts_phase == ERROR && st.tts_fatal, st.tts_detail.clone())
         };
         if dead {
-            self.sink.error("tts", detail.unwrap_or_else(|| "音声合成デバイスが停止しています".into()), false);
+            self.sink.error("tts", detail.unwrap_or_else(|| device_stopped().into()), false);
             return;
         }
         let text = p.text.trim().to_string();
         if text.is_empty() {
-            self.sink.error("tts", "空のテキストです", true);
+            self.sink.error("tts", tr!("The text is empty", "空のテキストです", "文本为空"), true);
             return;
         }
         let chunks = self.split(&text);
         if chunks.is_empty() {
-            self.sink.error("tts", "チャンクに分割できませんでした", true);
+            self.sink.error(
+                "tts",
+                tr!("Could not split the text into chunks", "チャンクに分割できませんでした", "无法将文本拆分为块"),
+                true,
+            );
             return;
         }
 
@@ -1104,7 +1131,11 @@ impl Inner {
                 self.send_speak_done_locked(&mut pend, req);
             }
         }
-        self.sink.info("発話をキャンセルしました(合成中のチャンクは完了後に破棄)");
+        self.sink.info(tr!(
+            "Speech cancelled (the chunk being synthesized is discarded when it finishes)",
+            "発話をキャンセルしました(合成中のチャンクは完了後に破棄)",
+            "已取消发话(正在合成的块会在完成后丢弃)"
+        ));
     }
 
     /// `pending` ロック保持中に呼ぶこと。done==total か cancelled で speak_done を送る。
@@ -1183,7 +1214,7 @@ impl Inner {
             // デバイス喪失後は、死んだデバイスへ再ロードを試みない(アプリの再起動が要る)
             let st = lock(&self.state);
             if st.tts_phase == ERROR && st.tts_fatal {
-                anyhow::bail!("{}", st.tts_detail.clone().unwrap_or_else(|| "音声合成デバイスが停止しています".into()));
+                anyhow::bail!("{}", st.tts_detail.clone().unwrap_or_else(|| device_stopped().into()));
             }
         }
         let cfg = self.cfg();
@@ -1198,7 +1229,8 @@ impl Inner {
             }
         }
         if let Some(old) = lock(&self.engine).take() {
-            self.sink.info(format!("旧モデルを解放: {}", old.model_id()));
+            let model = old.model_id();
+            self.sink.info(trf!("Released the previous model: {model}", "旧モデルを解放: {model}", "已释放旧模型:{model}"));
         }
         self.set_tts(LOADING, Some(format!("loading {model}")), false);
         let progress = |m: &str| self.set_tts(LOADING, Some(m.to_string()), false);
@@ -1221,7 +1253,11 @@ impl Inner {
             }
             Err(e) => {
                 // 失敗を LOADING のまま放置しない(次の発話で再試行される)
-                self.set_tts(ERROR, Some(format!("TTS のロードに失敗: {e:#}")), false);
+                self.set_tts(
+                    ERROR,
+                    Some(trf!("Failed to load TTS: {e:#}", "TTS のロードに失敗: {e:#}", "TTS 加载失败:{e:#}")),
+                    false,
+                );
                 Err(e)
             }
         }
@@ -1322,11 +1358,15 @@ impl Inner {
                 if is_device_fatal(&text) {
                     // デバイス喪失は同一プロセス内では復帰しない。状態を ERROR にして GUI へ見せ、
                     // 以降の発話は speak() で即座に拒否する(死んだデバイスへ投げ続けない)。
-                    let msg = format!("音声合成デバイスが停止しました。アプリを再起動してください: {text}");
+                    let msg = trf!(
+                        "The speech synthesis device stopped. Please restart the app: {text}",
+                        "音声合成デバイスが停止しました。アプリを再起動してください: {text}",
+                        "语音合成设备已停止。请重新启动应用:{text}"
+                    );
                     self.set_tts(ERROR, Some(msg.clone()), true);
                     self.sink.error("tts", msg, false);
                 } else {
-                    self.sink.error("tts", format!("合成失敗: {text}"), true);
+                    self.sink.error("tts", trf!("Synthesis failed: {text}", "合成失敗: {text}", "合成失败:{text}"), true);
                 }
                 self.mark_chunk_done(job.request, true);
             }
@@ -1337,8 +1377,15 @@ impl Inner {
         let t0 = Instant::now();
         let result = self.ensure_engine().and_then(|e| e.warmup().map(|()| e));
         match result {
-            Ok(_) => self.sink.info(format!("ウォームアップ完了(ロード込み {} ms)", t0.elapsed().as_millis())),
-            Err(e) => self.sink.warn(format!("ウォームアップ失敗: {e:#}")),
+            Ok(_) => {
+                let ms = t0.elapsed().as_millis();
+                self.sink.info(trf!(
+                    "Warm-up done ({ms} ms including load)",
+                    "ウォームアップ完了(ロード込み {ms} ms)",
+                    "预热完成(含加载 {ms} ms)"
+                ))
+            }
+            Err(e) => self.sink.warn(trf!("Warm-up failed: {e:#}", "ウォームアップ失敗: {e:#}", "预热失败:{e:#}")),
         }
     }
 
@@ -1361,7 +1408,11 @@ impl Inner {
                 }
             }));
             if r.is_err() {
-                self.sink.error("tts", "TTS ワーカーで内部エラーが発生しました", true);
+                self.sink.error(
+                    "tts",
+                    tr!("Internal error in the TTS worker", "TTS ワーカーで内部エラーが発生しました", "TTS 工作线程发生内部错误"),
+                    true,
+                );
                 if !job.warmup && job.spec.is_none() {
                     self.mark_chunk_done(job.request, true);
                 }
@@ -1373,7 +1424,7 @@ impl Inner {
 
     pub(crate) fn start_session(self: &Arc<Self>) {
         if lock(&self.session).is_some() {
-            self.sink.warn("セッションは既に実行中です");
+            self.sink.warn(tr!("The session is already running", "セッションは既に実行中です", "会话已在运行"));
             return;
         }
         // 停止直後の再開ガード(デバイスの短時間反復 open/close は USB オーディオ
@@ -1383,10 +1434,14 @@ impl Inner {
             if since < SESSION_RESTART_COOLDOWN_S {
                 self.sink.error(
                     "asr",
-                    format!(
-                        "停止直後の再開は{SESSION_RESTART_COOLDOWN_S}秒以内は受け付けません(残り{:.1}秒。デバイス保護のため)",
-                        SESSION_RESTART_COOLDOWN_S - since
-                    ),
+                    {
+                        let (cooldown, left) = (SESSION_RESTART_COOLDOWN_S, SESSION_RESTART_COOLDOWN_S - since);
+                        trf!(
+                            "Live can't restart within {cooldown}s of stopping ({left:.1}s left; this protects the device)",
+                            "停止直後の再開は{cooldown}秒以内は受け付けません(残り{left:.1}秒。デバイス保護のため)",
+                            "停止后 {cooldown} 秒内不能重新开始(还剩 {left:.1} 秒,用于保护设备)"
+                        )
+                    },
                     true,
                 );
                 return;
@@ -1461,7 +1516,7 @@ impl Inner {
         } else {
             self.set_asr(LOADING, Some(format!("loading {label}")), None);
         }
-        self.sink.info("マイクセッション開始");
+        self.sink.info(tr!("Mic session started", "マイクセッション開始", "麦克风会话已开始"));
     }
 
     pub(crate) fn stop_session(&self) {
@@ -1476,7 +1531,7 @@ impl Inner {
             (st.asr_loaded_model.is_some(), ())
         };
         self.set_asr(if loaded { READY } else { IDLE }, None, None);
-        self.sink.info("マイクセッション停止");
+        self.sink.info(tr!("Mic session stopped", "マイクセッション停止", "麦克风会话已停止"));
     }
 
     fn cancel_performance(&self) {
@@ -1557,7 +1612,15 @@ impl Inner {
             })
         };
         if get(&self.cfg(), "pipeline", "emotion_engine").as_str() == Some("emotion2vec") && !self.emotion_missing_reported.swap(true, Ordering::SeqCst) {
-            self.sink.error("performance", "emotion2vec は Rust 版では未対応です(pipeline.emotion_engine を none にしてください)", true);
+            self.sink.error(
+                "performance",
+                tr!(
+                    "emotion2vec is not supported in the Rust version (set pipeline.emotion_engine to none)",
+                    "emotion2vec は Rust 版では未対応です(pipeline.emotion_engine を none にしてください)",
+                    "Rust 版不支持 emotion2vec(请将 pipeline.emotion_engine 设为 none)"
+                ),
+                true,
+            );
         }
         let delivery = plan_delivery(&obs, None, baseline);
         if let Some(rate) = rate.filter(|_| obs.active_ms >= 800) {

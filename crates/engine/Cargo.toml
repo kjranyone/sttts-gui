@@ -13,6 +13,7 @@ gpu = ["irodori/gpu", "sttts-whisper/gpu"]
 
 [dependencies]
 sttts-protocol = { path = "../protocol" }
+sttts-i18n = { path = "../i18n" }
 irodori = { path = "../irodori" }
 sttts-audio = { path = "../audio" }
 sttts-whisper = { path = "../whisper" }

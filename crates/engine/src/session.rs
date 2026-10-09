@@ -22,6 +22,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use sttts_i18n::{tr, trf};
 
 use crate::asr::{AsrEngine, StreamCb};
 use crate::util::{join_timeout, lock, now};
@@ -280,7 +281,7 @@ impl AsrWorker {
             (Job::Final(j), Err(e)) => {
                 // 1件の失敗でワーカーを止めない
                 if let Some(cb) = &self.on_error {
-                    cb(&format!("ASR デコード失敗: {e:#}"));
+                    cb(&decode_failed(&e));
                 }
                 (self.on_final)(&j, "", asr_ms);
             }
@@ -301,7 +302,7 @@ impl AsrWorker {
             }
             (Job::Partial(_), Err(e)) => {
                 if let Some(cb) = &self.on_error {
-                    cb(&format!("ASR デコード失敗: {e:#}"));
+                    cb(&decode_failed(&e));
                 }
             }
         }
@@ -584,7 +585,11 @@ impl LiveSession {
         if let Some(h) = lock(&self.thread).take()
             && !join_timeout(h, Duration::from_secs(10))
         {
-            self.host.on_asr_error("セッションスレッドが時間内に止まりませんでした。ソースを強制的に閉じます");
+            self.host.on_asr_error(tr!(
+                "The session thread did not stop in time. Force-closing the source",
+                "セッションスレッドが時間内に止まりませんでした。ソースを強制的に閉じます",
+                "会话线程未能及时停止。正在强制关闭音源"
+            ));
         }
         if let Some(src) = lock(&self.source).as_mut() {
             src.stop();
@@ -639,7 +644,7 @@ fn run_session_inner(p: SessionParts) {
                 if let Err(e) = started {
                     *slot = None;
                     drop(slot);
-                    host.on_asr_error(&format!("マイクを開けませんでした: {e:#}"));
+                    host.on_asr_error(&mic_open_failed(&e));
                     return;
                 }
                 if stop.load(Ordering::SeqCst) {
@@ -650,7 +655,7 @@ fn run_session_inner(p: SessionParts) {
                 }
             }
             Err(e) => {
-                host.on_asr_error(&format!("マイクを開けませんでした: {e:#}"));
+                host.on_asr_error(&mic_open_failed(&e));
                 return;
             }
         }
@@ -669,7 +674,11 @@ fn run_session_inner(p: SessionParts) {
                 };
                 match &r {
                     Ok(e) => host.on_asr_model_ready(&e.model_id()),
-                    Err(msg) => host.on_asr_error(&format!("ASRモデルのロードに失敗: {msg}")),
+                    Err(msg) => host.on_asr_error(&trf!(
+                        "Failed to load the ASR model: {msg}",
+                        "ASRモデルのロードに失敗: {msg}",
+                        "ASR 模型加载失败:{msg}"
+                    )),
                 }
                 let _ = ready_tx.send(r);
             })
@@ -750,7 +759,11 @@ fn run_session_inner(p: SessionParts) {
                     let vad = match vad_factory.take().map(|f| f()) {
                         Some(Ok(v)) => v,
                         Some(Err(e)) => {
-                            host.on_asr_error(&format!("VAD の初期化に失敗: {e:#}"));
+                            host.on_asr_error(&trf!(
+                                "Failed to initialize VAD: {e:#}",
+                                "VAD の初期化に失敗: {e:#}",
+                                "VAD 初始化失败:{e:#}"
+                            ));
                             break 'outer;
                         }
                         None => break 'outer,
@@ -796,6 +809,14 @@ fn run_session_inner(p: SessionParts) {
     if let Some(w) = lock(&worker).clone() {
         w.stop(Duration::from_secs(10));
     }
+}
+
+fn decode_failed(e: &anyhow::Error) -> String {
+    trf!("ASR decode failed: {e:#}", "ASR デコード失敗: {e:#}", "ASR 解码失败:{e:#}")
+}
+
+fn mic_open_failed(e: &anyhow::Error) -> String {
+    trf!("Could not open the microphone: {e:#}", "マイクを開けませんでした: {e:#}", "无法打开麦克风:{e:#}")
 }
 
 #[cfg(test)]

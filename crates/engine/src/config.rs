@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
+use sttts_i18n::trf;
 
 pub const SECTIONS: [&str; 5] = ["tts", "asr", "audio", "voice", "pipeline"];
 
@@ -104,6 +105,15 @@ pub fn default_user_config_path(root: &Path) -> PathBuf {
     }
 }
 
+fn unreadable(path: &Path, e: &dyn std::fmt::Display) -> String {
+    let path = path.display();
+    trf!(
+        "Cannot read the settings file (ignored): {path}: {e}",
+        "設定ファイルを読めません(無視します): {path}: {e}",
+        "无法读取设置文件(已忽略):{path}:{e}"
+    )
+}
+
 /// ユーザー設定 JSON を読む。無ければ `{}`。未知のセクションは無視して警告する。
 pub fn load_user_config(path: &Path, warn: &dyn Fn(&str)) -> Value {
     if !path.is_file() {
@@ -112,24 +122,33 @@ pub fn load_user_config(path: &Path, warn: &dyn Fn(&str)) -> Value {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
-            warn(&format!("設定ファイルを読めません(無視します): {}: {e}", path.display()));
+            warn(&unreadable(path, &e));
             return json!({});
         }
     };
     let data: Value = match serde_json::from_str(&text) {
         Ok(v) => v,
         Err(e) => {
-            warn(&format!("設定ファイルを読めません(無視します): {}: {e}", path.display()));
+            warn(&unreadable(path, &e));
             return json!({});
         }
     };
     let Value::Object(obj) = data else {
-        warn(&format!("設定ファイルの形式が不正です(オブジェクトではない): {}", path.display()));
+        let path = path.display();
+        warn(&trf!(
+            "Invalid settings file (not an object): {path}",
+            "設定ファイルの形式が不正です(オブジェクトではない): {path}",
+            "设置文件格式无效(不是对象):{path}"
+        ));
         return json!({});
     };
     let unknown: Vec<&String> = obj.keys().filter(|k| !SECTIONS.contains(&k.as_str())).collect();
     if !unknown.is_empty() {
-        warn(&format!("設定ファイルの未知のセクションを無視: {unknown:?}"));
+        warn(&trf!(
+            "Ignoring unknown sections in the settings file: {unknown:?}",
+            "設定ファイルの未知のセクションを無視: {unknown:?}",
+            "已忽略设置文件中的未知部分:{unknown:?}"
+        ));
     }
     Value::Object(obj.into_iter().filter(|(k, v)| SECTIONS.contains(&k.as_str()) && v.is_object()).collect())
 }
@@ -140,13 +159,24 @@ pub fn load_user_config(path: &Path, warn: &dyn Fn(&str)) -> Value {
 pub fn set_user_config_value(path: &Path, section: &str, key: &str, value: Value) -> anyhow::Result<()> {
     use anyhow::Context as _;
     let mut root = if path.is_file() {
-        let text = std::fs::read_to_string(path).with_context(|| format!("{} を読めません", path.display()))?;
-        serde_json::from_str::<Value>(&text).with_context(|| format!("{} の JSON が不正です", path.display()))?
+        let shown = path.display();
+        let text = std::fs::read_to_string(path)
+            .with_context(|| trf!("Cannot read {shown}", "{shown} を読めません", "无法读取 {shown}"))?;
+        serde_json::from_str::<Value>(&text)
+            .with_context(|| trf!("Invalid JSON in {shown}", "{shown} の JSON が不正です", "{shown} 的 JSON 无效"))?
     } else {
         json!({})
     };
     let Value::Object(obj) = &mut root else {
-        anyhow::bail!("{} の形式が不正です(オブジェクトではない)", path.display());
+        let shown = path.display();
+        anyhow::bail!(
+            "{}",
+            trf!(
+                "Invalid format in {shown} (not an object)",
+                "{shown} の形式が不正です(オブジェクトではない)",
+                "{shown} 格式无效(不是对象)"
+            )
+        );
     };
     let sec = obj.entry(section).or_insert_with(|| json!({}));
     if !sec.is_object() {

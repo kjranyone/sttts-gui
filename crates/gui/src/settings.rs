@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppSettings {
+    /// 表示言語(`en` / `ja` / `zh`。None = OS の表示言語に従う)
+    #[serde(default)]
+    pub language: Option<String>,
     #[serde(default)]
     pub mock: Option<bool>,
     #[serde(default)]

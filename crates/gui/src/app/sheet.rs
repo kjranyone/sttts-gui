@@ -1,5 +1,5 @@
 //! 詳細設定シート(既定は閉)。環境で一度決まり、普段は触らない設定を置く:
-//! 入出力デバイス、音声合成モデル。末尾にリポジトリとクレジット。
+//! 表示言語、入出力デバイス、音声合成モデル。末尾にリポジトリとクレジット。
 //! seed と合成パラメータ(tts.sampling)は Irodori の設定として右レールの「声」に置く。
 
 use gpui_kit::component::button::*;
@@ -7,6 +7,7 @@ use gpui_kit::component::select::Select;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use sttts_i18n::tr;
 
 use super::{StttsApp, kit, phase_label};
 use crate::theme::{self, c, ca};
@@ -63,14 +64,14 @@ impl StttsApp {
                                     .text_base()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(c(theme::TEXT))
-                                    .child("詳細設定"),
+                                    .child(tr!("Settings", "詳細設定", "详细设置")),
                             )
                             .child(
                                 Button::new("close-settings")
                                     .small()
                                     .ghost()
                                     .icon(IconName::Close)
-                                    .tooltip("閉じる")
+                                    .tooltip(tr!("Close", "閉じる", "关闭"))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.settings_open = false;
                                         this.persist_settings(cx);
@@ -84,6 +85,7 @@ impl StttsApp {
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
+                            .child(self.render_language())
                             .child(self.render_devices())
                             .child(self.render_models(cx))
                             .child(self.render_about(cx)),
@@ -91,17 +93,40 @@ impl StttsApp {
             )
     }
 
+    /// 表示言語。見出しは 3 言語を併記し、どの言語で開いていても見つけられるようにする。
+    fn render_language(&self) -> impl IntoElement {
+        kit::section(
+            "Language · 言語 · 语言",
+            v_flex()
+                .gap_1()
+                .child(Select::new(&self.language_select).small())
+                .when(self.language.is_none(), |col| {
+                    col.child(kit::hint(tr!(
+                        "Following the Windows display language",
+                        "Windows の表示言語に合わせています",
+                        "跟随 Windows 显示语言"
+                    )))
+                }),
+        )
+    }
+
     fn render_devices(&self) -> impl IntoElement {
         kit::section(
-            "オーディオデバイス",
+            tr!("Audio devices", "オーディオデバイス", "音频设备"),
             v_flex()
                 .gap_3()
-                .child(kit::field("マイク(入力)", Select::new(&self.input_dev.driver_select).small()))
+                .child(kit::field(
+                    tr!("Microphone (input)", "マイク(入力)", "麦克风(输入)"),
+                    Select::new(&self.input_dev.driver_select).small(),
+                ))
                 .child(kit::field(
                     self.input_dev.choice_caption(),
                     Select::new(&self.input_dev.choice_select).small(),
                 ))
-                .child(kit::field("スピーカー(出力)", Select::new(&self.output_dev.driver_select).small()))
+                .child(kit::field(
+                    tr!("Speaker (output)", "スピーカー(出力)", "扬声器(输出)"),
+                    Select::new(&self.output_dev.driver_select).small(),
+                ))
                 .child(kit::field(
                     self.output_dev.choice_caption(),
                     Select::new(&self.output_dev.choice_select).small(),
@@ -157,13 +182,13 @@ impl StttsApp {
             .collect();
 
         kit::section(
-            "音声合成モデル",
+            tr!("Speech synthesis model", "音声合成モデル", "语音合成模型"),
             v_flex()
                 .gap_2()
                 .children(rows)
                 .child(kit::chip(
                     kit::phase_color(&self.tts_state.phase),
-                    format!("音声合成 · {}", phase_label(&self.tts_state)),
+                    format!("{} · {}", tr!("Speech synthesis", "音声合成", "语音合成"), phase_label(&self.tts_state)),
                 )),
         )
     }
@@ -196,8 +221,12 @@ impl StttsApp {
                     ),
             )
             .child(kit::hint(REPO_URL))
-            .child(kit::hint("音声合成 Irodori-TTS(Aratako)· 認識 Nemotron / kotoba-whisper / Gemini"))
-            .child(kit::hint("UI GPUI · 推論 burn"))
+            .child(kit::hint(tr!(
+                "TTS Irodori-TTS (Aratako) · ASR Nemotron / kotoba-whisper / Gemini",
+                "音声合成 Irodori-TTS(Aratako)· 認識 Nemotron / kotoba-whisper / Gemini",
+                "语音合成 Irodori-TTS(Aratako)· 识别 Nemotron / kotoba-whisper / Gemini"
+            )))
+            .child(kit::hint(tr!("UI GPUI · inference burn", "UI GPUI · 推論 burn", "UI GPUI · 推理 burn")))
             .child(kit::hint("© 2026 Kojiro Tanaka · MIT License"))
     }
 }

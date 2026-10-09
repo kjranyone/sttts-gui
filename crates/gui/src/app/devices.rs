@@ -6,6 +6,7 @@
 use gpui_kit::component::IndexPath;
 use gpui_kit::component::select::SelectState;
 use gpui_kit::*;
+use sttts_i18n::{tr, trf};
 use sttts_protocol::{AudioConfig, AudioDeviceInfo, GuiMessage};
 
 use super::{MicTransition, StttsApp};
@@ -90,7 +91,20 @@ impl DeviceSelect {
 
     /// 2 段目の見出し(WASAPI はデバイス、ASIO はチャンネル)。
     pub fn choice_caption(&self) -> &'static str {
-        if self.driver == WASAPI_DRIVER { "デバイス" } else { "チャンネル" }
+        if self.driver == WASAPI_DRIVER {
+            tr!("Device", "デバイス", "设备")
+        } else {
+            tr!("Channel", "チャンネル", "声道")
+        }
+    }
+
+    /// 表示言語の切替後: 「既定の〜デバイス」の文言を今の言語で作り直す
+    /// (保存するのはデバイスの選択だけで、既定の文言は保存しない)。
+    pub fn relocalize(&mut self) {
+        if self.choice.device_id.is_none() {
+            self.choice = self.picker.system_default().1;
+        }
+        self.dirty = true;
     }
 
     /// 表示用の短い名前(ライブ欄など)。
@@ -183,7 +197,14 @@ impl StttsApp {
             // 再開は利用者の操作(ライブ開始)に任せる。
             self.mic_transition = MicTransition::Stopping;
             self.send(GuiMessage::StopSession);
-            self.push_log("入力デバイスを変更したためライブを停止しました。新しいデバイスで「ライブ開始」を押してください".into());
+            self.push_log(
+                tr!(
+                    "Live stopped because the input device changed. Press \"Start live\" to use the new device",
+                    "入力デバイスを変更したためライブを停止しました。新しいデバイスで「ライブ開始」を押してください",
+                    "输入设备已更改,直播已停止。请按「开始直播」使用新设备"
+                )
+                .into(),
+            );
         }
         self.persist_settings(cx);
         cx.notify();
@@ -212,9 +233,14 @@ impl StttsApp {
         match audio::AudioOut::open(c.device_id.as_deref(), &c.channels) {
             Ok(out) => {
                 self.audio = Some(out);
-                self.push_log(format!("出力デバイスを切替: {}", self.output_dev.display()));
+                let name = self.output_dev.display();
+                self.push_log(trf!("Output device: {name}", "出力デバイスを切替: {name}", "已切换输出设备:{name}"));
             }
-            Err(e) => self.push_log(format!("出力デバイスの切替に失敗: {e:#}")),
+            Err(e) => self.push_log(trf!(
+                "[error:audio] Failed to switch the output device: {e:#}",
+                "[error:audio] 出力デバイスの切替に失敗: {e:#}",
+                "[error:audio] 切换输出设备失败:{e:#}"
+            )),
         }
         self.persist_settings(cx);
         cx.notify();

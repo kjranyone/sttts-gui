@@ -4,11 +4,13 @@
 
 # sttts-gui
 
-**話した声を、そのまま別の声で。**
+**English** · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
-マイクの声をリアルタイムに文字起こしし、[Irodori-TTS](https://github.com/Aratako/Irodori-TTS) で
-好きな声に変えて読み上げる、Windows 向けの音声対話アプリ。<br>
-UI からマイク・VAD・ASR・TTS まで、**Rust 1 プロセスだけ**で動きます。Python も PyTorch も要りません。
+**Speak, and be heard in another voice.**
+
+A voice app for Windows that transcribes your microphone in real time and reads it aloud in the voice of your choice
+with [Irodori-TTS](https://github.com/Aratako/Irodori-TTS).<br>
+Everything from the UI to the mic, VAD, ASR and TTS runs in **a single Rust process**. No Python, no PyTorch.
 
 ![Rust 1.95+](https://img.shields.io/badge/Rust-1.95%2B-8b6cf0?logo=rust&logoColor=white)
 ![Windows 11](https://img.shields.io/badge/Windows-11-ff9ec7?logo=windows11&logoColor=white)
@@ -20,150 +22,157 @@ UI からマイク・VAD・ASR・TTS まで、**Rust 1 プロセスだけ**で�
 
 ---
 
-## 特長
+> [!NOTE]
+> Speech recognition and synthesis are built for **Japanese**. Irodori-TTS is a Japanese TTS model, and the local ASR models are Japanese models. The UI language setting changes only the interface.
 
-- 🎙️ **話し終わる前に読み上げ始める** — 確定した文から順に合成・再生します。話し続けていても、文が切れたところから読み上げが追いかけます
-- 🦀 **ピュア Rust 推論** — Irodori-TTS と kotoba-whisper を [burn](https://burn.dev) で再実装し、PyTorch と数値一致を確認済み。Intel Arc B570 で RTF ≈ 0.3
-- 🎭 **声のバンク** — 10 秒ほどの参照音声をドラッグ&ドロップすると、その声で話します。テンポや間など、元の話し方の表現も Irodori に渡します
-- 🔀 **ASR を選べる** — Nemotron 3.5(句読点付き・ローカル)/ kotoba-whisper(ローカル GPU)/ Gemini Live(クラウド)
-- 🎚️ **ASIO 対応** — ⚙ 詳細設定でドライバ(WASAPI / 各 ASIO ドライバ)を選び、WASAPI ならデバイス、ASIO なら使うチャンネル(入力は 1ch ずつか 2ch の組、出力は 2ch の組か 1ch)を選べます
-- 📦 **モデルは自動で取得** — 初回起動時に HuggingFace から必要なものだけを取得します。手動の準備はいりません
-- ⏱️ **遅延を常に表示** — 話し終わりから最初の音が鳴るまで(発話終了→初音)を、毎回タイトルバーに表示します
+## Features
 
-## クイックスタート
+- 🎙️ **Starts reading before you finish talking** — confirmed sentences are synthesized and played in order. While you keep talking, playback follows from where each sentence ends
+- 🦀 **Pure Rust inference** — Irodori-TTS and kotoba-whisper are reimplemented on [burn](https://burn.dev) and verified to match PyTorch numerically. RTF ≈ 0.3 on an Intel Arc B570
+- 🎭 **Voice bank** — drag and drop about 10 seconds of reference audio and it speaks in that voice. Expression such as tempo and pauses in the original speech is also passed to Irodori
+- 🔀 **Choice of ASR** — Nemotron 3.5 (with punctuation, local) / kotoba-whisper (local GPU) / Gemini Live (cloud)
+- 🎚️ **ASIO support** — in ⚙ Settings, choose the driver (WASAPI / each ASIO driver), then the device for WASAPI or the channels for ASIO (input: single channels or a 2-channel pair; output: a 2-channel pair or a single channel)
+- 📦 **Models are fetched automatically** — on first launch only what is needed is downloaded from HuggingFace. No manual setup
+- 🌐 **UI in English / Japanese / Simplified Chinese** — starts in the Windows display language and can be switched at any time in ⚙ Settings
+- ⏱️ **Latency always on screen** — the time from the end of your speech to the first sound (end of speech → first audio) is shown in the title bar every time
 
-**必要なもの**: Windows 11 / Vulkan 対応 GPU(Intel Arc・NVIDIA・AMD。Intel Arc B570 で検証)/ Rust 1.95 以上 + MSVC ビルドツール + [LLVM](https://github.com/llvm/llvm-project/releases)(ASIO バインディング生成の libclang 用。ASIO SDK はビルド時に自動取得)
+## Quick start
+
+**Requirements**: Windows 11 / a Vulkan-capable GPU (Intel Arc, NVIDIA, AMD; tested on Intel Arc B570) / Rust 1.95 or later + MSVC build tools + [LLVM](https://github.com/llvm/llvm-project/releases) (libclang for generating the ASIO bindings; the ASIO SDK is fetched automatically at build time)
 
 ```powershell
 git clone https://github.com/kjranyone/sttts-gui.git
 cd sttts-gui
-.\dev.ps1            # ビルドして起動(初回はモデルを自動ダウンロード)
+.\dev.ps1            # build and launch (models are downloaded on first run)
 ```
 
-| コマンド | 用途 |
+| Command | Purpose |
 |---|---|
-| `.\dev.ps1 -Mode real` | 実エンジンで起動(対話なし) |
-| `.\dev.ps1 -Mode mock` | モデルを使わずに UI と配線だけ確認 |
-| `.\dev.ps1 -DebugBuild` | debug プロファイルで起動 |
-| `cargo run --release -p sttts-gui -- --real` | スクリプトを使わずに直接起動 |
+| `.\dev.ps1 -Mode real` | Launch with the real engine (no prompt) |
+| `.\dev.ps1 -Mode mock` | Check only the UI and wiring, without models |
+| `.\dev.ps1 -DebugBuild` | Launch with the debug profile |
+| `cargo run --release -p sttts-gui -- --real` | Launch directly without the script |
 
-モデルは Irodori-TTS ≈3GB + コーデック ≈0.4GB + 選んだ ASR の分です。HuggingFace のキャッシュ(`~/.cache/huggingface/hub`)を共有します。
+Models take Irodori-TTS ≈3GB + codec ≈0.4GB + the ASR you choose. The HuggingFace cache (`~/.cache/huggingface/hub`) is shared.
 
-### exe を配布する場合
+### Distributing the exe
 
-`cargo build --release` でできる `target/release/sttts-gui.exe` は単体で動きます(アイコン・VAD モデル・onnxruntime を内蔵)。設定や声のバンク(`data/`)、生成した WAV(`output/`)は次の場所に保存します。
+`target/release/sttts-gui.exe`, built with `cargo build --release`, runs on its own (icon, VAD model and onnxruntime are embedded). Settings and the voice bank (`data/`) and generated WAVs (`output/`) are stored in:
 
-1. 環境変数 `STTTS_ROOT` があればそこ
-2. exe の隣に書き込めれば exe のフォルダ(USB メモリ等に置くポータブル運用)
-3. 書き込めない場所(Program Files 等)なら `%LOCALAPPDATA%\sttts-gui`
+1. `STTTS_ROOT`, if the environment variable is set
+2. The exe's folder, if it is writable next to the exe (portable use, e.g. on a USB drive)
+3. `%LOCALAPPDATA%\sttts-gui`, if it is not writable (Program Files, etc.)
 
-配布先には [Visual C++ 再頒布可能パッケージ](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)(x64)と、DirectX 12 / Vulkan に対応した GPU ドライバが必要です。
+The target machine needs the [Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64) and a GPU driver with DirectX 12 / Vulkan support.
 
 > [!IMPORTANT]
-> **ヘッドホンを使ってください。** マイクは再生中も開いたままです(エコーキャンセルは未実装)。スピーカーだと合成音声をマイクが拾い、それが文字起こしされて自動発話されるループが起きます。
+> **Use headphones.** The mic stays open during playback (there is no echo cancellation). With speakers, the mic picks up the synthesized voice, which is transcribed and spoken again automatically, in a loop.
 
-## 仕組み
+## How it works
 
 ```mermaid
 flowchart LR
-    mic["🎙️ マイク<br/>cpal → 16kHz"] --> vad["Silero VAD"]
-    vad --> asr["ASR ワーカー<br/>Nemotron / kotoba / Gemini"]
-    asr -- "partial(途中経過)" --> commit["安定した文を<br/>先に確定"]
-    asr -- "final(確定)" --> commit
-    commit --> chunk["文チャンク分割<br/>先頭は 8〜12 モーラ"]
+    mic["🎙️ Mic<br/>cpal → 16kHz"] --> vad["Silero VAD"]
+    vad --> asr["ASR worker<br/>Nemotron / kotoba / Gemini"]
+    asr -- "partial (in progress)" --> commit["Commit stable<br/>sentences early"]
+    asr -- "final" --> commit
+    commit --> chunk["Sentence chunking<br/>first chunk 8–12 morae"]
     chunk --> tts["Irodori-TTS<br/>burn / wgpu (GPU)"]
-    tts --> play["🔊 チャンクごとに<br/>即再生"]
+    tts --> play["🔊 Play each chunk<br/>as soon as it is ready"]
 ```
 
-Irodori-TTS は文単位の非ストリーミング合成です。そこで **文をチャンクに切る → チャンクごとに合成 → できたものから再生** という疑似ストリーミングにしています。初音までの時間は先頭チャンクの長さに比例するので、先頭だけを短く切ります。
+Irodori-TTS synthesizes whole sentences, without streaming. So the app does pseudo-streaming: **split sentences into chunks → synthesize each chunk → play whatever is ready**. Time to first audio is proportional to the length of the first chunk, so only the first chunk is cut short.
 
-全体は 1 プロセスで動きます。GUI([GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) / gpui-kit)とエンジンはチャネルでつながり、VAD・ASR・TTS はそれぞれ専用スレッドで回ります。重いデコード中もレベルメーターは止まりません。詳しくは [上級設定とチューニング](docs/configuration.md) を参照してください。
+Everything runs in one process. The GUI ([GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) / gpui-kit) and the engine are connected by channels, and VAD, ASR and TTS each run on their own thread. The level meter keeps moving even during heavy decoding. See [Advanced settings and tuning](docs/configuration.md) (Japanese) for details.
 
-## 使い方
+## Usage
 
-画面は「何を話したか / どう伝えるか / どの声で届けるか」を分けて見せます。
+The screen separates *what you said*, *how it is delivered* and *which voice delivers it*.
 
-| 場所 | できること |
+| Area | What you can do |
 |---|---|
-| **ストリーム**(中央) | 1 枚のカード = 話した内容(上段)と、それを届けた声(下段)。届けた後は ▶ もう一度聞く / ↻ 今の声で話し直す / 訂正 |
-| **入力欄**(下) | 文字を入力して **話す**(Ctrl+Enter)。**止める** で再生中・未再生の音声を破棄 |
-| **ライブ** | マイクの開始/停止と入力レベル |
-| **音声キュー** | 「自動再生」ON で認識した文をそのまま読み上げ。OFF ならカードで止めて、話す・訂正・話さないを選ぶ。「テンポと間を再現」で元音声の速さを反映 |
-| **声** | 声バンクの選択と、話し方の指示(Irodori の caption) |
-| **認識** | クラウド(Gemini)とローカルの切替、Gemini の API キー入力 |
-| **⚙ 詳細設定** | 入出力デバイス、音声合成モデル、seed など、環境ごとに一度決めればよい設定 |
+| **Stream** (center) | One card = what you said (top) and the voice that delivered it (bottom). After delivery: ▶ play again / ↻ speak again with the current voice / correct |
+| **Input box** (bottom) | Type text and **Speak** (Ctrl+Enter). **Stop** discards audio that is playing or not yet played |
+| **Live** | Start/stop the mic, and the input level |
+| **Audio queue** | With "Auto play" ON, recognized sentences are read aloud as they are. With it OFF, each stops at its card so you can speak, correct or skip it. "Match tempo and pauses" reflects the speed of the original speech |
+| **Voice** | Pick a voice from the bank and give a speaking-style instruction (Irodori's caption) |
+| **Recognition** | Switch between cloud (Gemini) and local, and enter the Gemini API key |
+| **⚙ Settings** | Settings you decide once per machine: display language, input/output devices, TTS model |
 
-演技パレットや絵文字による表現指示は [Irodori への表現指示](docs/irodori-annotations.md)、話し方を再現する仕組みは [発話の表現を再構築する設計](docs/acting-reconstruction-design.md) にまとめています。
+The acting palette and emoji-based expression are described in [Expression instructions for Irodori](docs/irodori-annotations.md), and the mechanism for reproducing the way you speak in [Design for reconstructing delivery](docs/acting-reconstruction-design.md) (both in Japanese).
 
-### 声のバンク
+### Voice bank
 
-参照音声(wav / flac、10 秒程度)をウィンドウへドラッグ&ドロップするか、「声」の「＋」から選びます。取り込んだ音声は `data/voices/` に入り、そのまま選択されます。画像(png / jpg / webp)を落とすと、選択中の声のアイコンになります。
+Drag and drop reference audio (wav / flac, about 10 seconds) onto the window, or pick it with "+" under "Voice". Imported audio goes into `data/voices/` and is selected right away. Drop an image (png / jpg / webp) to make it the icon of the selected voice.
 
 > [!CAUTION]
-> 参照音声には、本人の同意を得た声だけを使ってください。Irodori-TTS の各モデルカードは、実在人物のなりすましやディープフェイクへの利用を禁じています。
+> Only use reference audio from people who have given their consent. The Irodori-TTS model cards prohibit impersonating real people and creating deepfakes.
 
-## モデル
+## Models
 
-| 役割 | モデル | 実行環境 | 備考 |
+| Role | Model | Runs on | Notes |
 |---|---|---|---|
-| TTS | [Irodori-TTS v4.1 Small MeanFlow](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF) | GPU(burn / wgpu) | RTF ≈ 0.3(Arc B570)。CPU 推論はしません |
-| ASR | Nemotron 3.5 ASR streaming 0.6B | CPU(onnxruntime) | **句読点を出力**、whisper large-v3 級の精度。途中経過は前回の続きから計算するので軽い。母音だけの連続(「あいうえお」等)は苦手 |
-| ASR | [kotoba-whisper-v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0) | GPU(burn / wgpu) | 既定。句読点は出ない。10 秒の発話で約 4 秒 |
-| ASR | Gemini 3.5 Transcribe Live | クラウド | 最速。要 API キー(GUI から入力し、DPAPI で暗号化して保存) |
-| VAD | [Silero VAD](https://github.com/snakers4/silero-vad) | CPU(ONNX) | バイナリに埋め込み |
+| TTS | [Irodori-TTS v4.1 Small MeanFlow](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF) | GPU (burn / wgpu) | RTF ≈ 0.3 (Arc B570). No CPU inference |
+| ASR | Nemotron 3.5 ASR streaming 0.6B | CPU (onnxruntime) | **Outputs punctuation**, whisper large-v3 class accuracy. Partial results continue from the previous computation, so they are cheap. Weak on runs of vowels only (e.g. 「あいうえお」) |
+| ASR | [kotoba-whisper-v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0) | GPU (burn / wgpu) | Default. No punctuation. About 4 s for a 10-second utterance |
+| ASR | Gemini 3.5 Transcribe Live | Cloud | Fastest. Requires an API key (entered in the GUI and stored encrypted with DPAPI) |
+| VAD | [Silero VAD](https://github.com/snakers4/silero-vad) | CPU (ONNX) | Embedded in the binary |
 
-## プロジェクト構成
+## Project layout
 
 ```
 crates/
-├── gui/        GPUI クライアント。エンジンをプロセス内で起動する
-├── engine/     バックエンド本体:設定・チャンク分割・TTS ワーカー・ライブセッション
-├── protocol/   GUI ⇄ エンジンのメッセージ型
-├── irodori/    Irodori-TTS の純 Rust 推論(設計と精度 → docs/irodori-rs.md)
-├── whisper/    kotoba-whisper の純 Rust 推論
-├── nemotron/   Nemotron 3.5 ASR(ONNX)
-├── gemini/     Gemini Live API クライアント
-├── audio/      マイク・リサンプル・Silero VAD
-└── hub/        HuggingFace Hub のキャッシュ探索と自動ダウンロード
+├── gui/        GPUI client. Starts the engine in-process
+├── engine/     Backend: config, chunking, TTS worker, live session
+├── protocol/   GUI ⇄ engine message types
+├── i18n/       UI language (en / ja / zh) and inline translations
+├── irodori/    Pure Rust inference for Irodori-TTS (design and accuracy → docs/irodori-rs.md)
+├── whisper/    Pure Rust inference for kotoba-whisper
+├── nemotron/   Nemotron 3.5 ASR (ONNX)
+├── gemini/     Gemini Live API client
+├── audio/      Mic, resampling, Silero VAD
+└── hub/        HuggingFace Hub cache lookup and automatic downloads
 ```
 
-## 開発
+## Development
 
 ```powershell
-cargo test -p sttts-engine          # 実モデル・実デバイス無しでパイプライン全体を検証
-cargo test --workspace --release    # 全クレート(参照データが無いパリティテストは skip)
+cargo test -p sttts-engine          # verify the whole pipeline without real models or devices
+cargo test --workspace --release    # all crates (parity tests without reference data are skipped)
 ```
 
-エンジンは外界(デバイス・モデル)を `Platform` トレイトで注入する設計です。テストでは偽のマイク・VAD・ASR・TTS を差し込み、mic-first、停止→再開のクールダウン、キャンセル、逐次読み上げまでを検証します。PyTorch との数値一致テストに使う参照データは `tools/reference/` のスクリプトで作れます(アプリの実行には不要)。
+The engine takes the outside world (devices, models) through the `Platform` trait. Tests plug in a fake mic, VAD, ASR and TTS and verify mic-first startup, the stop → restart cooldown, cancellation and incremental reading. The reference data for the PyTorch parity tests can be generated with the scripts in `tools/reference/` (not needed to run the app).
 
-コントリビュートする前に [AGENTS.md](AGENTS.md) を読んでください(ハードウェア検証のポリシーと設計の前提)。
+UI text is written inline with all three languages side by side (`tr!("English", "日本語", "中文")`), so a missing translation is a compile error.
 
-## トラブルシューティング
+Read [AGENTS.md](AGENTS.md) (Japanese) before contributing: it covers the hardware testing policy and the design principles.
 
-| 症状 | 対処 |
+## Troubleshooting
+
+| Symptom | Fix |
 |---|---|
-| GPU を初期化できない | Vulkan 対応 GPU とドライバを確認(Intel Arc は最新ドライバへ)。CPU への自動フォールバックはありません |
-| 「音声合成デバイスが停止しました」 | GPU のデバイス喪失です。アプリを再起動してください |
-| 文中の短い間で発話が切れる | `asr.vad_min_silence_ms` を 350〜400 に上げる |
-| 合成音声を拾ってループする | ヘッドホンを使う |
-| 最初の発話まで時間がかかる | 初回はモデルのダウンロードと GPU カーネルの準備があります。2 回目からは起動直後にバックグラウンドでロードが始まります |
-| マイクを開けない | 他のアプリによる排他占有を解除する。入力デバイスは ⚙ 詳細設定で選べます |
-| ASIO デバイスを開けない | ASIO は同時に 1 ドライバのみ。入力と出力で別の ASIO ドライバは選べません(同じドライバ同士、または片方を WASAPI に)。DAW など他のアプリが掴んでいないかも確認。レート・バッファはドライバのコントロールパネルの設定に従います |
-| ビルドで `asiodrivers.h` が無い | `%TEMP%sio_sdk` が中身の消えた状態で残っています。フォルダを消して再ビルドすると SDK を取り直します |
-| 認識が遅い | Gemini を選ぶか、ローカルなら `asr.engine: "nemotron"` |
+| The GPU cannot be initialized | Check for a Vulkan-capable GPU and driver (update Intel Arc to the latest driver). There is no automatic fallback to CPU |
+| "The speech synthesis device stopped" | The GPU device was lost. Restart the app |
+| Speech is cut at short pauses mid-sentence | Raise `asr.vad_min_silence_ms` to 350–400 |
+| The synthesized voice is picked up and loops | Use headphones |
+| The first utterance takes a long time | The first run downloads models and prepares GPU kernels. From the second run on, loading starts in the background right after launch |
+| The mic cannot be opened | Release exclusive use by other apps. The input device can be chosen in ⚙ Settings |
+| An ASIO device cannot be opened | Only one ASIO driver can be open at a time, so input and output cannot use different ASIO drivers (use the same driver for both, or WASAPI for one side). Also check that no other app such as a DAW holds it. Sample rate and buffer follow the driver's control panel |
+| The build cannot find `asiodrivers.h` | `%TEMP%\asio_sdk` was left behind with its contents gone. Delete the folder and rebuild to fetch the SDK again |
+| Recognition is slow | Choose Gemini, or locally use `asr.engine: "nemotron"` |
 
-ログは GUI 下段と `data/gui.log`(起動ごとに作り直し)に出ます。設定キーの一覧は [docs/configuration.md](docs/configuration.md) にあります。
+Logs appear in the bottom panel of the GUI and in `data/gui.log` (recreated on every launch). The list of settings keys is in [docs/configuration.md](docs/configuration.md) (Japanese).
 
-## クレジット
+## Credits
 
-- [Irodori-TTS](https://github.com/Aratako/Irodori-TTS)(MIT)と [v4.1-Small-MF](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF)・[Semantic-DACVAE-Japanese-32dim](https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim)(MIT)、透かしの [SilentCipher](https://huggingface.co/sony/silentcipher)。各モデルカードには、ライセンスとは別に倫理的な利用制限があります
-- [kotoba-whisper-v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0)(Apache-2.0)
-- Nemotron 3.5 ASR streaming(コード Apache-2.0 / 重み OpenMDW-1.1)
-- [silero-vad](https://github.com/snakers4/silero-vad)(MIT、`crates/audio/assets/LICENSE`)
-- [burn](https://burn.dev)(Apache-2.0 / MIT)、onnxruntime(MIT)、gpui-kit / Zed GPUI(Apache-2.0)
+- [Irodori-TTS](https://github.com/Aratako/Irodori-TTS) (MIT) with [v4.1-Small-MF](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF) and [Semantic-DACVAE-Japanese-32dim](https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim) (MIT), and [SilentCipher](https://huggingface.co/sony/silentcipher) for watermarking. Each model card has ethical usage restrictions in addition to its license
+- [kotoba-whisper-v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0) (Apache-2.0)
+- Nemotron 3.5 ASR streaming (code Apache-2.0 / weights OpenMDW-1.1)
+- [silero-vad](https://github.com/snakers4/silero-vad) (MIT, `crates/audio/assets/LICENSE`)
+- [burn](https://burn.dev) (Apache-2.0 / MIT), onnxruntime (MIT), gpui-kit / Zed GPUI (Apache-2.0)
 
-## ライセンス
+## License
 
-[MIT](LICENSE)。ただし `crates/nemotron/` は参照実装に由来するため Apache-2.0(`crates/nemotron/LICENSE`)です。
+[MIT](LICENSE). `crates/nemotron/` is Apache-2.0 (`crates/nemotron/LICENSE`) because it derives from a reference implementation.
 
-モデルの重みはこのリポジトリに含まれず、それぞれのライセンスと利用制限に従います(上記クレジットを参照)。
+Model weights are not included in this repository and are subject to their own licenses and usage restrictions (see Credits above).

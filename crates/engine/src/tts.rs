@@ -12,6 +12,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Map, Value};
+use sttts_i18n::{tr, trf};
 
 use crate::util::lock;
 
@@ -57,7 +58,14 @@ pub fn check_sampling_overrides(sampling: &Map<String, Value>) -> Result<()> {
     let mut reserved: Vec<&str> = RESERVED_SAMPLING_KEYS.iter().copied().filter(|k| sampling.contains_key(*k)).collect();
     reserved.sort_unstable();
     if !reserved.is_empty() {
-        bail!("tts.sampling に指定できないキー(発話ごとにアプリが決定): {reserved:?}");
+        bail!(
+            "{}",
+            trf!(
+                "Keys not allowed in tts.sampling (the app sets them for each utterance): {reserved:?}",
+                "tts.sampling に指定できないキー(発話ごとにアプリが決定): {reserved:?}",
+                "tts.sampling 中不能指定的键(由应用按每次发话决定):{reserved:?}"
+            )
+        );
     }
     Ok(())
 }
@@ -85,28 +93,134 @@ pub struct SamplingField {
     pub null_label: Option<&'static str>,
 }
 
-/// `tts.sampling` で指定できる全項目と Irodori の既定値
+/// `tts.sampling` で指定できる全項目と Irodori の既定値。項目名・説明は今の表示言語。
 pub fn sampling_fields() -> Vec<SamplingField> {
     let d = irodori::pipeline::SamplingRequest::default();
     let f = |key, label, help, kind, default: Value| SamplingField { key, label, help, kind, default, null_label: None };
     use SamplingKind::*;
     vec![
-        f("num_steps", "ステップ数", "多いほど丁寧だが遅い(MeanFlow は少数で足りる)", Int, d.num_steps.into()),
-        f("duration_scale", "長さの倍率", "1 より大きいとゆっくり、小さいと速く読む", Float, d.duration_scale.into()),
-        f("seconds", "長さ(秒、固定)", "指定すると長さ予測を使わずこの長さで合成する", Float, d.seconds.into()),
-        f("min_seconds", "最短(秒)", "予測した長さの下限", Float, d.min_seconds.into()),
-        f("max_seconds", "最長(秒)", "予測した長さの上限", Float, d.max_seconds.into()),
-        f("max_ref_seconds", "参照音声の上限(秒)", "長い参照音声はこの長さで切る(空 = 切らない)", Float, d.max_ref_seconds.into()),
+        f(
+            "num_steps",
+            tr!("Steps", "ステップ数", "步数"),
+            tr!(
+                "More is more careful but slower (MeanFlow needs only a few)",
+                "多いほど丁寧だが遅い(MeanFlow は少数で足りる)",
+                "越多越精细但越慢(MeanFlow 少量即可)"
+            ),
+            Int,
+            d.num_steps.into(),
+        ),
+        f(
+            "duration_scale",
+            tr!("Length scale", "長さの倍率", "时长倍率"),
+            tr!("Above 1 reads slower, below 1 faster", "1 より大きいとゆっくり、小さいと速く読む", "大于 1 读得慢,小于 1 读得快"),
+            Float,
+            d.duration_scale.into(),
+        ),
+        f(
+            "seconds",
+            tr!("Length (s, fixed)", "長さ(秒、固定)", "时长(秒,固定)"),
+            tr!(
+                "If set, synthesizes at this length instead of predicting it",
+                "指定すると長さ予測を使わずこの長さで合成する",
+                "指定后不使用时长预测,按此时长合成"
+            ),
+            Float,
+            d.seconds.into(),
+        ),
+        f(
+            "min_seconds",
+            tr!("Min (s)", "最短(秒)", "最短(秒)"),
+            tr!("Lower bound of the predicted length", "予測した長さの下限", "预测时长的下限"),
+            Float,
+            d.min_seconds.into(),
+        ),
+        f(
+            "max_seconds",
+            tr!("Max (s)", "最長(秒)", "最长(秒)"),
+            tr!("Upper bound of the predicted length", "予測した長さの上限", "预测时长的上限"),
+            Float,
+            d.max_seconds.into(),
+        ),
+        f(
+            "max_ref_seconds",
+            tr!("Reference audio limit (s)", "参照音声の上限(秒)", "参考音频上限(秒)"),
+            tr!(
+                "Longer reference audio is cut to this length (empty = no cut)",
+                "長い参照音声はこの長さで切る(空 = 切らない)",
+                "过长的参考音频会截到此长度(空 = 不截断)"
+            ),
+            Float,
+            d.max_ref_seconds.into(),
+        ),
         SamplingField {
-            null_label: Some("正規化しない"),
-            ..f("ref_normalize_db", "参照音声の音量(LUFS)", "参照音声をこの音量にそろえてから使う", Float, d.ref_normalize_db.map(f32_value).into())
+            null_label: Some(tr!("Don't normalize", "正規化しない", "不归一化")),
+            ..f(
+                "ref_normalize_db",
+                tr!("Reference loudness (LUFS)", "参照音声の音量(LUFS)", "参考音频响度(LUFS)"),
+                tr!(
+                    "Normalizes the reference audio to this loudness before use",
+                    "参照音声をこの音量にそろえてから使う",
+                    "使用前将参考音频统一到此响度"
+                ),
+                Float,
+                d.ref_normalize_db.map(f32_value).into(),
+            )
         },
-        f("ref_ensure_max", "参照音声の音割れ防止", "正規化しないとき、ピークが 1.0 を超えたら縮める", Bool, d.ref_ensure_max.into()),
-        f("trim_tail", "末尾の無音を削る", "生成音声の末尾にある無音・ノイズを切る", Bool, d.trim_tail.into()),
-        f("tail_window_size", "末尾判定の窓", "末尾判定に使う潜在フレーム数", Int, d.tail_window_size.into()),
-        f("tail_std_threshold", "末尾判定の std 閾値", "これより小さい揺れを無音とみなす", Float, f32_value(d.tail_std_threshold).into()),
-        f("tail_mean_threshold", "末尾判定の mean 閾値", "これより小さい平均を無音とみなす", Float, f32_value(d.tail_mean_threshold).into()),
-        f("watermark", "透かし(SilentCipher)", "生成音声に聞こえない透かしを入れる(使えるときのみ)", Bool, d.watermark.into()),
+        f(
+            "ref_ensure_max",
+            tr!("Reference clipping guard", "参照音声の音割れ防止", "参考音频防削波"),
+            tr!(
+                "When not normalizing, scales down if the peak exceeds 1.0",
+                "正規化しないとき、ピークが 1.0 を超えたら縮める",
+                "不归一化时,若峰值超过 1.0 则缩小"
+            ),
+            Bool,
+            d.ref_ensure_max.into(),
+        ),
+        f(
+            "trim_tail",
+            tr!("Trim trailing silence", "末尾の無音を削る", "裁剪末尾静音"),
+            tr!(
+                "Cuts silence and noise at the end of the generated audio",
+                "生成音声の末尾にある無音・ノイズを切る",
+                "裁掉生成音频末尾的静音和噪声"
+            ),
+            Bool,
+            d.trim_tail.into(),
+        ),
+        f(
+            "tail_window_size",
+            tr!("Tail detection window", "末尾判定の窓", "末尾判定窗口"),
+            tr!("Latent frames used to detect the tail", "末尾判定に使う潜在フレーム数", "用于末尾判定的潜在帧数"),
+            Int,
+            d.tail_window_size.into(),
+        ),
+        f(
+            "tail_std_threshold",
+            tr!("Tail std threshold", "末尾判定の std 閾値", "末尾判定 std 阈值"),
+            tr!("Variation below this counts as silence", "これより小さい揺れを無音とみなす", "小于此值的波动视为静音"),
+            Float,
+            f32_value(d.tail_std_threshold).into(),
+        ),
+        f(
+            "tail_mean_threshold",
+            tr!("Tail mean threshold", "末尾判定の mean 閾値", "末尾判定 mean 阈值"),
+            tr!("A mean below this counts as silence", "これより小さい平均を無音とみなす", "小于此值的均值视为静音"),
+            Float,
+            f32_value(d.tail_mean_threshold).into(),
+        ),
+        f(
+            "watermark",
+            tr!("Watermark (SilentCipher)", "透かし(SilentCipher)", "水印(SilentCipher)"),
+            tr!(
+                "Embeds an inaudible watermark in the generated audio (when available)",
+                "生成音声に聞こえない透かしを入れる(使えるときのみ)",
+                "在生成音频中嵌入听不见的水印(仅在可用时)"
+            ),
+            Bool,
+            d.watermark.into(),
+        ),
     ]
 }
 
@@ -144,22 +258,34 @@ const REF_CACHE_MAX: usize = 8;
 impl IrodoriTts {
     pub fn load(model_id: &str, num_steps: Option<usize>, progress: &dyn Fn(&str)) -> Result<Self> {
         if !MODEL_ALIASES.iter().any(|(alias, _)| *alias == model_id) {
+            let known = MODEL_ALIASES.iter().map(|(a, _)| *a).collect::<Vec<_>>().join(", ");
             bail!(
-                "未対応の TTS モデル: {model_id}(Rust 版 Irodori が扱えるのは MeanFlow の {} のみ)",
-                MODEL_ALIASES.iter().map(|(a, _)| *a).collect::<Vec<_>>().join(", ")
+                "{}",
+                trf!(
+                    "Unsupported TTS model: {model_id} (the Rust Irodori supports only the MeanFlow {known})",
+                    "未対応の TTS モデル: {model_id}(Rust 版 Irodori が扱えるのは MeanFlow の {known} のみ)",
+                    "不支持的 TTS 模型:{model_id}(Rust 版 Irodori 仅支持 MeanFlow 的 {known})"
+                )
             );
         }
-        progress("TTS モデル取得中");
+        progress(tr!("Fetching the TTS model", "TTS モデル取得中", "正在获取 TTS 模型"));
         let paths = irodori::pipeline::TtsPaths::ensure_downloaded(progress)?;
-        progress("TTS モデル構築中(初回は GPU のカーネル準備に時間がかかります)");
+        progress(tr!(
+            "Building the TTS model (the first run takes a while to prepare GPU kernels)",
+            "TTS モデル構築中(初回は GPU のカーネル準備に時間がかかります)",
+            "正在构建 TTS 模型(首次运行需要较长时间准备 GPU 内核)"
+        ));
         let _gpu_load = crate::util::gpu_load_guard(); // 重い GPU ロードは直列化する
         let tts = irodori::pipeline::Tts::load(&paths, &crate::engines::gpu_device()?)?;
-        progress(&format!("ロード完了: {model_id}"));
+        progress(&trf!("Loaded: {model_id}", "ロード完了: {model_id}", "加载完成:{model_id}"));
         Ok(Self { model_id: model_id.to_string(), tts, num_steps, ref_cache: Mutex::new(HashMap::new()) })
     }
 
     fn ref_latent(&self, path: &Path, req: &irodori::pipeline::SamplingRequest, messages: &mut Vec<String>) -> Result<irodori::Tensor<3>> {
-        let meta = std::fs::metadata(path).with_context(|| format!("参照音声を開けません: {}", path.display()))?;
+        let meta = std::fs::metadata(path).with_context(|| {
+            let path = path.display();
+            trf!("Cannot open the reference audio: {path}", "参照音声を開けません: {path}", "无法打开参考音频:{path}")
+        })?;
         let mtime_ns = meta.modified().ok().and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
         let key = RefKey {
             path: path.to_path_buf(),
@@ -185,9 +311,42 @@ impl IrodoriTts {
 /// `tts.sampling` の項目を Irodori の `SamplingRequest` へ反映する。知らない項目はエラーにする。
 pub fn apply_sampling(req: &mut irodori::pipeline::SamplingRequest, sampling: &Map<String, Value>) -> Result<()> {
     check_sampling_overrides(sampling)?;
-    let f64_of = |k: &str, v: &Value| v.as_f64().ok_or_else(|| anyhow!("tts.sampling.{k} は数値で指定してください: {v}"));
-    let usize_of = |k: &str, v: &Value| v.as_u64().map(|x| x as usize).ok_or_else(|| anyhow!("tts.sampling.{k} は正の整数で指定してください: {v}"));
-    let bool_of = |k: &str, v: &Value| v.as_bool().ok_or_else(|| anyhow!("tts.sampling.{k} は true / false で指定してください: {v}"));
+    let f64_of = |k: &str, v: &Value| {
+        v.as_f64().ok_or_else(|| {
+            anyhow!(
+                "{}",
+                trf!(
+                    "tts.sampling.{k} must be a number: {v}",
+                    "tts.sampling.{k} は数値で指定してください: {v}",
+                    "tts.sampling.{k} 必须是数值:{v}"
+                )
+            )
+        })
+    };
+    let usize_of = |k: &str, v: &Value| {
+        v.as_u64().map(|x| x as usize).ok_or_else(|| {
+            anyhow!(
+                "{}",
+                trf!(
+                    "tts.sampling.{k} must be a positive integer: {v}",
+                    "tts.sampling.{k} は正の整数で指定してください: {v}",
+                    "tts.sampling.{k} 必须是正整数:{v}"
+                )
+            )
+        })
+    };
+    let bool_of = |k: &str, v: &Value| {
+        v.as_bool().ok_or_else(|| {
+            anyhow!(
+                "{}",
+                trf!(
+                    "tts.sampling.{k} must be true or false: {v}",
+                    "tts.sampling.{k} は true / false で指定してください: {v}",
+                    "tts.sampling.{k} 必须是 true 或 false:{v}"
+                )
+            )
+        })
+    };
     for (k, v) in sampling {
         match k.as_str() {
             "num_steps" if !v.is_null() => req.num_steps = usize_of(k, v)?,
@@ -204,10 +363,17 @@ pub fn apply_sampling(req: &mut irodori::pipeline::SamplingRequest, sampling: &M
             "tail_mean_threshold" => req.tail_mean_threshold = f64_of(k, v)? as f32,
             "watermark" => req.watermark = bool_of(k, v)?,
             "num_steps" => {}
-            other => bail!(
-                "tts.sampling の項目 {other:?} は Rust 版 Irodori が対応していません(MeanFlow で意味のある項目: {})",
-                sampling_fields().iter().map(|f| f.key).collect::<Vec<_>>().join(", ")
-            ),
+            other => {
+                let keys = sampling_fields().iter().map(|f| f.key).collect::<Vec<_>>().join(", ");
+                bail!(
+                    "{}",
+                    trf!(
+                        "tts.sampling key {other:?} is not supported by the Rust Irodori (keys that matter for MeanFlow: {keys})",
+                        "tts.sampling の項目 {other:?} は Rust 版 Irodori が対応していません(MeanFlow で意味のある項目: {keys})",
+                        "Rust 版 Irodori 不支持 tts.sampling 的项 {other:?}(对 MeanFlow 有意义的项:{keys})"
+                    )
+                )
+            }
         }
     }
     Ok(())

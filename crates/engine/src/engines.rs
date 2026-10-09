@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
+use sttts_i18n::{tr, trf};
 
 use crate::asr::{AsrEngine, Progress, StreamCb};
 use crate::config::{get, get_f64, get_i64, get_str};
@@ -25,7 +26,14 @@ pub fn gpu_device() -> Result<irodori::Device> {
     }
     #[cfg(not(feature = "gpu"))]
     {
-        bail!("GPU 対応なしでビルドされています(sttts-engine の gpu feature)")
+        bail!(
+            "{}",
+            tr!(
+                "Built without GPU support (the gpu feature of sttts-engine)",
+                "GPU 対応なしでビルドされています(sttts-engine の gpu feature)",
+                "构建时未启用 GPU 支持(sttts-engine 的 gpu feature)"
+            )
+        )
     }
 }
 
@@ -47,10 +55,10 @@ impl WhisperAsr {
             final_beam_size: final_beam,
             device: gpu_device()?,
         };
-        progress(&format!("ASRモデル取得中: {repo}"));
+        progress(&trf!("Fetching the ASR model: {repo}", "ASRモデル取得中: {repo}", "正在获取 ASR 模型:{repo}"));
         let _gpu_load = crate::util::gpu_load_guard(); // TTS のロードと同時に GPU を初期化しない
         let whisper = sttts_whisper::Whisper::load(opts, progress)?;
-        progress(&format!("ASR準備完了: {repo}"));
+        progress(&trf!("ASR ready: {repo}", "ASR準備完了: {repo}", "ASR 就绪:{repo}"));
         Ok(Self { whisper, final_beam })
     }
 }
@@ -88,7 +96,7 @@ impl GeminiAsr {
             timeout_s: get_f64(cfg, "asr", "gemini_timeout_s", 20.0),
             endpoint: None,
         };
-        Ok(Self { live: sttts_gemini::GeminiLive::load(opts, progress).context("Gemini の初期化")? })
+        Ok(Self { live: sttts_gemini::GeminiLive::load(opts, progress).context(tr!("initializing Gemini", "Gemini の初期化", "初始化 Gemini"))? })
     }
 }
 

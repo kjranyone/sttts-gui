@@ -7,6 +7,7 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use sttts_i18n::{tr, trf};
 
 use super::help::HelpTopic;
 use super::{GEMINI_KEY_URL, MicTransition, StttsApp, kit, phase_label};
@@ -41,10 +42,10 @@ impl StttsApp {
             .large()
             .icon(if self.mic_running { IconName::Square } else { IconName::Mic })
             .label(match self.mic_transition {
-                MicTransition::Starting => "ライブを準備中…",
-                MicTransition::Stopping => "ライブを停止中…",
-                MicTransition::None if self.mic_running => "ライブを停止",
-                MicTransition::None => "ライブ開始",
+                MicTransition::Starting => tr!("Preparing live…", "ライブを準備中…", "正在准备直播…"),
+                MicTransition::Stopping => tr!("Stopping live…", "ライブを停止中…", "正在停止直播…"),
+                MicTransition::None if self.mic_running => tr!("Stop live", "ライブを停止", "停止直播"),
+                MicTransition::None => tr!("Start live", "ライブ開始", "开始直播"),
             })
             .when(!self.mic_running, |b| b.primary())
             .when(self.mic_running, |b| b.danger())
@@ -88,7 +89,7 @@ impl StttsApp {
             );
 
         kit::section(
-            "ライブ",
+            tr!("Live", "ライブ", "直播"),
             v_flex()
                 .gap_3()
                 .child(button)
@@ -101,7 +102,7 @@ impl StttsApp {
                         .whitespace_nowrap()
                         .text_xs()
                         .text_color(c(theme::TEXT_FAINT))
-                        .child(format!("入力: {input_name}")),
+                        .child(trf!("Input: {input_name}", "入力: {input_name}", "输入:{input_name}")),
                 ),
         )
     }
@@ -111,13 +112,13 @@ impl StttsApp {
         let weak_auto = cx.weak_entity();
         let weak_expr = cx.weak_entity();
         kit::section(
-            "音声キュー",
+            tr!("Audio queue", "音声キュー", "音频队列"),
             v_flex()
                 .gap_3()
                 .child(kit::with_help(
                     Switch::new("auto-play")
                         .checked(self.auto_speak)
-                        .label("自動再生")
+                        .label(tr!("Auto play", "自動再生", "自动播放"))
                         .on_click(move |checked, _, cx| {
                             let _ = weak_auto.update(cx, |this, cx| this.set_auto_speak(*checked, cx));
                         }),
@@ -126,7 +127,7 @@ impl StttsApp {
                 .child(kit::with_help(
                     Switch::new("performance")
                         .checked(self.performance_enabled)
-                        .label("テンポと間を再現")
+                        .label(tr!("Match tempo and pauses", "テンポと間を再現", "还原语速与停顿"))
                         .on_click(move |checked, _, cx| {
                             let _ = weak_expr.update(cx, |this, cx| this.set_performance_enabled(*checked, cx));
                         }),
@@ -142,7 +143,7 @@ impl StttsApp {
             .and_then(|n| self.voice_image(n));
         let has_voice = self.selected_voice_name.is_some();
         kit::section_with_help(
-            "声",
+            tr!("Voice", "声", "声音"),
             self.help_icon(HelpTopic::Voice, cx),
             v_flex()
                 .gap_3()
@@ -165,7 +166,11 @@ impl StttsApp {
                                 .small()
                                 .ghost()
                                 .icon(IconName::Plus)
-                                .tooltip("声を追加(wav / flac / 画像。ドロップも可)")
+                                .tooltip(tr!(
+                                    "Add a voice (wav / flac / image; drag and drop works too)",
+                                    "声を追加(wav / flac / 画像。ドロップも可)",
+                                    "添加声音(wav / flac / 图片,也可拖放)"
+                                ))
                                 .on_click(cx.listener(|this, _, _, cx| this.pick_voice_files(cx))),
                         )
                         .when(has_voice, |d| {
@@ -174,13 +179,13 @@ impl StttsApp {
                                     .small()
                                     .ghost()
                                     .icon(IconName::Delete)
-                                    .tooltip("この声を削除")
+                                    .tooltip(tr!("Delete this voice", "この声を削除", "删除此声音"))
                                     .on_click(cx.listener(|this, _, window, cx| this.delete_selected_voice(window, cx))),
                             )
                         }),
                 )
                 .child(kit::field_with_help(
-                    "話し方",
+                    tr!("Speaking style", "話し方", "说话方式"),
                     self.help_icon(HelpTopic::Style, cx),
                     Input::new(&self.caption_input).small(),
                 ))
@@ -192,7 +197,7 @@ impl StttsApp {
     fn render_seed(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let weak = cx.weak_entity();
         kit::field_with_help(
-            "乱数(seed)",
+            tr!("Random seed", "乱数(seed)", "随机种子(seed)"),
             self.help_icon(HelpTopic::Seed, cx),
             h_flex()
                 .gap_3()
@@ -200,7 +205,7 @@ impl StttsApp {
                 .child(
                     Switch::new("random-seed")
                         .checked(self.random_seed)
-                        .label("ランダム")
+                        .label(tr!("Random", "ランダム", "随机"))
                         .on_click(move |checked, _, cx| {
                             let _ = weak.update(cx, |this, cx| this.set_random_seed(*checked, cx));
                         }),
@@ -218,7 +223,7 @@ impl StttsApp {
             v_flex()
                 .gap_2()
                 .child(kit::field(
-                    "API キー",
+                    tr!("API key", "API キー", "API 密钥"),
                     h_flex()
                         .gap_1()
                         .child(div().flex_1().min_w_0().child(Input::new(&self.gemini_key_input).mask_toggle().small()))
@@ -227,7 +232,7 @@ impl StttsApp {
                                 .small()
                                 .ghost()
                                 .icon(IconName::ExternalLink)
-                                .label("取得")
+                                .label(tr!("Get", "取得", "获取"))
                                 .tooltip("Google AI Studio")
                                 .on_click(cx.listener(|_, _, _, cx| cx.open_url(GEMINI_KEY_URL))),
                         ),
@@ -236,14 +241,18 @@ impl StttsApp {
                     div()
                         .text_xs()
                         .text_color(c(if has_key { theme::LIVE } else { theme::WARN }))
-                        .child(if has_key { "保存済み" } else { "未設定" }),
+                        .child(if has_key {
+                            tr!("Saved", "保存済み", "已保存")
+                        } else {
+                            tr!("Not set", "未設定", "未设置")
+                        }),
                 )
         } else {
             v_flex()
         };
 
         kit::section_with_help(
-            "認識",
+            tr!("Recognition", "認識", "识别"),
             self.help_icon(HelpTopic::Recognition, cx),
             v_flex()
                 .gap_3()

@@ -6,6 +6,7 @@
 //!
 //! 選択の保存は (ドライバ名, 候補ラベル)。ラベルはドライバ内で一意。
 
+use sttts_i18n::tr;
 use sttts_protocol::AudioDeviceInfo;
 
 pub const WASAPI_DRIVER: &str = "WASAPI";
@@ -39,8 +40,8 @@ impl DevicePicker {
 
     fn default_label(&self) -> &'static str {
         match self.dir {
-            Dir::Input => "既定の入力デバイス",
-            Dir::Output => "既定の出力デバイス",
+            Dir::Input => tr!("Default input device", "既定の入力デバイス", "默认输入设备"),
+            Dir::Output => tr!("Default output device", "既定の出力デバイス", "默认输出设备"),
         }
     }
 

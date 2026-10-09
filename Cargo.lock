@@ -9945,6 +9945,7 @@ dependencies = [
  "serde_json",
  "sttts-audio",
  "sttts-gemini",
+ "sttts-i18n",
  "sttts-nemotron",
  "sttts-protocol",
  "sttts-whisper",
@@ -9977,6 +9978,7 @@ dependencies = [
  "serde_json",
  "sttts-audio",
  "sttts-engine",
+ "sttts-i18n",
  "sttts-protocol",
  "windows 0.62.2",
 ]
@@ -9989,6 +9991,10 @@ dependencies = [
  "serde_json",
  "ureq 3.4.2",
 ]
+
+[[package]]
+name = "sttts-i18n"
+version = "0.1.0"
 
 [[package]]
 name = "sttts-nemotron"

@@ -1,30 +1,30 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
-    sttts-gui 開発用起動スクリプト
+    Development launcher for sttts-gui
 
 .DESCRIPTION
-    cargo build → GUI を起動する。Python も uv も要らない(バックエンドは GUI と同じプロセスの Rust)。
-    -Mode を省略した場合は起動モードを対話式で尋ねる。
-    cargo build は毎回実行する(変更クレートのみ再コンパイルされるため、再ビルド漏れが起きない)。
-    モデル(Irodori-TTS / ASR)は初回の起動時に自動でダウンロードされる。
+    Runs cargo build, then launches the GUI. No Python or uv needed (the backend is Rust, in the same process as the GUI).
+    If -Mode is omitted, the launch mode is asked interactively.
+    cargo build runs every time (only changed crates are recompiled, so a stale build can't slip through).
+    Models (Irodori-TTS / ASR) are downloaded automatically on the first launch.
 
 .EXAMPLE
-    .\dev.ps1                       # モードを対話式で選択して起動
-    .\dev.ps1 -Mode real            # 実エンジンモードを直接指定(対話なし)
+    .\dev.ps1                       # choose the mode interactively, then launch
+    .\dev.ps1 -Mode real            # real engine, no prompt
     .\dev.ps1 -DebugBuild -Mode mock
 #>
 [CmdletBinding()]
 param(
-    # mock: モデルDLなし / real: Irodori+ASR を実行(初回はモデルDLあり)。
-    # 省略した場合は対話式で選択を求める(既定は real)。
+    # mock: no model download / real: runs Irodori + ASR (downloads models on first run).
+    # If omitted, you are asked to choose (default: real).
     [ValidateSet('mock', 'real')]
     [string]$Mode,
 
-    # デバッグプロファイル (target/debug) を使う(既定は release)
+    # Use the debug profile (target/debug) instead of release
     [switch]$DebugBuild,
 
-    # GUI 実行ファイルへの追加引数(そのまま透過)
+    # Extra arguments passed through to the GUI executable
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$AppArgs
 )
@@ -40,13 +40,13 @@ function Step([string]$Message) {
     Write-Host "[dev.ps1] $Message" -ForegroundColor Cyan
 }
 function Select-Mode {
-    # 起動モードを対話式に選択させる(空欄で real)
+    # Ask for the launch mode (empty = real)
     Write-Host ""
-    Write-Host "起動モードを選択してください:" -ForegroundColor Cyan
-    Write-Host "  [1] real : 実エンジンで起動(Irodori + ASR / 初回はモデル自動DL・既定)"
-    Write-Host "  [2] mock : モデルDLなしで起動(UI/配線の確認用)"
+    Write-Host "Choose a launch mode:" -ForegroundColor Cyan
+    Write-Host "  [1] real : real engine (Irodori + ASR; models download on first run; default)"
+    Write-Host "  [2] mock : no model download (for checking the UI and wiring)"
     while ($true) {
-        $choice = Read-Host "選択 [1/2] (空欄=1)"
+        $choice = Read-Host "Choice [1/2] (empty = 1)"
         switch ($choice.Trim().ToLower()) {
             ''     { return 'real' }
             '1'    { return 'real' }
@@ -54,34 +54,34 @@ function Select-Mode {
             '2'    { return 'mock' }
             'mock' { return 'mock' }
             default {
-                Write-Host "  'real' または 'mock'(1/2)を入力してください" -ForegroundColor Yellow
+                Write-Host "  Enter 'real' or 'mock' (1/2)" -ForegroundColor Yellow
             }
         }
     }
 }
 
-# --- 0) 前提コマンド
+# --- 0) Prerequisites
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-    Fail 'cargo が見つかりません。Rust(rustup) をインストールしてください。'
+    Fail 'cargo not found. Please install Rust (rustup).'
 }
 
-# --- 0.5) モード選択(未指定なら対話式)
+# --- 0.5) Mode (ask if not given)
 if (-not $PSBoundParameters.ContainsKey('Mode')) {
     $Mode = Select-Mode
 }
 
-# --- 1) ビルド(毎回実行。cargo の差分ビルドにより、変更がなければ数秒で終わる)
+# --- 1) Build (every time; cargo's incremental build finishes in seconds when nothing changed)
 $Config = if ($DebugBuild) { 'debug' } else { 'release' }
 $Exe = Join-Path $Root "target\$Config\sttts-gui.exe"
-Step "cargo build ($Config) を実行します(初回のみ数分・以降は差分ビルド)"
+Step "Running cargo build ($Config) (a few minutes the first time, incremental afterwards)"
 Push-Location $Root
 try {
     if ($DebugBuild) { cargo build } else { cargo build --release }
-    if ($LASTEXITCODE -ne 0) { Fail 'cargo build に失敗しました' }
+    if ($LASTEXITCODE -ne 0) { Fail 'cargo build failed' }
 }
 finally { Pop-Location }
 
-# --- 2) 起動
-Step "sttts-gui を起動します (mode=$Mode, build=$Config)"
+# --- 2) Launch
+Step "Launching sttts-gui (mode=$Mode, build=$Config)"
 & $Exe "--$Mode" @AppArgs
 exit $LASTEXITCODE

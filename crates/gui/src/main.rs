@@ -8,6 +8,7 @@ mod app;
 mod audio;
 mod backend;
 mod device_picker;
+mod locale;
 mod secret;
 mod settings;
 mod sysmon;
@@ -20,17 +21,20 @@ use gpui_kit::*;
 fn main() {
     // --mock / --real で明示。無指定なら設定ファイルの mock を踏襲(初回は実エンジン)。
     let args: Vec<String> = std::env::args().collect();
+    let saved = settings::AppSettings::load(&backend::repo_root());
+    let lang = locale::initial(saved.language.as_deref());
     let mock = if args.iter().any(|a| a == "--mock") {
         true
     } else if args.iter().any(|a| a == "--real") {
         false
     } else {
-        settings::AppSettings::load(&backend::repo_root()).mock.unwrap_or(false)
+        saved.mock.unwrap_or(false)
     };
 
     // コンポーネントのアイコン(タイトルバーのウィンドウ操作ボタン等)は SVG アセットとして同梱する
     gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx: &mut App| {
         gpui_kit::init(cx);
+        locale::apply(lang);
         theme::install(cx);
         let bounds = Bounds::centered(None, size(px(1240.), px(800.)), cx);
         gpui_kit::open_window(
@@ -43,7 +47,7 @@ fn main() {
             cx,
             |window, cx| cx.new(|cx| app::StttsApp::new(mock, window, cx)),
         )
-        .expect("ウィンドウ生成に失敗");
+        .expect("failed to open the window");
         cx.activate(true);
     });
 }
