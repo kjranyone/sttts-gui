@@ -27,6 +27,13 @@ const DEFAULT_INPUT_LABEL: &str = "既定の入力デバイス";
 const DEFAULT_OUTPUT_LABEL: &str = "既定のデバイス";
 const DEFAULT_VOICE_LABEL: &str = "既定の声(自動)";
 
+/// ASR プロバイダ選択(表示名, asr.engine 値)。ローカルとクラウドを選べる。
+const ASR_PROVIDERS: &[(&str, &str)] = &[
+    ("ローカル(Nemotron)", "nemotron"),
+    ("クラウド(Gemini)", "gemini"),
+    ("ローカル(kotoba)", "kotoba"),
+];
+
 /// マイク開始/停止の遷移中状態(楽観的UI)。連打によるデバイスの短時間反復 open/close を防ぐ。
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum MicTransition {
@@ -78,6 +85,9 @@ pub struct StttsApp {
     output_select: Entity<SelectState<Vec<String>>>,
     /// 声バンク(data/voices の wav ファイル)
     voice_select: Entity<SelectState<Vec<String>>>,
+    /// ASR プロバイダ選択(ローカル/クラウド)
+    asr_select: Entity<SelectState<Vec<String>>>,
+    selected_asr_engine: String,
     voices: Vec<(String, PathBuf)>,
     selected_voice_name: Option<String>,
     input_devices: Vec<AudioDeviceInfo>,
@@ -173,6 +183,15 @@ impl StttsApp {
             .map(|p| IndexPath::new(p + 1));
         let voice_select = cx.new(|cx| SelectState::new(voice_items, voice_sel_ix, window, cx));
 
+        // --- ASR プロバイダ選択(ローカル/クラウド)
+        let asr_items: Vec<String> = ASR_PROVIDERS.iter().map(|(l, _)| l.to_string()).collect();
+        let saved_asr = saved.asr_provider.clone().unwrap_or_else(|| "nemotron".into());
+        let asr_sel_ix = ASR_PROVIDERS
+            .iter()
+            .position(|(_, e)| *e == saved_asr)
+            .map(IndexPath::new);
+        let asr_select = cx.new(|cx| SelectState::new(asr_items, asr_sel_ix, window, cx));
+
         let audio = match crate::audio::AudioOut::open(saved_output_device.as_deref())
             .or_else(|_| crate::audio::AudioOut::open(None))
         {
@@ -208,6 +227,8 @@ impl StttsApp {
             input_select,
             output_select,
             voice_select,
+            asr_select,
+            selected_asr_engine: saved_asr,
             voices,
             selected_voice_name: saved_voice.clone(),
             input_devices: Vec::new(),
@@ -282,6 +303,18 @@ impl StttsApp {
                 }
             },
         ));
+        let weak_asr = cx.weak_entity();
+        app.subscriptions.push(window.subscribe(
+            &app.asr_select,
+            cx,
+            move |_, event, _window, cx| {
+                if let (Some(app), SelectEvent::Confirm(Some(name))) =
+                    (weak_asr.upgrade(), event)
+                {
+                    app.update(cx, |app, cx| app.apply_asr_provider(name.clone(), cx));
+                }
+            },
+        ));
 
         // 初期設定を backend へ反映
         app.send(GuiMessage::Configure {
@@ -289,7 +322,10 @@ impl StttsApp {
                 model: Some(app.selected_model_id.clone()),
                 ..Default::default()
             }),
-            asr: None,
+            asr: Some(sttts_protocol::AsrConfig {
+                engine: Some(app.selected_asr_engine.clone()),
+                ..Default::default()
+            }),
             audio: None,
             voice: Some(app.selected_voice_config()),
             pipeline: Some(PipelineConfig {
@@ -384,6 +420,32 @@ impl StttsApp {
         }
     }
 
+    /// ASR プロバイダの選択適用(ローカル/クラウド)。切替後にセッションが
+    /// 動いていれば、次回「マイク開始」から新エンジンで動く(preload も組み直される)。
+    fn apply_asr_provider(&mut self, label: String, cx: &mut Context<Self>) {
+        let Some((_, engine)) = ASR_PROVIDERS.iter().find(|(l, _)| *l == label) else {
+            return;
+        };
+        self.selected_asr_engine = engine.to_string();
+        self.send(GuiMessage::Configure {
+            tts: None,
+            asr: Some(sttts_protocol::AsrConfig {
+                engine: Some(engine.to_string()),
+                ..Default::default()
+            }),
+            audio: None,
+            voice: None,
+            pipeline: None,
+        });
+        let cloud = *engine == "gemini";
+        self.push_log(if cloud {
+            "認識をクラウド(Gemini Live API)に切替しました(発話ごとにクラウドへ送信されます)".into()
+        } else {
+            format!("認識をローカル({engine})に切替しました")
+        });
+        self.persist_settings(cx);
+    }
+
     /// 声バンクの選択適用。参照音声が変わるとウォームアップもやり直される。
     fn apply_voice(&mut self, name: String) {
         self.selected_voice_name = (name != DEFAULT_VOICE_LABEL).then_some(name);
@@ -441,6 +503,7 @@ impl StttsApp {
             input_device: self.selected_input_name.clone(),
             output_device: self.selected_output_name.clone(),
             voice: self.selected_voice_name.clone(),
+            asr_provider: Some(self.selected_asr_engine.clone()),
         };
         saved.save(&self.root);
     }
@@ -1239,6 +1302,26 @@ impl Render for StttsApp {
                                                         div().flex_1().child(
                                                             Select::new(&self.output_select)
                                                                 .placeholder(DEFAULT_OUTPUT_LABEL)
+                                                                .text_sm(),
+                                                        ),
+                                                    ),
+                                            )
+                                            .child(
+                                                // ASR プロバイダ(ローカル/クラウド)
+                                                h_flex()
+                                                    .gap_2()
+                                                    .items_center()
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(rgb(0x8d86ad))
+                                                            .w(px(28.))
+                                                            .child("認識"),
+                                                    )
+                                                    .child(
+                                                        div().flex_1().child(
+                                                            Select::new(&self.asr_select)
+                                                                .placeholder("ローカル(Nemotron)")
                                                                 .text_sm(),
                                                         ),
                                                     ),

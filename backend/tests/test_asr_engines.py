@@ -130,3 +130,79 @@ def test_nemotron_real_model_transcribes():
     asr.load()
     # 1秒の無音は空文字、短い定常音でもクラッシュしない
     assert isinstance(asr.transcribe_utterance(np.zeros(16000, dtype=np.float32)), str)
+
+
+def test_create_gemini_engine_without_loading():
+    from sttts_server.engines.asr_gemini import DEFAULT_MODEL, GeminiLiveAsr
+
+    cfg = dict(default_config()["asr"], engine="gemini")
+    asr = create_asr(cfg)
+    assert isinstance(asr, GeminiLiveAsr)
+    assert asr.model_id == DEFAULT_MODEL
+    assert asr.mode == "SMART"
+    assert asr.language == "ja-JP"  # "ja" は BCP-47 へ正規化
+    assert asr.engine_name == "gemini"
+
+
+def test_gemini_language_normalization():
+    from sttts_server.engines.asr_gemini import GeminiLiveAsr
+
+    assert GeminiLiveAsr(language="ja").language == "ja-JP"
+    assert GeminiLiveAsr(language="ja-JP").language == "ja-JP"
+    assert GeminiLiveAsr(language="en").language == "en"  # ja 以外はそのまま
+    assert GeminiLiveAsr(mode="verbatim").mode == "VERBATIM"
+    assert GeminiLiveAsr(mode="smart").mode == "SMART"
+
+
+def test_gemini_api_key_resolution(monkeypatch):
+    from sttts_server.engines.asr_gemini import resolve_api_key
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    assert resolve_api_key(None) is None
+    assert resolve_api_key("cfg-key") == "cfg-key"
+    monkeypatch.setenv("GEMINI_API_KEY", "env-key")
+    assert resolve_api_key(None) == "env-key"
+    assert resolve_api_key("cfg-key") == "cfg-key"  # config が優先
+
+
+def test_gemini_missing_key_raises_at_load(mock_app, monkeypatch):
+    asr = create_asr({"engine": "gemini"})
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="API キー"):
+        asr.load()
+
+
+def test_gemini_loads_with_sdk_and_key():
+    """venv に google-genai がある環境ではキー付き load が成功する(SDK 欠落時の
+    メッセージは実行時パスのためここではカバーしない)。"""
+    pytest.importorskip("google.genai")
+    from sttts_server.engines.asr_gemini import GeminiLiveAsr
+
+    asr = GeminiLiveAsr(api_key="dummy-key-for-init")
+    asr.load()
+    assert asr._client is not None
+
+
+@pytest.mark.skipif(
+    not os.environ.get("STTTS_GEMINI_API_KEY"), reason="STTTS_GEMINI_API_KEY 未設定(実API)"
+)
+def test_gemini_real_api_transcribes():
+    pytest.importorskip("google.genai")
+    import soundfile as sf
+
+    wav = Path(__file__).parents[2] / "data" / "gemini_test.wav"
+    if not wav.is_file():
+        pytest.skip("data/gemini_test.wav がありません")
+    audio, sr = sf.read(wav, dtype="float32")
+    assert sr == 16000
+    asr = create_asr(
+        {
+            "engine": "gemini",
+            "gemini_api_key": os.environ["STTTS_GEMINI_API_KEY"],
+        }
+    )
+    asr.load()
+    text = asr.transcribe_utterance(audio)
+    assert isinstance(text, str) and len(text) > 0

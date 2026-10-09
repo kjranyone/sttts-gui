@@ -26,6 +26,9 @@ pub struct AppSettings {
     /// 選択中の声バンク名(data/voices のファイル名。None = 既定の声)
     #[serde(default)]
     pub voice: Option<String>,
+    /// ASR プロバイダ(asr.engine 値。None = nemotron)
+    #[serde(default)]
+    pub asr_provider: Option<String>,
 }
 
 pub fn config_path(root: &Path) -> PathBuf {

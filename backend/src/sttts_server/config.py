@@ -57,6 +57,11 @@ DEFAULTS: dict[str, Any] = {
         "nemotron_chunk_ms": 320,  # 320(HFパッケージ既定)。他は自前exportが必要
         "nemotron_precision": "fp16",  # int8 は dynamic quantum で精度劣化するため非推奨
         "nemotron_threads": 4,  # onnxruntime の intra_op スレッド数
+        # Gemini Live API(asr.engine = "gemini")用。APIキーは環境変数 GEMINI_API_KEY でも可
+        "gemini_model": "gemini-3.5-transcribe-live",
+        "gemini_api_key": None,  # AI Studio のキー。null なら GEMINI_API_KEY/GOOGLE_API_KEY 環境変数
+        "gemini_mode": "SMART",  # SMART=フィラー除去・句読点整形 / VERBATIM=逐語
+        "gemini_timeout_s": 20.0,
     },
     "audio": {
         "input_device_index": None,

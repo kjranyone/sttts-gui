@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-ENGINES = ("kotoba", "reazonspeech", "nemotron", "mock")
+ENGINES = ("kotoba", "reazonspeech", "nemotron", "gemini", "mock")
 
 
 def create_asr(cfg: dict[str, Any]):
@@ -44,6 +44,16 @@ def create_asr(cfg: dict[str, Any]):
             precision=cfg.get("nemotron_precision") or "fp16",
             language=cfg.get("language") or "ja",
             num_threads=int(cfg.get("nemotron_threads") or 0),
+        )
+    if engine in ("gemini", "gemini_live"):
+        from .asr_gemini import GeminiLiveAsr  # noqa: PLC0415
+
+        return GeminiLiveAsr(
+            model_id=cfg.get("gemini_model") or "",
+            api_key=cfg.get("gemini_api_key"),
+            language=cfg.get("language") or "ja",
+            mode=cfg.get("gemini_mode") or "SMART",
+            timeout_s=float(cfg.get("gemini_timeout_s") or 20.0),
         )
     if engine == "mock":
         from .mock import MockAsr  # noqa: PLC0415

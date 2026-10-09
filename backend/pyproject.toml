@@ -51,6 +51,11 @@ reazonspeech = [
 nemotron = [
     "onnxruntime>=1.20",
 ]
+# 任意: Gemini Live API (クラウド ASR)。asr.engine = "gemini" で使う。
+# API キーは data/backend.json の asr.gemini_api_key か環境変数 GEMINI_API_KEY。
+gemini = [
+    "google-genai>=1.16",
+]
 
 [tool.uv]
 # sentencepiece 0.1.x(irodori-tts のピン "<0.2")は cp312 Windows wheel が存在せず、
