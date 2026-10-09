@@ -358,7 +358,6 @@ impl HostLog {
 }
 
 impl SessionHost for HostLog {
-    fn set_asr_loading(&self, _m: &str) {}
     fn on_asr_model_ready(&self, m: &str) {
         self.events.lock().unwrap().push(("ready".into(), m.into()));
     }

@@ -793,8 +793,10 @@ impl Inner {
             st.next_id += 1;
             let id = st.next_id;
             let seed = u64::from(rand::rng().random::<u32>() >> 1);
-            st.entries.clear();
-            st.by_utterance.clear();
+            // 確定に束縛済みのエントリは、完了時に音声を送るために残す
+            st.entries.retain(|_, e| e.request.is_some());
+            let live: std::collections::HashSet<u64> = st.entries.keys().copied().collect();
+            st.by_utterance.retain(|_, id| live.contains(id));
             st.entries.insert(
                 id,
                 SpecEntry { text: candidate.clone(), seed, voice_key: key, status: SpecStatus::Queued, request: None, result: None },
@@ -848,13 +850,15 @@ impl Inner {
         Some((seed, text, ready))
     }
 
+    /// 未束縛の投機結果を破棄する(確定に束縛済みのものは、そのリクエストが完了できるよう残す)
     fn discard_specs(&self) {
         let mut st = lock(&self.spec);
-        for e in st.entries.values_mut() {
+        for e in st.entries.values_mut().filter(|e| e.request.is_none()) {
             e.status = SpecStatus::Discarded;
         }
-        st.entries.clear();
-        st.by_utterance.clear();
+        st.entries.retain(|_, e| e.request.is_some());
+        let live: std::collections::HashSet<u64> = st.entries.keys().copied().collect();
+        st.by_utterance.retain(|_, id| live.contains(id));
         st.track.clear();
     }
 
@@ -976,6 +980,13 @@ impl Inner {
 
     /// 呼び出しは TTS ワーカースレッドからのみ。必要ならモデルをロードして返す。
     fn ensure_engine(&self) -> Result<Arc<dyn TtsEngine>> {
+        {
+            // デバイス喪失後は、死んだデバイスへ再ロードを試みない(アプリの再起動が要る)
+            let st = lock(&self.state);
+            if st.tts_phase == ERROR && st.tts_fatal {
+                anyhow::bail!("{}", st.tts_detail.clone().unwrap_or_else(|| "音声合成デバイスが停止しています".into()));
+            }
+        }
         let cfg = self.cfg();
         let model = get(&cfg, "tts", "model").as_str().unwrap_or("v4.1-small-mf").to_string();
         {
@@ -1036,7 +1047,12 @@ impl Inner {
             }
         }
         let result = match self.synthesize(job) {
-            Ok(r) => Some(r),
+            Ok(mut r) => {
+                for m in std::mem::take(&mut r.messages) {
+                    self.sink.warn(m);
+                }
+                Some(r)
+            }
             Err(e) => {
                 self.sink.warn(format!("speculative synthesis failed: {e:#}"));
                 None
@@ -1094,7 +1110,10 @@ impl Inner {
         }
         let queue_wait_ms = job.enqueued.map(|t| t.elapsed().as_millis() as u64);
         match self.synthesize(job) {
-            Ok(result) => {
+            Ok(mut result) => {
+                for m in std::mem::take(&mut result.messages) {
+                    self.sink.warn(m);
+                }
                 self.emit_chunk(job.request, job.chunk, &job.text, result, false, queue_wait_ms);
                 self.mark_chunk_done(job.request, false);
             }
@@ -1210,12 +1229,15 @@ impl Inner {
                     } else {
                         let me2 = Arc::clone(&me);
                         Some(Box::new(move || {
-                            // 投入済み音声の ASR がすべて終わってから通知する(ベンチの終了判定用)
-                            let s = lock(&me2.session).clone();
-                            if let Some(s) = s {
-                                s.wait_asr_idle(Duration::from_secs(120));
-                            }
-                            me2.sink.info("input_eof");
+                            // 投入済み音声の ASR がすべて終わってから通知する(ベンチの終了判定用)。
+                            // WAV ソースのスレッドを塞ぐと stop() が待たされるので、別スレッドで待つ
+                            let _ = std::thread::Builder::new().name("input-eof".into()).spawn(move || {
+                                let s = lock(&me2.session).clone();
+                                if let Some(s) = s {
+                                    s.wait_asr_idle(Duration::from_secs(120));
+                                }
+                                me2.sink.info("input_eof");
+                            });
                         }))
                     };
                     me.platform.open_source(&cfg, &wavs, on_block, on_eof)
@@ -1408,10 +1430,6 @@ impl SpeakParams {
 // ---------------------------------------------------------------- セッション → アプリ
 
 impl SessionHost for Inner {
-    fn set_asr_loading(&self, message: &str) {
-        self.set_asr(LOADING, Some(message.to_string()), None);
-    }
-
     fn on_asr_model_ready(&self, model_id: &str) {
         self.set_asr(READY, None, Some(model_id.to_string()));
     }
@@ -1419,6 +1437,25 @@ impl SessionHost for Inner {
     fn on_asr_error(&self, message: &str) {
         self.set_asr(ERROR, Some(message.to_string()), None);
         self.sink.error("asr", message, true);
+    }
+
+    fn on_session_ended(&self) {
+        // マイクが開けない・VAD が初期化できない等でセッションが終わったとき、ライブ中のまま残さない
+        if lock(&self.session).take().is_none() {
+            return;
+        }
+        *lock(&self.last_session_stop) = Some(Instant::now());
+        let loaded = {
+            let mut st = lock(&self.state);
+            st.mic_running = false;
+            st.asr_loaded_model.is_some()
+        };
+        self.cancel_performance();
+        if lock(&self.state).asr_phase != ERROR {
+            self.set_asr(if loaded { READY } else { IDLE }, None, None);
+        } else {
+            self.send_state();
+        }
     }
 
     fn on_mic_level(&self, rms: f32, db: f32) {

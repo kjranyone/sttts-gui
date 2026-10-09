@@ -46,6 +46,9 @@ impl TtsPaths {
             progress,
         );
         // 透かしが取れなくても合成は動く(未取得の警告つき)。取れたときだけ使う
+        if let Err(e) = &wm {
+            progress(&format!("警告: 透かし(SilentCipher)を取得できませんでした。透かしなしで合成します: {e:#}"));
+        }
         let watermark_dir = wm.ok().map(|d| d.join("44_1_khz/73999_iteration"));
         Ok(Self { model_dir, codec_weights: codec_dir.join("weights.pth"), watermark_dir })
     }

@@ -90,9 +90,10 @@ pub struct Timing {
 
 /// セッションからアプリへの通知
 pub trait SessionHost: Send + Sync {
-    fn set_asr_loading(&self, message: &str);
     fn on_asr_model_ready(&self, model_id: &str);
     fn on_asr_error(&self, message: &str);
+    /// セッションスレッドが(停止要求なしに)終わった。ライブ中の表示を戻す
+    fn on_session_ended(&self) {}
     fn on_mic_level(&self, rms: f32, db: f32);
     fn on_utterance_audio(&self, _utterance: u64, _audio: &[f32]) {}
     fn on_asr_partial(&self, utterance: u64, text: &str, asr_ms: Option<u64>);
@@ -603,6 +604,14 @@ impl LiveSession {
 }
 
 fn run_session(p: SessionParts) {
+    let (host, stop) = (Arc::clone(&p.host), Arc::clone(&p.stop));
+    run_session_inner(p);
+    if !stop.load(Ordering::SeqCst) {
+        host.on_session_ended();
+    }
+}
+
+fn run_session_inner(p: SessionParts) {
     let SessionParts { host, cfg, asr, source_factory, vad_factory, audio_tx: tx, audio_rx, queued, stop, source, worker, asr_slot } = p;
 
     // マイクを最優先で開く。ASR ロード完了を待つと初回(モデル取得に数十秒〜)の間
@@ -614,16 +623,21 @@ fn run_session(p: SessionParts) {
             queued_in.fetch_add(1, Ordering::SeqCst);
             let _ = tx.send(Some((now(), b)));
         });
-        let opened = source_factory(on_block).and_then(|mut s| {
-            // 開始中に stop() が来ても取りこぼさないよう、先に登録してから start する
-            s.start()?;
-            Ok(s)
-        });
-        match opened {
+        match source_factory(on_block) {
             Ok(s) => {
-                *lock(&source) = Some(s);
+                // 開始中に stop() が来ても取りこぼさないよう、先に登録してから start する。
+                // start の間ロックを持つので、並行する stop() は開始の完了を待ってから必ず閉じる
+                let mut slot = lock(&source);
+                *slot = Some(s);
+                let started = slot.as_mut().map_or(Ok(()), |s| s.start());
+                if let Err(e) = started {
+                    *slot = None;
+                    drop(slot);
+                    host.on_asr_error(&format!("マイクを開けませんでした: {e:#}"));
+                    return;
+                }
                 if stop.load(Ordering::SeqCst) {
-                    if let Some(s) = lock(&source).as_mut() {
+                    if let Some(s) = slot.as_mut() {
                         s.stop();
                     }
                     return;

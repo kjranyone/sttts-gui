@@ -48,6 +48,7 @@ impl WhisperAsr {
             device: gpu_device()?,
         };
         progress(&format!("ASRモデル取得中: {repo}"));
+        let _gpu_load = crate::util::gpu_load_guard(); // TTS のロードと同時に GPU を初期化しない
         let whisper = sttts_whisper::Whisper::load(opts, progress)?;
         progress(&format!("ASR準備完了: {repo}"));
         Ok(Self { whisper, final_beam })

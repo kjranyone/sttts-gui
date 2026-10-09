@@ -39,6 +39,8 @@ pub struct TtsOutput {
     pub used_seed: Option<i64>,
     /// 段階別時間(ms)
     pub stages: Option<BTreeMap<String, f64>>,
+    /// Irodori からの通知(透かしが使えない、参照音声をトリムした 等)。GUI のログへ流す
+    pub messages: Vec<String>,
 }
 
 pub trait TtsEngine: Send + Sync {
@@ -97,7 +99,8 @@ impl IrodoriTts {
         progress("TTS モデル取得中");
         let paths = irodori::pipeline::TtsPaths::ensure_downloaded(progress)?;
         progress("TTS モデル構築中(初回は GPU のカーネル準備に時間がかかります)");
-        let tts = irodori::pipeline::Tts::load(&paths, &irodori_device()?)?;
+        let _gpu_load = crate::util::gpu_load_guard(); // 重い GPU ロードは直列化する
+        let tts = irodori::pipeline::Tts::load(&paths, &crate::engines::gpu_device()?)?;
         progress(&format!("ロード完了: {model_id}"));
         Ok(Self { model_id: model_id.to_string(), tts, num_steps, ref_cache: Mutex::new(HashMap::new()) })
     }
@@ -123,18 +126,6 @@ impl IrodoriTts {
         }
         cache.insert(key, latent.clone());
         Ok(latent)
-    }
-}
-
-/// 本番は GPU(wgpu)。CPU 推論は実装しない。
-fn irodori_device() -> Result<irodori::Device> {
-    #[cfg(feature = "gpu")]
-    {
-        irodori::try_gpu_device()
-    }
-    #[cfg(not(feature = "gpu"))]
-    {
-        bail!("GPU 対応なしでビルドされています(sttts-engine の gpu feature)")
     }
 }
 
@@ -210,7 +201,8 @@ impl TtsEngine for IrodoriTts {
         }
         let wav = wav_bytes(&out.audio, out.sample_rate)?;
         let duration_ms = (out.audio.len() as f64 / f64::from(out.sample_rate) * 1000.0) as u64;
-        Ok(TtsOutput { wav, sample_rate: out.sample_rate, duration_ms, gen_ms, used_seed: Some(out.used_seed as i64), stages: Some(stages) })
+        messages.extend(out.messages);
+        Ok(TtsOutput { wav, sample_rate: out.sample_rate, duration_ms, gen_ms, used_seed: Some(out.used_seed as i64), stages: Some(stages), messages })
     }
 }
 
@@ -290,6 +282,7 @@ impl TtsEngine for MockTts {
             gen_ms: t0.elapsed().as_millis() as u64,
             used_seed: Some(req.seed.unwrap_or(0) as i64),
             stages: None,
+            messages: Vec::new(),
         })
     }
 }

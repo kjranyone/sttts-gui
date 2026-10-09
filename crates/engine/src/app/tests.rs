@@ -762,3 +762,38 @@ fn full_backend_roundtrip_through_dispatcher() {
     assert!(!rec.of_type("tts_audio").is_empty());
     backend.shutdown();
 }
+
+#[test]
+fn bound_speculation_survives_discard_and_still_completes() {
+    let (h, eng) = spec_harness();
+    eng.close_gate();
+    partial(&h, 1, PARTIAL);
+    partial(&h, 1, PARTIAL);
+    assert!(eng.wait_started()); // 投機合成の最中に確定(束縛)
+    final_(&h, 1, FINAL);
+    // 次の発話の確定が空でも(discard_specs が走っても)、束縛済みのリクエストは完了できる
+    final_(&h, 2, "");
+    eng.open_gate();
+    assert!(wait3(|| h.done().len() == 1), "束縛済みの投機チャンクが失われた");
+    assert_eq!(audio_pairs(&h), [(0, true), (1, false)]);
+}
+
+#[test]
+fn device_fatal_state_is_not_reloaded() {
+    let h = Harness::new(true);
+    *lock(&h.app.engine) = Some(Arc::new(FailTts("Parent device is lost")));
+    {
+        let mut st = lock(&h.app.state);
+        st.tts_phase = READY.into();
+        st.tts_loaded_model = Some("v4.1-small-mf".into());
+    }
+    h.speak("一つ目。二つ目です。三つ目です。");
+    for job in h.drain_jobs() {
+        h.app.run_job(&job);
+    }
+    // 致命状態のままで、エンジンを作り直さず(LOADING に戻らず)、以降のチャンクも失敗として閉じる
+    let st = lock(&h.app.state);
+    assert!(st.tts_phase == ERROR && st.tts_fatal);
+    drop(st);
+    assert!(h.rec.of_type("state").iter().all(|s| s["tts"]["phase"] != "loading"));
+}

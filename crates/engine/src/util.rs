@@ -32,3 +32,10 @@ pub fn join_timeout(h: JoinHandle<()>, timeout: Duration) -> bool {
     let _ = h.join();
     true
 }
+
+/// 重い GPU ロード(モデルの転送・カーネルのコンパイル)を直列化するガード。
+/// TTS のウォームアップと kotoba のプリロードが同じ GPU を同時に初期化しないようにする。
+pub fn gpu_load_guard() -> MutexGuard<'static, ()> {
+    static GPU_LOAD: Mutex<()> = Mutex::new(());
+    lock(&GPU_LOAD)
+}

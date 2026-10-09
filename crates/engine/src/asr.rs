@@ -45,9 +45,6 @@ pub trait AsrEngine: Send + Sync {
     fn abort_all_streams(&self) {}
 }
 
-/// 設定から ASR エンジンを作ってロードする関数(ロードは時間がかかるのでワーカースレッドから呼ぶ)。
-pub type AsrFactory = Arc<dyn Fn(&Value, Progress) -> Result<Arc<dyn AsrEngine>> + Send + Sync>;
-
 /// 固定テキストを返す ASR(ベンチ・テスト用、`asr.engine = "mock"`)。`latency_ms` で推論時間を模倣する。
 ///
 /// 確定ごとに `texts` を順に返す。partial は次に確定するテキストの先頭を音声長に比例して返す(1秒あたり約6文字)。
