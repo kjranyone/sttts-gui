@@ -26,12 +26,13 @@ UI からマイク・VAD・ASR・TTS まで、**Rust 1 プロセスだけ**で�
 - 🦀 **ピュア Rust 推論** — Irodori-TTS と kotoba-whisper を [burn](https://burn.dev) で再実装し、PyTorch と数値一致を確認済み。Intel Arc B570 で RTF ≈ 0.3
 - 🎭 **声のバンク** — 10 秒ほどの参照音声をドラッグ&ドロップすると、その声で話します。テンポや間など、元の話し方の表現も Irodori に渡します
 - 🔀 **ASR を選べる** — Nemotron 3.5(句読点付き・ローカル)/ kotoba-whisper(ローカル GPU)/ Gemini Live(クラウド)
+- 🎚️ **ASIO 対応** — ⚙ 詳細設定でドライバ(WASAPI / 各 ASIO ドライバ)を選び、WASAPI ならデバイス、ASIO なら使うチャンネル(入力は 1ch ずつか 2ch の組、出力は 2ch の組か 1ch)を選べます
 - 📦 **モデルは自動で取得** — 初回起動時に HuggingFace から必要なものだけを取得します。手動の準備はいりません
 - ⏱️ **遅延を常に表示** — 話し終わりから最初の音が鳴るまで(発話終了→初音)を、毎回タイトルバーに表示します
 
 ## クイックスタート
 
-**必要なもの**: Windows 11 / Vulkan 対応 GPU(Intel Arc・NVIDIA・AMD。Intel Arc B570 で検証)/ Rust 1.95 以上 + MSVC ビルドツール
+**必要なもの**: Windows 11 / Vulkan 対応 GPU(Intel Arc・NVIDIA・AMD。Intel Arc B570 で検証)/ Rust 1.95 以上 + MSVC ビルドツール + [LLVM](https://github.com/llvm/llvm-project/releases)(ASIO バインディング生成の libclang 用。ASIO SDK はビルド時に自動取得)
 
 ```powershell
 git clone https://github.com/kjranyone/sttts-gui.git
@@ -147,6 +148,8 @@ cargo test --workspace --release    # 全クレート(参照データが無い�
 | 合成音声を拾ってループする | ヘッドホンを使う |
 | 最初の発話まで時間がかかる | 初回はモデルのダウンロードと GPU カーネルの準備があります。2 回目からは起動直後にバックグラウンドでロードが始まります |
 | マイクを開けない | 他のアプリによる排他占有を解除する。入力デバイスは ⚙ 詳細設定で選べます |
+| ASIO デバイスを開けない | ASIO は同時に 1 ドライバのみ。入力と出力で別の ASIO ドライバは選べません(同じドライバ同士、または片方を WASAPI に)。DAW など他のアプリが掴んでいないかも確認。レート・バッファはドライバのコントロールパネルの設定に従います |
+| ビルドで `asiodrivers.h` が無い | `%TEMP%sio_sdk` が中身の消えた状態で残っています。フォルダを消して再ビルドすると SDK を取り直します |
 | 認識が遅い | Gemini を選ぶか、ローカルなら `asr.engine: "nemotron"` |
 
 ログは GUI 下段と `data/gui.log`(起動ごとに作り直し)に出ます。設定キーの一覧は [docs/configuration.md](docs/configuration.md) にあります。

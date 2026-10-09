@@ -110,6 +110,40 @@ fn pipeline_blocks_and_downmix() {
     );
 }
 
+/// ASIO の「入力 3 だけ」: 4ch のうち 3ch 目(位置 2)だけがモノラルになり、他は混ざらない
+#[test]
+fn pipeline_picks_selected_channel() {
+    let got: Arc<Mutex<Vec<Vec<f32>>>> = Arc::default();
+    let g = got.clone();
+    let mut p = BlockPipeline::with_pick(48000, 4, vec![2], move |b| g.lock().unwrap().push(b)).unwrap();
+    let data: Vec<f32> = (0..48000).flat_map(|_| [0.9f32, -0.9, 0.25, 0.7]).collect();
+    for c in data.chunks(4 * 441) {
+        p.push_interleaved(c);
+    }
+    let blocks = got.lock().unwrap();
+    let last = blocks.last().unwrap();
+    assert!(last.iter().all(|v| (v - 0.25).abs() < 0.01), "{:?}", &last[..4]);
+}
+
+/// 選んだ 2 チャンネル(3+4)は平均される
+#[test]
+fn pipeline_averages_selected_pair() {
+    let got: Arc<Mutex<Vec<Vec<f32>>>> = Arc::default();
+    let g = got.clone();
+    let mut p = BlockPipeline::with_pick(48000, 4, vec![2, 3], move |b| g.lock().unwrap().push(b)).unwrap();
+    let data: Vec<f32> = (0..48000).flat_map(|_| [0.9f32, -0.9, 0.2, 0.4]).collect();
+    p.push_interleaved(&data);
+    let last = got.lock().unwrap().last().cloned().unwrap();
+    assert!(last.iter().all(|v| (v - 0.3).abs() < 0.01), "{:?}", &last[..4]);
+}
+
+/// 範囲外・空のチャンネル指定は作成時に拒否する
+#[test]
+fn pipeline_rejects_bad_pick() {
+    assert!(BlockPipeline::with_pick(48000, 2, vec![2], |_| {}).is_err());
+    assert!(BlockPipeline::with_pick(48000, 2, vec![], |_| {}).is_err());
+}
+
 #[test]
 fn pipeline_mono_44100() {
     let got: Arc<Mutex<usize>> = Arc::default();
@@ -126,26 +160,31 @@ fn pipeline_mono_44100() {
 
 // ---------- MicStream(実デバイスは開かない) ----------
 
-/// 未開始の stop は冪等、不正な index は open 前に失敗し、状態は「停止中」のまま
+/// 未開始の stop は冪等、不正な ID は open 前に失敗し、状態は「停止中」のまま
 #[test]
-fn mic_stop_idempotent_and_bad_index() {
+fn mic_stop_idempotent_and_bad_id() {
     let m = MicStream::new();
     m.stop();
     m.stop();
     assert!(!m.is_running());
-    assert!(m.start(Some(-1), |_| {}).is_err());
-    assert!(m.start(Some(99_999), |_| {}).is_err());
+    assert!(m.start(Some("no-colon".into()), Vec::new(), |_| {}).is_err());
+    assert!(m.start(Some("nosuchhost:x".into()), Vec::new(), |_| {}).is_err());
     assert!(!m.is_running());
     m.stop();
 }
 
 /// 列挙のみ。環境依存なので件数は問わず整合だけ見る。
+/// ASIO ドライバを実際にロードする(実デバイスに触れる)ため既定では走らせない。
 #[test]
+#[ignore = "ASIO ドライバをロードする。実行は手動で"]
 fn enumerate_devices() {
     for list in [list_input_devices(), list_output_devices()] {
         eprintln!("{list:#?}");
         assert!(list.iter().filter(|d| d.is_default).count() <= 1);
-        assert!(list.windows(2).all(|w| w[0].index < w[1].index));
+        let mut ids: Vec<_> = list.iter().map(|d| &d.id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), list.len(), "ID が重複");
     }
 }
 

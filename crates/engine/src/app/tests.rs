@@ -676,6 +676,77 @@ fn auto_speak_sends_separate_delivery_to_irodori() {
     assert_eq!(job.ref_wavs, ["target.wav"]);
 }
 
+fn configure_voice(h: &Harness, voice: sttts_protocol::VoiceConfig) {
+    h.app.dispatch(GuiMessage::Configure { tts: None, asr: None, audio: None, voice: Some(voice), pipeline: None });
+}
+
+/// GUI の「声」欄(話し方・seed・声)の変更が、次の自動発話にそのまま効く
+#[test]
+fn auto_speak_follows_voice_configure() {
+    let h = Harness::new(true);
+    h.set("pipeline", "performance_enabled", json!(false));
+    configure_voice(
+        &h,
+        sttts_protocol::VoiceConfig {
+            caption: Some("落ち着いた声".into()),
+            ref_wavs: Some(vec!["target.wav".into()]),
+            no_ref: Some(false),
+            seed: Some(42),
+        },
+    );
+    final_(&h, 1, "こんにちは。");
+    let job = h.drain_jobs().remove(0);
+    assert_eq!((job.caption.as_deref(), job.ref_wavs.as_slice(), job.seed), (Some("落ち着いた声"), &["target.wav".to_string()][..], Some(42)));
+
+    // 既定の声・話し方なし・ランダムへ戻すと、前の値を引きずらない
+    configure_voice(
+        &h,
+        sttts_protocol::VoiceConfig { caption: Some(String::new()), ref_wavs: Some(vec![]), no_ref: Some(true), seed: None },
+    );
+    final_(&h, 2, "こんにちは。");
+    let job = h.drain_jobs().remove(0);
+    assert_eq!((job.caption, job.ref_wavs.len()), (None, 0));
+    assert_ne!(job.seed, Some(42));
+}
+
+/// 「テンポと間を再現」の話速は、合成パラメータの duration_scale を置き換えず掛け合わせる
+#[test]
+fn delivery_tempo_multiplies_user_duration_scale() {
+    let mut sampling = json!({"duration_scale": 1.2, "trim_tail": false}).as_object().cloned().unwrap();
+    apply_delivery_scale(&mut sampling, 0.9);
+    assert!((sampling["duration_scale"].as_f64().unwrap() - 1.08).abs() < 1e-9);
+    assert_eq!(sampling["trim_tail"], false);
+    let mut sampling = Map::new(); // 未指定なら Irodori の既定(1.0)が基準
+    apply_delivery_scale(&mut sampling, 1.1);
+    assert!((sampling["duration_scale"].as_f64().unwrap() - 1.1).abs() < 1e-9);
+}
+
+#[test]
+fn speaking_while_talking_uses_fixed_seed() {
+    let (h, _eng) = gate_harness();
+    h.set("voice", "seed", json!(7));
+    partial(&h, 1, &format!("{S1}二文"));
+    partial(&h, 1, &format!("{S1}二文目も"));
+    final_(&h, 1, &format!("{S1}{S2}"));
+    assert!(wait3(|| h.done().len() == 1));
+    let audio = h.rec.of_type("tts_audio");
+    assert!(!audio.is_empty() && audio.iter().all(|a| a["seed"] == 7), "{audio:?}");
+}
+
+#[test]
+fn speculation_uses_fixed_seed_and_is_discarded_when_it_changes() {
+    let (h, eng) = spec_harness();
+    h.set("voice", "seed", json!(7));
+    partial(&h, 1, PARTIAL);
+    partial(&h, 1, PARTIAL);
+    assert!(wait3(|| eng.texts() == ["こんにちは、"]));
+    h.set("voice", "seed", json!(8));
+    final_(&h, 1, FINAL);
+    assert!(wait3(|| h.done().len() == 1));
+    assert!(audio_pairs(&h).iter().all(|a| !a.1)); // seed 7 の投機結果は流用しない
+    assert!(h.rec.of_type("tts_audio").iter().all(|a| a["seed"] == 8));
+}
+
 #[test]
 fn expression_deadline_does_not_delay_speech() {
     let h = Harness::new(true);

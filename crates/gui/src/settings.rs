@@ -19,10 +19,19 @@ pub struct AppSettings {
     pub performance_enabled: Option<bool>,
     #[serde(default)]
     pub random_seed: Option<bool>,
-    /// 入力デバイス名(None = システム既定)
+    /// 固定 seed の値(ランダムに切り替えても残し、戻したときに使う)
+    #[serde(default)]
+    pub seed: Option<i64>,
+    /// 入力のドライバ(`ASIO: {ドライバ名}`。None = WASAPI)
+    #[serde(default)]
+    pub input_driver: Option<String>,
+    /// 入力の候補ラベル(WASAPI はデバイス名、ASIO はチャンネル。None = システム既定)
     #[serde(default)]
     pub input_device: Option<String>,
-    /// 出力デバイス名(None = システム既定)
+    /// 出力のドライバ(`ASIO: {ドライバ名}`。None = WASAPI)
+    #[serde(default)]
+    pub output_driver: Option<String>,
+    /// 出力の候補ラベル(WASAPI はデバイス名、ASIO はチャンネル。None = システム既定)
     #[serde(default)]
     pub output_device: Option<String>,
     /// 選択中の声バンク名(data/voices のファイル名。None = 既定の声)

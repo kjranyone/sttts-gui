@@ -310,9 +310,17 @@ impl StttsApp {
                         .rounded_full()
                         .bg(c(theme::VOICE)),
                 )
-                .child(div().text_xs().text_color(c(theme::VOICE)).child(voice))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .text_xs()
+                        .text_color(c(theme::VOICE))
+                        .child(voice),
+                )
                 .when(!turn.chunks.is_empty(), |row| {
-                    row.child(h_flex().gap_1().items_center().children(turn.chunks.iter().map(|ch| {
+                    // 長文でチャンクが多いときは、文字を縮めず丸の列の方を折り返す
+                    row.child(h_flex().min_w_0().flex_wrap().gap_1().items_center().children(turn.chunks.iter().map(|ch| {
                         let pill = div().h(px(4.)).rounded_full();
                         if playing == Some(ch.index) {
                             // 再生中のチャンクは太く明るく脈打たせる
@@ -337,6 +345,8 @@ impl StttsApp {
                 .when_some(turn.e2e_ms, |row, ms| {
                     row.child(
                         div()
+                            .flex_shrink_0()
+                            .whitespace_nowrap()
                             .text_xs()
                             .text_color(c(theme::TEXT_FAINT))
                             .child(format!("応答 {ms}ms")),
@@ -425,7 +435,6 @@ impl StttsApp {
     }
 
     fn render_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let delivering = self.is_delivering();
         v_flex()
             .px_6()
             .pt_3()
@@ -473,15 +482,6 @@ impl StttsApp {
                             .flex_1()
                             .child(Textarea::new(&self.composer).text_sm()),
                     )
-                    .when(delivering, |row| {
-                        row.child(
-                            Button::new("stop-speaking")
-                                .outline()
-                                .icon(IconName::Square)
-                                .label("止める")
-                                .on_click(cx.listener(|this, _, _, cx| this.cancel_speak(cx))),
-                        )
-                    })
                     .child(
                         Button::new("speak")
                             .primary()
@@ -490,27 +490,6 @@ impl StttsApp {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.speak_from_composer(window, cx)
                             })),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .max_w(px(CARD_MAX_W))
-                    .justify_end()
-                    .text_xs()
-                    .text_color(c(theme::TEXT_FAINT))
-                    .child(
-                        h_flex()
-                            .gap_1p5()
-                            .items_center()
-                            .child(
-                                div()
-                                    .w(px(3.))
-                                    .h(px(10.))
-                                    .rounded_full()
-                                    .bg(c(theme::VOICE)),
-                            )
-                            .child(self.voice_phrase()),
                     ),
             )
     }

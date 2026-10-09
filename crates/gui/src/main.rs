@@ -7,6 +7,7 @@
 mod app;
 mod audio;
 mod backend;
+mod device_picker;
 mod secret;
 mod settings;
 mod sysmon;

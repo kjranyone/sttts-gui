@@ -96,8 +96,16 @@ impl StttsApp {
             "オーディオデバイス",
             v_flex()
                 .gap_3()
-                .child(kit::field("マイク(入力)", Select::new(&self.input_select).small()))
-                .child(kit::field("スピーカー(出力)", Select::new(&self.output_select).small())),
+                .child(kit::field("マイク(入力)", Select::new(&self.input_dev.driver_select).small()))
+                .child(kit::field(
+                    self.input_dev.choice_caption(),
+                    Select::new(&self.input_dev.choice_select).small(),
+                ))
+                .child(kit::field("スピーカー(出力)", Select::new(&self.output_dev.driver_select).small()))
+                .child(kit::field(
+                    self.output_dev.choice_caption(),
+                    Select::new(&self.output_dev.choice_select).small(),
+                )),
         )
     }
 

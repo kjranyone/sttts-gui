@@ -661,10 +661,22 @@ impl Inner {
         (caption, refs)
     }
 
-    /// 投機結果を流用してよいかの判定キー(声・モデル・合成設定が同一であること)。
+    /// 投機結果を流用してよいかの判定キー(声・seed・モデル・合成設定が同一であること)。
     fn voice_key(&self, caption: Option<&str>, ref_wavs: &[String]) -> Value {
         let cfg = self.cfg();
-        json!([caption, ref_wavs, get(&cfg, "tts", "model"), get(&cfg, "tts", "num_steps"), get(&cfg, "tts", "sampling")])
+        json!([
+            caption,
+            ref_wavs,
+            get(&cfg, "voice", "seed"),
+            get(&cfg, "tts", "model"),
+            get(&cfg, "tts", "num_steps"),
+            get(&cfg, "tts", "sampling")
+        ])
+    }
+
+    /// 自動発話の固定 seed(`voice.seed`)。未設定ならリクエストごとにランダム
+    fn voice_seed(&self) -> Option<i64> {
+        get(&self.cfg(), "voice", "seed").as_i64()
     }
 
     fn chunk_options(&self) -> ChunkOptions {
@@ -720,7 +732,7 @@ impl Inner {
         let cfg = self.cfg();
         let mut sampling: Map<String, Value> = get(&cfg, "tts", "sampling").as_object().cloned().unwrap_or_default();
         if let Some(scale) = delivery.as_ref().and_then(|d| d.duration_scale) {
-            sampling.insert("duration_scale".into(), json!(scale));
+            apply_delivery_scale(&mut sampling, scale);
         }
 
         let request = {
@@ -750,7 +762,7 @@ impl Inner {
             speech_end_ms: p.speech_end.map(ms),
             delivery: delivery.as_ref().map(Delivery::summary),
         });
-        let mut seed = Self::request_seed(p.seed);
+        let mut seed = Self::request_seed(p.seed.or_else(|| self.voice_seed()));
 
         // 投機的 TTS の束縛: 確定文の先頭チャンクと完全一致し、声・設定が同じときだけ流用する
         let mut first = 0usize;
@@ -836,7 +848,7 @@ impl Inner {
             }
             st.next_id += 1;
             let id = st.next_id;
-            let seed = u64::from(rand::rng().random::<u32>() >> 1);
+            let seed = Self::request_seed(self.voice_seed());
             // 確定に束縛済みのエントリは、完了時に音声を送るために残す
             st.entries.retain(|_, e| e.request.is_some());
             let live: std::collections::HashSet<u64> = st.entries.keys().copied().collect();
@@ -974,7 +986,7 @@ impl Inner {
                 speech_end_ms: None,
                 delivery: None,
             });
-            u.open = Some(OpenRequest { request, next_chunk: 0, seed: Self::request_seed(None), caption, ref_wavs });
+            u.open = Some(OpenRequest { request, next_chunk: 0, seed: Self::request_seed(self.voice_seed()), caption, ref_wavs });
         }
         let o = u.open.as_mut().expect("opened above");
         let mut caption = o.caption.clone();
@@ -982,7 +994,7 @@ impl Inner {
         if let Some(d) = delivery {
             caption = d.caption(caption.as_deref());
             if let Some(scale) = d.duration_scale {
-                sampling.insert("duration_scale".into(), json!(scale));
+                apply_delivery_scale(&mut sampling, scale);
             }
         }
         {
@@ -1594,6 +1606,16 @@ impl Inner {
         *lock(&self.engine) = None;
         self.sink.info("backend stopped");
     }
+}
+
+/// 発話表現の話速(話者の普段の速さからの相対倍率)を、`tts.sampling.duration_scale` に掛ける。
+/// 置き換えると、GUI の合成パラメータで決めた全体の話速が自動発話でだけ効かなくなる。
+fn apply_delivery_scale(sampling: &mut Map<String, Value>, scale: f64) {
+    let base = sampling
+        .get("duration_scale")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| irodori::pipeline::SamplingRequest::default().duration_scale);
+    sampling.insert("duration_scale".into(), json!(base * scale));
 }
 
 /// 2 つの文字列の共通の先頭の長さ(バイト、文字境界)

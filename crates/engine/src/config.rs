@@ -54,7 +54,7 @@ pub fn default_config() -> Value {
             "gemini_mode": "VERBATIM",
             "gemini_timeout_s": 20.0,
         },
-        "audio": { "input_device_index": null },
+        "audio": { "input_device": null, "input_channels": [] },
         "voice": { "caption": null, "ref_wavs": [], "no_ref": true },
         "pipeline": {
             "auto_speak": true,

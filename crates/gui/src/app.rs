@@ -12,6 +12,7 @@
 //! (既定は閉。入口はタイトルバーの歯車のみ)に置き、主画面に出さない(AGENTS.md「設計の前提」)。
 
 mod chrome;
+mod devices;
 mod help;
 mod kit;
 mod rail;
@@ -32,15 +33,14 @@ use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::component::IndexPath;
 use gpui_kit::*;
 use sttts_protocol::{
-    AnyMessage, AudioConfig, AudioDeviceInfo, BackendMessage, EngineState, GuiMessage, ModelInfo,
+    AnyMessage, BackendMessage, EngineState, GuiMessage, ModelInfo,
     PipelineConfig, TtsConfig, VoiceConfig,
 };
 
 use crate::turns::{Playback, Turns, tag_for};
+use crate::device_picker::Dir;
 use crate::{audio, backend, secret, settings, sysmon};
 
-pub(crate) const DEFAULT_INPUT_LABEL: &str = "既定の入力デバイス";
-pub(crate) const DEFAULT_OUTPUT_LABEL: &str = "既定の出力デバイス";
 pub(crate) const DEFAULT_VOICE_LABEL: &str = "既定の声";
 
 /// ASR プロバイダ選択(表示名, asr.engine 値)。ローカルとクラウドを選べる。
@@ -124,14 +124,12 @@ pub struct StttsApp {
     settings_open: bool,
     /// 「?」から開いている解説
     help_topic: Option<help::HelpTopic>,
-    input_select: Entity<SelectState<Vec<String>>>,
-    output_select: Entity<SelectState<Vec<String>>>,
-    input_devices: Vec<AudioDeviceInfo>,
-    /// デバイス一覧到着後に render(windowあり)で Select へ反映するための保留領域
-    pending_input_items: Option<Vec<String>>,
-    selected_input_name: Option<String>,
-    selected_output_name: Option<String>,
-    saved_input_device: Option<String>,
+    /// 入力デバイス(ドライバ → デバイス / ASIO チャンネル)。一覧はエンジンから届く
+    input_dev: devices::DeviceSelect,
+    /// 出力デバイス(ドライバ → デバイス / ASIO チャンネル)。一覧は GUI が列挙する
+    output_dev: devices::DeviceSelect,
+    /// 保存済みの入力選択 (ドライバ, 候補)。最初のデバイス一覧の到着時に復元する
+    saved_input: Option<(Option<String>, Option<String>)>,
     seed_input: Entity<InputState>,
     random_seed: bool,
     /// 合成パラメータ(Irodori の tts.sampling)の編集欄
@@ -184,25 +182,25 @@ impl StttsApp {
             }
             state
         });
-        let seed_input = cx.new(|cx| InputState::new(window, cx).placeholder("seed"));
+        let seed_input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).placeholder("seed");
+            if let Some(seed) = saved.seed {
+                state.set_value(seed.to_string(), window, cx);
+            }
+            state
+        });
         let sampling = sampling::SamplingEditor::new(&root, window, cx);
 
-        // --- 入出力デバイス選択
-        let saved_input_device = saved.input_device.clone();
-        let output_devices = audio::list_output_devices();
-        let mut output_items = vec![DEFAULT_OUTPUT_LABEL.to_string()];
-        output_items.extend(output_devices.iter().cloned());
-        let saved_output_device = saved
-            .output_device
-            .clone()
-            .filter(|n| output_devices.iter().any(|d| d == n));
-        let output_sel_ix = saved_output_device
-            .as_ref()
-            .and_then(|n| output_devices.iter().position(|d| d == n))
-            .map(|p| IndexPath::new(p + 1))
-            .or(Some(IndexPath::new(0)));
-        let output_select = cx.new(|cx| SelectState::new(output_items, output_sel_ix, window, cx));
-        let input_select = cx.new(|cx| SelectState::new(Vec::new(), None, window, cx));
+        // --- 入出力デバイス選択(ドライバ → 候補の 2 段)
+        let saved_input = Some((saved.input_driver.clone(), saved.input_device.clone()));
+        let input_dev = devices::DeviceSelect::new(Dir::Input, Vec::new(), (None, None), window, cx);
+        let mut output_dev = devices::DeviceSelect::new(
+            Dir::Output,
+            devices::to_protocol(audio::list_output_devices()),
+            (saved.output_driver.as_deref(), saved.output_device.as_deref()),
+            window,
+            cx,
+        );
 
         // --- 声バンク(data/voices の wav を参照音声として選択できる)
         let voices = scan_voice_bank(&root);
@@ -243,10 +241,17 @@ impl StttsApp {
             state
         });
 
-        let (audio, audio_error) = match audio::AudioOut::open(saved_output_device.as_deref())
-            .or_else(|_| audio::AudioOut::open(None))
-        {
+        let out_choice = output_dev.choice.clone();
+        let (audio, audio_error) = match audio::AudioOut::open(out_choice.device_id.as_deref(), &out_choice.channels) {
             Ok(a) => (Some(a), None),
+            Err(first) if out_choice.device_id.is_some() => {
+                // 保存済みのデバイスを開けなければシステム既定で鳴らす
+                output_dev.select_default();
+                match audio::AudioOut::open(None, &[]) {
+                    Ok(a) => (Some(a), Some(format!("{first:#}(既定の出力デバイスで再生します)"))),
+                    Err(e) => (None, Some(format!("{e:#}"))),
+                }
+            }
             Err(e) => (None, Some(format!("{e:#}"))),
         };
 
@@ -286,13 +291,9 @@ impl StttsApp {
             gemini_key_edit_seq: 0,
             settings_open: false,
             help_topic: None,
-            input_select,
-            output_select,
-            input_devices: Vec::new(),
-            pending_input_items: None,
-            selected_input_name: None,
-            selected_output_name: saved_output_device,
-            saved_input_device,
+            input_dev,
+            output_dev,
+            saved_input,
             seed_input,
             random_seed,
             sampling,
@@ -347,7 +348,7 @@ impl StttsApp {
                 ..Default::default()
             }),
             audio: None,
-            voice: Some(app.selected_voice_config()),
+            voice: Some(app.voice_config(cx)),
             pipeline: Some(PipelineConfig {
                 auto_speak: Some(app.auto_speak),
                 performance_enabled: Some(app.performance_enabled),
@@ -373,8 +374,10 @@ impl StttsApp {
 
         let weak = cx.weak_entity();
         let subs = vec![
-            window.subscribe(&self.input_select, cx, on_confirm(weak.clone(), |a, n, w, cx| a.apply_input_device(n, w, cx))),
-            window.subscribe(&self.output_select, cx, on_confirm(weak.clone(), |a, n, _, cx| a.apply_output_device(n, cx))),
+            window.subscribe(&self.input_dev.driver_select, cx, on_confirm(weak.clone(), |a, n, _, cx| a.apply_input_driver(n, cx))),
+            window.subscribe(&self.input_dev.choice_select, cx, on_confirm(weak.clone(), |a, n, _, cx| a.apply_input_choice(n, cx))),
+            window.subscribe(&self.output_dev.driver_select, cx, on_confirm(weak.clone(), |a, n, _, cx| a.apply_output_driver(n, cx))),
+            window.subscribe(&self.output_dev.choice_select, cx, on_confirm(weak.clone(), |a, n, _, cx| a.apply_output_choice(n, cx))),
             window.subscribe(&self.voice_select, cx, on_confirm(weak.clone(), |a, n, _, cx| a.apply_voice(n, cx))),
             window.subscribe(&self.asr_select, cx, on_confirm(weak.clone(), |a, n, _, cx| a.apply_asr_provider(n, cx))),
             window.subscribe(&self.gemini_key_input, cx, {
@@ -391,12 +394,30 @@ impl StttsApp {
                     _ => {}
                 }
             }),
+            // 話し方・seed は打つたびにエンジンへ送る(自動発話はエンジン側の設定で合成するため)。
+            // 送るのは設定の差し替えだけで軽い。保存は確定時のみ。
             window.subscribe(&self.caption_input, cx, {
                 let weak = weak.clone();
-                move |_, event: &InputEvent, _window, cx| {
-                    if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                move |_, event: &InputEvent, _window, cx| match event {
+                    InputEvent::Change => {
+                        let _ = weak.update(cx, |app, cx| app.send_voice_config(cx));
+                    }
+                    InputEvent::PressEnter { .. } | InputEvent::Blur => {
                         let _ = weak.update(cx, |app, cx| app.persist_settings(cx));
                     }
+                    _ => {}
+                }
+            }),
+            window.subscribe(&self.seed_input, cx, {
+                let weak = weak.clone();
+                move |_, event: &InputEvent, _window, cx| match event {
+                    InputEvent::Change => {
+                        let _ = weak.update(cx, |app, cx| app.send_voice_config(cx));
+                    }
+                    InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                        let _ = weak.update(cx, |app, cx| app.persist_settings(cx));
+                    }
+                    _ => {}
                 }
             }),
             window.subscribe(&self.composer, cx, {
@@ -676,28 +697,7 @@ impl StttsApp {
                 }
             }
             BackendMessage::Pong { .. } => {}
-            BackendMessage::Devices { inputs, .. } => {
-                self.input_devices = inputs;
-                let mut items = vec![DEFAULT_INPUT_LABEL.to_string()];
-                items.extend(self.input_devices.iter().map(|d| d.name.clone()));
-                // 保存済みデバイスが一覧にあれば復元し、バックエンドへも反映する
-                let restored = self
-                    .saved_input_device
-                    .take()
-                    .filter(|n| self.input_devices.iter().any(|d| &d.name == n));
-                if let Some(name) = &restored {
-                    self.selected_input_name = Some(name.clone());
-                    let index = self.input_devices.iter().find(|d| &d.name == name).map(|d| d.index);
-                    self.send(GuiMessage::Configure {
-                        tts: None,
-                        asr: None,
-                        audio: Some(AudioConfig { input_device_index: index }),
-                        voice: None,
-                        pipeline: None,
-                    });
-                }
-                self.pending_input_items = Some(items);
-            }
+            BackendMessage::Devices { inputs, .. } => self.on_input_devices(inputs, cx),
         }
         cx.notify();
     }
@@ -744,11 +744,7 @@ impl StttsApp {
             let c = self.caption_input.read(cx).value().trim().to_string();
             (!c.is_empty()).then_some(c)
         };
-        let seed = if self.random_seed {
-            None
-        } else {
-            self.seed_input.read(cx).value().trim().parse::<i64>().ok()
-        };
+        let seed = self.fixed_seed(cx);
         self.send(GuiMessage::Speak {
             text,
             caption,
@@ -854,12 +850,6 @@ impl StttsApp {
         cx.notify();
     }
 
-    /// 合成中・再生中・受付待ちのいずれか(「止める」を出す条件)
-    fn is_delivering(&self) -> bool {
-        let playing = self.audio.as_ref().is_some_and(|a| a.pending_chunks() > 0);
-        playing || self.turns.iter().any(|t| t.status.is_active())
-    }
-
     // ---------- 音声キュー・声・認識 ----------
 
     fn set_auto_speak(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -900,35 +890,40 @@ impl StttsApp {
         cx.notify();
     }
 
-    /// 選択中の声に対応する voice 設定(バンク選択時は参照音声、既定は no_ref)。
-    fn selected_voice_config(&self) -> VoiceConfig {
-        match self
+    /// 右レール「声」の現在値から作る voice 設定(声・話し方・seed をまとめて送る)。
+    /// マイクからの自動発話はこの設定で合成されるので、欄を変えたらすぐ送る。
+    fn voice_config(&self, cx: &App) -> VoiceConfig {
+        let ref_wav = self
             .selected_voice_name
             .as_ref()
             .and_then(|n| self.voices.iter().find(|(vn, _)| vn == n))
-        {
-            Some((_, path)) => VoiceConfig {
-                ref_wavs: Some(vec![path.to_string_lossy().into_owned()]),
-                no_ref: Some(false),
-                ..Default::default()
-            },
-            None => VoiceConfig {
-                no_ref: Some(true),
-                ..Default::default()
-            },
+            .map(|(_, path)| path.to_string_lossy().into_owned());
+        VoiceConfig {
+            // 既定の声へ戻すときも空で送り、前の声の参照音声を残さない
+            no_ref: Some(ref_wav.is_none()),
+            ref_wavs: Some(ref_wav.into_iter().collect()),
+            caption: Some(self.caption_input.read(cx).value().trim().to_string()),
+            seed: self.fixed_seed(cx),
         }
+    }
+
+    /// 固定 seed(ランダム、または欄が空・不正なら None)
+    fn fixed_seed(&self, cx: &App) -> Option<i64> {
+        if self.random_seed {
+            return None;
+        }
+        self.seed_input.read(cx).value().trim().parse::<i64>().ok()
+    }
+
+    fn send_voice_config(&mut self, cx: &App) {
+        let voice = self.voice_config(cx);
+        self.send(GuiMessage::Configure { tts: None, asr: None, audio: None, voice: Some(voice), pipeline: None });
     }
 
     /// 声バンクの選択適用。参照音声が変わるとウォームアップもやり直される。
     fn apply_voice(&mut self, name: String, cx: &mut Context<Self>) {
         self.selected_voice_name = (name != DEFAULT_VOICE_LABEL).then_some(name);
-        self.send(GuiMessage::Configure {
-            tts: None,
-            asr: None,
-            audio: None,
-            voice: Some(self.selected_voice_config()),
-            pipeline: None,
-        });
+        self.send_voice_config(cx);
         match &self.selected_voice_name {
             Some(n) => self.push_log(format!("声を切替: {n}(参照音声で合成します)")),
             None => self.push_log("声を既定に戻しました(話し方の指示/自動音質で合成)".into()),
@@ -1128,52 +1123,7 @@ impl StttsApp {
 
     fn set_random_seed(&mut self, on: bool, cx: &mut Context<Self>) {
         self.random_seed = on;
-        self.persist_settings(cx);
-        cx.notify();
-    }
-
-    /// 入力デバイス選択の適用。ライブ中は停止して、再開は利用者に任せる。
-    fn apply_input_device(&mut self, name: String, _window: &mut Window, cx: &mut Context<Self>) {
-        let index = if name == DEFAULT_INPUT_LABEL {
-            None
-        } else {
-            self.input_devices.iter().find(|d| d.name == name).map(|d| d.index)
-        };
-        self.selected_input_name = index.is_some().then_some(name);
-        self.send(GuiMessage::Configure {
-            tts: None,
-            asr: None,
-            audio: Some(AudioConfig { input_device_index: index }),
-            voice: None,
-            pipeline: None,
-        });
-        if self.mic_running && self.mic_transition == MicTransition::None {
-            // 停止→即再開はbackendの再開クールダウンに拒否されるうえ、デバイスの
-            // 短時間反復 open/close はドライバクラッシュの原因。停止のみ送り、
-            // 再開は利用者の操作(ライブ開始)に任せる。
-            self.mic_transition = MicTransition::Stopping;
-            self.send(GuiMessage::StopSession);
-            self.push_log("入力デバイスを変更したためライブを停止しました。新しいデバイスで「ライブ開始」を押してください".into());
-        }
-        self.persist_settings(cx);
-        cx.notify();
-    }
-
-    /// 出力デバイス選択の適用(ストリームを張り直す。未再生キューは破棄)。
-    fn apply_output_device(&mut self, name: String, cx: &mut Context<Self>) {
-        let preferred = (name != DEFAULT_OUTPUT_LABEL).then_some(name.clone());
-        match audio::AudioOut::open(preferred.as_deref()) {
-            Ok(out) => {
-                if let Some(old) = self.audio.as_ref() {
-                    old.clear();
-                }
-                self.playback.clear();
-                self.audio = Some(out);
-                self.selected_output_name = preferred;
-                self.push_log(format!("出力デバイスを切替: {name}"));
-            }
-            Err(e) => self.push_log(format!("出力デバイスの切替に失敗: {e:#}")),
-        }
+        self.send_voice_config(cx);
         self.persist_settings(cx);
         cx.notify();
     }
@@ -1218,8 +1168,11 @@ impl StttsApp {
             auto_speak: Some(self.auto_speak),
             performance_enabled: Some(self.performance_enabled),
             random_seed: Some(self.random_seed),
-            input_device: self.selected_input_name.clone(),
-            output_device: self.selected_output_name.clone(),
+            seed: self.seed_input.read(cx).value().trim().parse::<i64>().ok(),
+            input_driver: self.input_dev.saved().0,
+            input_device: self.input_dev.saved().1,
+            output_driver: self.output_dev.saved().0,
+            output_device: self.output_dev.saved().1,
             voice: self.selected_voice_name.clone(),
             asr_provider: Some(self.selected_asr_engine.clone()),
             gemini_api_key_protected: self.gemini_key_protected.clone(),

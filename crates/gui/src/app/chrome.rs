@@ -51,16 +51,8 @@ impl StttsApp {
 impl Render for StttsApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // デバイス一覧は window を要求する API なので render で Select へ反映する
-        if let Some(items) = self.pending_input_items.take() {
-            let selected = self
-                .selected_input_name
-                .clone()
-                .unwrap_or_else(|| super::DEFAULT_INPUT_LABEL.to_string());
-            self.input_select.update(cx, |s, cx| {
-                s.set_items(items, window, cx);
-                s.set_selected_value(&selected, window, cx);
-            });
-        }
+        self.input_dev.sync(window, cx);
+        self.output_dev.sync(window, cx);
 
         if let Some(paths) = self.pending_voice_import.take() {
             self.import_voice_files(&paths, window, cx);

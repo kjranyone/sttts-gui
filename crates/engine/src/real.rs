@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use serde_json::Value;
 use sttts_protocol::AudioDeviceInfo;
 
@@ -32,8 +32,13 @@ impl Platform for RealPlatform {
             let src = sttts_audio::WavSource::new(paths, sttts_audio::WavSourceOptions::default(), move |b| on_block(b), on_eof);
             return Ok(Box::new(WavSrc(src)));
         }
-        let device = get(cfg, "audio", "input_device_index").as_i64();
-        Ok(Box::new(MicSrc { mic: sttts_audio::MicStream::new(), device, on_block }))
+        let device = get(cfg, "audio", "input_device").as_str().map(str::to_string);
+        let channels = match get(cfg, "audio", "input_channels") {
+            Value::Null => Vec::new(),
+            v => serde_json::from_value::<Vec<u16>>(v.clone())
+                .map_err(|e| anyhow!("audio.input_channels は 0 始まりのチャンネル番号の配列です: {e}"))?,
+        };
+        Ok(Box::new(MicSrc { mic: sttts_audio::MicStream::new(), device, channels, on_block }))
     }
 
     fn create_vad(&self, cfg: &Value) -> Result<Box<dyn Vad>> {
@@ -44,7 +49,14 @@ impl Platform for RealPlatform {
 
     fn list_devices(&self) -> (Vec<AudioDeviceInfo>, Vec<AudioDeviceInfo>) {
         let conv = |v: Vec<sttts_audio::DeviceInfo>| {
-            v.into_iter().map(|d| AudioDeviceInfo { index: d.index, name: d.name, default_rate: Some(d.default_rate), is_default: d.is_default }).collect()
+            v.into_iter().map(|d| AudioDeviceInfo {
+                id: d.id,
+                host: d.host,
+                name: d.name,
+                default_rate: Some(d.default_rate),
+                is_default: d.is_default,
+                channels: d.channels,
+            }).collect()
         };
         (conv(sttts_audio::list_input_devices()), conv(sttts_audio::list_output_devices()))
     }
@@ -52,14 +64,15 @@ impl Platform for RealPlatform {
 
 struct MicSrc {
     mic: sttts_audio::MicStream,
-    device: Option<i64>,
+    device: Option<String>,
+    channels: Vec<u16>,
     on_block: OnBlock,
 }
 
 impl AudioSource for MicSrc {
     fn start(&mut self) -> Result<()> {
         let cb = Arc::clone(&self.on_block);
-        self.mic.start(self.device, move |b| cb(b))?;
+        self.mic.start(self.device.clone(), self.channels.clone(), move |b| cb(b))?;
         Ok(())
     }
     fn stop(&mut self) {

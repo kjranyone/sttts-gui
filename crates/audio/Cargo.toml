@@ -7,10 +7,17 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-cpal = "0.17"
+cpal = "0.17.3"
 hound = "3.5.1"
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-native"] }
 rubato = "0.16"
+
+# ASIO(SDK はビルド時に asio-sys が自動取得する。bindgen 用に LLVM/libclang が必要)
+[target.'cfg(windows)'.dependencies]
+cpal = { version = "0.17.3", features = ["asio"] }
+# チャンネル名(ASIOGetChannelInfo)の取得用。cpal が使うものと同じ版
+asio-sys = "0.2.6"
+windows = { version = "0.62", features = ["Win32_Globalization"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }

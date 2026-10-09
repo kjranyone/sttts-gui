@@ -9,7 +9,12 @@ pub mod resample;
 pub mod vad;
 pub mod wav_source;
 
-pub use devices::{DeviceInfo, list_input_devices, list_output_devices};
+pub use devices::{
+    DeviceInfo, OpenedDevice, list_input_devices, list_output_devices, open_input_device,
+    open_output_device,
+};
+/// GUI の再生(rodio)と同じ cpal を使うための再エクスポート。
+pub use cpal;
 pub use mic::{BlockPipeline, MicStream};
 pub use resample::{StreamResampler, resample_all};
 pub use vad::{SileroVad, VadEvent};

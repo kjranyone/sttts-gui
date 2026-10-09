@@ -33,12 +33,20 @@ pub struct ModelInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AudioDeviceInfo {
-    pub index: i64,
+    /// デバイス ID(`AudioConfig::input_device` に渡す。例: `wasapi:{...}` / `asio:{ドライバ名}`)
+    pub id: String,
+    /// ホスト(ドライバ方式)名。`WASAPI` / `ASIO`
+    #[serde(default)]
+    pub host: String,
+    /// 表示名(ASIO はドライバ名)
     pub name: String,
     #[serde(default)]
     pub default_rate: Option<u32>,
     #[serde(default)]
     pub is_default: bool,
+    /// ASIO のチャンネル名(0 始まりの番号順)。WASAPI は空(チャンネルを選ばない)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<String>,
 }
 
 /// backend → GUI メッセージ。
@@ -282,8 +290,13 @@ pub struct AsrConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AudioConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_device_index: Option<i64>,
+    /// `AudioDeviceInfo::id`。None(null)で既定入力。既定へ戻す指示も兼ねるので省略せず送る
+    #[serde(default)]
+    pub input_device: Option<String>,
+    /// 使う入力チャンネル(0 始まり、`AudioDeviceInfo::channels` の番号)。空なら既定
+    /// (WASAPI は全チャンネルの平均、ASIO は 1ch 目)。デバイスと一緒に毎回送る
+    #[serde(default)]
+    pub input_channels: Vec<u16>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -294,6 +307,10 @@ pub struct VoiceConfig {
     pub ref_wavs: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_ref: Option<bool>,
+    /// 自動発話(マイク)の固定 seed。None(null)でリクエストごとにランダム。
+    /// ランダムへ戻す指示も兼ねるので省略せず送る
+    #[serde(default)]
+    pub seed: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -457,5 +474,12 @@ mod tests {
         })
         .unwrap();
         assert_eq!(s, r#"{"type":"speak","text":"こんにちは"}"#);
+    }
+
+    /// 「既定の入力」へ戻す指示は null として送られること(省略すると前の指定が残る)
+    #[test]
+    fn audio_config_default_input_is_sent_as_null() {
+        let v = serde_json::to_value(AudioConfig { input_device: None, input_channels: Vec::new() }).unwrap();
+        assert_eq!(v, serde_json::json!({"input_device": null, "input_channels": []}));
     }
 }

@@ -34,10 +34,7 @@ impl StttsApp {
     fn render_live(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.mic_transition != MicTransition::None;
         let level = ((self.mic_level_db + 60.0) / 60.0).clamp(0.0, 1.0);
-        let input_name = self
-            .selected_input_name
-            .clone()
-            .unwrap_or_else(|| super::DEFAULT_INPUT_LABEL.to_string());
+        let input_name = self.input_dev.display();
 
         let button = Button::new("live")
             .w_full()
