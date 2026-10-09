@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use irodori::codec::{self, DacVae};
 use irodori::pth::Pth;
-use irodori::testing::{assert_close, cpu, max_abs_diff, refs, to_vec};
+use irodori::testing::{assert_close, device, max_abs_diff, refs, to_vec};
 use irodori::{Device, Tensor};
 
 fn weights_path() -> Option<std::path::PathBuf> {
@@ -86,7 +86,7 @@ fn decode_matches_reference() {
         eprintln!("reference outputs not found: skipping");
         return;
     };
-    let dev = cpu();
+    let dev = device();
     let Some(model) = load_model(&dev) else { return };
     assert_eq!(model.sample_rate, 48000);
     assert_eq!(model.hop, 1920);
@@ -126,7 +126,7 @@ fn encode_matches_reference() {
         eprintln!("reference outputs not found: skipping");
         return;
     };
-    let dev = cpu();
+    let dev = device();
     let Some(model) = load_model(&dev) else { return };
 
     let wav: Tensor<3> = refs.tensor("C.codec_encode.in.0", &dev).unwrap();

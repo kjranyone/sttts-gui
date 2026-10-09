@@ -19,6 +19,7 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 half = "2"
 hound = "3"
+claxon = "0.4"
 memmap2 = "0.9"
 unicode-normalization = "0.1"
 realfft = "3"
