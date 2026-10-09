@@ -15,3 +15,4 @@ output/
 
 # ZCode セッション成果物
 .zcode/
+.claude/worktrees/
