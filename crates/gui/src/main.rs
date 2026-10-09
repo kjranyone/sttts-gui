@@ -89,6 +89,10 @@ pub struct StttsApp {
     mic_level_db: f32,
 
     conversation: Vec<ConversationEntry>,
+    /// 会話ビューのスクロール制御(新規エントリで最下部へ追従)
+    conversation_scroll: gpui::ScrollHandle,
+    /// ログペインの折りたたみ
+    log_collapsed: bool,
     /// 現在合成中/直前のチャンクテキスト(tts_chunk_start で設定、tts_audio で履歴へ)
     pending_chunk_text: Option<String>,
     logs: VecDeque<String>,
@@ -213,6 +217,8 @@ impl StttsApp {
             saved_input_device,
             mic_level_db: -100.0,
             conversation: Vec::new(),
+            conversation_scroll: gpui::ScrollHandle::new(),
+            log_collapsed: false,
             pending_chunk_text: None,
             logs: VecDeque::new(),
             last_gen_ms: None,
@@ -621,6 +627,7 @@ impl StttsApp {
             path: None,
         });
         self.trim_conversation();
+        self.conversation_scroll.scroll_to_bottom();
     }
 
     /// TTS 生成を会話ビューへ追加(音声の発話として時系列に並ぶ)。
@@ -634,6 +641,7 @@ impl StttsApp {
             path,
         });
         self.trim_conversation();
+        self.conversation_scroll.scroll_to_bottom();
     }
 
     fn trim_conversation(&mut self) {
@@ -648,7 +656,8 @@ impl StttsApp {
         let text = self.speak_input.read(cx).value().to_string();
         let text = text.trim().to_string();
         if text.is_empty() {
-            self.push_log("テキストが空です".into());
+            self.push_log("話させたいテキストを入力してください".into());
+            self.speak_input.update(cx, |s, cx| s.focus(window, cx));
             return;
         }
         let caption = {
@@ -832,7 +841,8 @@ impl StttsApp {
                 let median = v.get(v.len() / 2).copied().unwrap_or(ms);
                 format!("応答 {ms}ms(中央値 {median}ms)")
             }
-            None => "応答 —".into(),
+            // 未計測時も何の数字か分かるようにする
+            None => "応答(話し終え→発音)—".into(),
         }
     }
 
@@ -1158,6 +1168,7 @@ impl Render for StttsApp {
                             .child(
                                 v_flex()
                                     .id("conversation")
+                                    .track_scroll(&self.conversation_scroll)
                                     .flex_1()
                                     .h_full()
                                     .p_4()
@@ -1298,21 +1309,11 @@ impl Render for StttsApp {
                                                 }
                                             })
                                     })
-                                    // 発話ボタン: 桜→藤グラデ
+                                    // 発話ボタン: a11y ツリーに現れる Button コンポーネント
                                     .child(
-                                        div()
-                                            .id("speak-button")
-                                            .rounded_md()
-                                            .py_2()
-                                            .w_full()
-                                            .flex()
-                                            .justify_center()
-                                            .text_sm()
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0xffffff))
-                                            .bg(linear_gradient(120., linear_color_stop(rgba(0xff8fb8ff), 0.), linear_color_stop(rgba(0x8d6fe8ff), 1.)))
-                                            .shadow_md()
-                                            .child("発話")
+                                        Button::new("speak")
+                                            .primary()
+                                            .label("発話")
                                             .on_click(cx.listener(Self::speak_from_input)),
                                     )
                                     .child(
@@ -1336,23 +1337,45 @@ impl Render for StttsApp {
                                     .child(div().flex_1()),
                             ),
                     )
-                    // ログ(黒ガラス)
+                    // ログ(黒ガラス・クリックで折りたたみ)
                     .child(
                         v_flex()
-                            .id("log")
-                            .h(px(120.))
                             .mx_3()
                             .mb_1()
-                            .p_2()
                             .rounded_lg()
                             .bg(rgba(0x00000055))
                             .border_1()
                             .border_color(rgba(0xffffff14))
-                            .overflow_y_scroll()
-                            .text_xs()
-                            .font_family("Consolas")
-                            .text_color(rgb(0x9d96bd))
-                            .children(self.logs.iter().rev().take(12).rev().cloned()),
+                            .overflow_hidden()
+                            .child(
+                                h_flex()
+                                    .id("log-header")
+                                    .justify_between()
+                                    .px_3()
+                                    .py_1()
+                                    .text_xs()
+                                    .text_color(rgb(0x8d86ad))
+                                    .child("ログ")
+                                    .child(if self.log_collapsed { "▲" } else { "▼" })
+                                    .on_click(cx.listener(|this, _ev, _w, cx| {
+                                        this.log_collapsed = !this.log_collapsed;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("log-body")
+                                    .when(!self.log_collapsed, |d| {
+                                        d.h(px(104.))
+                                            .px_2()
+                                            .pb_2()
+                                            .overflow_y_scroll()
+                                            .text_xs()
+                                            .font_family("Consolas")
+                                            .text_color(rgb(0x9d96bd))
+                                            .children(self.logs.iter().rev().take(12).rev().cloned())
+                                    }),
+                            ),
                     )
                     .child(
                         h_flex()
