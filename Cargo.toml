@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/gui", "crates/irodori"]
-# irodori(burn)は依存が重いので、GUI の通常ビルド(dev.ps1 の cargo build)には含めない。
-# テスト・実行は -p irodori か --workspace で。
+members = ["crates/protocol", "crates/gui", "crates/irodori", "crates/audio", "crates/nemotron", "crates/whisper", "crates/gemini", "crates/engine", "crates/hub"]
+# default-members は GUI(エンジン経由で burn / onnxruntime も含む)とプロトコルだけ。
+# 個別クレートのテストは -p <crate> か --workspace で。
 default-members = ["crates/protocol", "crates/gui"]
 
 [workspace.package]

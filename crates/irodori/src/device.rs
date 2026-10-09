@@ -13,21 +13,34 @@ pub fn cpu_device() -> Device {
 }
 
 /// 独立 GPU(無ければ最初の GPU)を、プロセスで 1 回だけ初期化して返す(2 回目以降は同じデバイスの複製)。
+/// GPU が使えないときは `Err`(初期化に失敗した場合は次の呼び出しで再試行する)。
 #[cfg(feature = "_gpu")]
-pub fn gpu_device() -> Device {
-    use std::sync::OnceLock;
+pub fn try_gpu_device() -> anyhow::Result<Device> {
+    use std::sync::Mutex;
 
     use burn::tensor::DeviceKind;
     use burn::tensor::wgpu::MemoryConfiguration;
 
-    static DEV: OnceLock<Device> = OnceLock::new();
-    DEV.get_or_init(|| {
-        let init = |kind: DeviceKind| {
-            Device::wgpu_options().device_kind(kind).memory_config(MemoryConfiguration::ExclusivePages).init()
-        };
-        init(DeviceKind::DiscreteGpu(0))
-            .or_else(|_| init(DeviceKind::DefaultDevice))
-            .expect("wgpu: GPU を初期化できません")
-    })
-    .clone()
+    static DEV: Mutex<Option<Device>> = Mutex::new(None);
+    let mut slot = DEV.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(d) = slot.as_ref() {
+        return Ok(d.clone());
+    }
+    let init = |kind: DeviceKind| {
+        // wgpu の初期化失敗は panic で返ることがあるため、ここで受けて Err にする
+        std::panic::catch_unwind(|| Device::wgpu_options().device_kind(kind).memory_config(MemoryConfiguration::ExclusivePages).init())
+            .map_err(|_| anyhow::anyhow!("wgpu の初期化中に panic しました"))?
+            .map_err(|e| anyhow::anyhow!("{e:?}"))
+    };
+    let dev = init(DeviceKind::DiscreteGpu(0))
+        .or_else(|_| init(DeviceKind::DefaultDevice))
+        .map_err(|e| anyhow::anyhow!("GPU を初期化できません: {e:#}"))?;
+    *slot = Some(dev.clone());
+    Ok(dev)
+}
+
+/// `try_gpu_device` の panic 版(テスト・example 用)。
+#[cfg(feature = "_gpu")]
+pub fn gpu_device() -> Device {
+    try_gpu_device().expect("wgpu: GPU を初期化できません")
 }

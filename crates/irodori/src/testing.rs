@@ -15,20 +15,20 @@ pub fn ref_dir() -> PathBuf {
 }
 
 /// 参照テンソル(キーは `<case>.<stage>.<n>.<name>`)。無ければ None。
-/// 生成: `cd backend && uv run --no-sync python scripts/dump_irodori_ref.py`
+/// 生成: `cd tools/reference && uv run python dump_irodori_ref.py`
 pub fn refs() -> Option<Weights> {
     let p = ref_dir().join("refs.safetensors");
     p.is_file().then(|| Weights::open(p).ok()).flatten()
 }
 
-/// HF キャッシュ内のスナップショット(ディレクトリそのものがあるもの。最新)
-pub fn hf_snapshot(repo_dir: &str) -> Option<PathBuf> {
-    crate::hub::find_snapshot(repo_dir, "")
+/// HF キャッシュ内のスナップショット(`org/name`。最新)
+pub fn hf_snapshot(repo: &str) -> Option<PathBuf> {
+    crate::hub::find_snapshot(repo, &[])
 }
 
 /// Irodori-TTS v4.1 Small MF のスナップショットディレクトリ(`model.safetensors` と `tokenizer/`)
 pub fn checkpoint_dir() -> Option<PathBuf> {
-    crate::hub::find_snapshot("models--Aratako--Irodori-TTS-v4.1-Small-MF", "model.safetensors")
+    crate::hub::find_snapshot(crate::pipeline::MODEL_REPO, &["model.safetensors"])
 }
 
 /// f32 の平坦なベクトルへ

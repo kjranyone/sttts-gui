@@ -1,0 +1,15 @@
+[package]
+name = "sttts-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+cpal = "0.17"
+hound = "3.5.1"
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-native"] }
+rubato = "0.16"
+
+[dev-dependencies]
+serde_json = { workspace = true }

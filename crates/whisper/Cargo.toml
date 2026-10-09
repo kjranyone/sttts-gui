@@ -1,0 +1,20 @@
+[package]
+name = "sttts-whisper"
+description = "Pure-Rust inference for kotoba-whisper-v2.0 (burn: flex for reference, wgpu for GPU)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# GPU(wgpu)。irodori と同じ構成(WGSL 経路、ExclusivePages)。
+gpu = ["irodori/gpu"]
+
+[dependencies]
+irodori = { path = "../irodori" }
+burn = { version = "0.22", default-features = false, features = ["std", "flex"] }
+tokenizers = { version = "0.22", default-features = false, features = ["unstable_wasm"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+realfft = "3"
+sttts-hub = { path = "../hub" }

@@ -2,18 +2,20 @@
 
 **speech-to-text-to-speech GUI** — マイク音声をリアルタイムに文字起こしし(ストリーミングASR)、
 確定文を文チャンクへ分割して [Irodori-TTS](https://github.com/Aratako/Irodori-TTS) で逐次合成・再生する
-Windows デスクトップアプリです。UI は Rust 製 **GPUI**(gpui-kit / Zed 系)、モデル実行は
-**uv で管理された Python バックエンド**が担い、両者は stdio NDJSON で接続されます。
+Windows デスクトップアプリです。UI は Rust 製 **GPUI**(gpui-kit / Zed 系)、マイク・VAD・ASR・TTS も
+すべて **同じ Rust プロセス**で動きます。Python も PyTorch も不要です。
 
 ```
-┌─────────────────────────────┐          ┌──────────────────────────────────┐
-│ GUI (Rust / gpui-kit)       │  stdin   │ backend (Python / uv)            │
-│  ・文字起こし表示(partial/final)│ ◀────── │  mic(48k)→soxr→16k→silero VAD    │
-│  ・テキスト発話・モデル選択・履歴│  NDJSON  │  → ASRワーカー(kotoba CUDA/CPU    │
-│  ・rodio でチャンクWAVを逐次再生│  ──────▶ │     または ReazonSpeech)          │
-│  ・発話終了→初音 の計測表示     │          │  → 文チャンク分割 → TTSキュー     │
-└─────────────────────────────┘          │  → irodori-tts (XPU / CUDA / CPU) │
-                                         └──────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│ sttts-gui (1 プロセス)                                                      │
+│  GUI (gpui-kit)  ◀── メッセージ(チャネル) ──▶  crates/engine                │
+│   ・文字起こし表示(partial/final)             mic(cpal)→16k→Silero VAD       │
+│   ・テキスト発話・声・履歴                      → ASR ワーカー                  │
+│   ・rodio でチャンク WAV を逐次再生               Nemotron(ONNX) / kotoba     │
+│   ・発話終了→初音 の計測表示                       (burn・GPU) / Gemini(クラウド)│
+│                                                 → 文チャンク分割 → TTS キュー │
+│                                                 → Irodori-TTS(burn・GPU)    │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 Irodori-TTS は文単位の非ストリーミング合成のため、**確定文→句点等でチャンク分割→チャンクごとに
@@ -24,71 +26,33 @@ Irodori-TTS は文単位の非ストリーミング合成のため、**確定文
 
 | パス | 内容 |
 |---|---|
-| `crates/protocol/` | GUI⇄backend の NDJSON メッセージ型(Rust/serde) |
-| `crates/gui/` | GPUI クライアント(gpui-kit 0.7 + rodio) |
-| `crates/irodori/` | Irodori-TTS の純 Rust 推論(burn / wgpu。PyTorch 不要。設計・精度・速度は `docs/irodori-rs.md`) |
-| `backend/` | Python バックエンド(uv プロジェクト) |
-| `backend/src/sttts_server/` | stdio サーバ本体・チャンク分割・エンジン実装 |
-| `backend/src/sttts_server/engines/` | `tts_irodori` / `asr`(ファクトリ)/ `asr_whisper` / `asr_reazon` / `vad_silero` / `mic` / `wav_source` / `mock` |
-| `backend/scripts/bench_latency.py` | レイテンシ計測ハーネス(P50/P90) |
+| `crates/gui/` | GPUI クライアント(gpui-kit 0.7 + rodio)。エンジンをプロセス内で起動する(`backend.rs`) |
+| `crates/engine/` | バックエンド本体。設定・文チャンク分割・TTS ワーカー・ライブセッション(VAD→ASR)・投機的 TTS・発話表現。外界は `Platform` トレイトで注入するので、実モデル・実デバイス無しでテストできる |
+| `crates/protocol/` | GUI⇄エンジンのメッセージ型(Rust/serde) |
+| `crates/irodori/` | Irodori-TTS の純 Rust 推論(burn / wgpu。設計・精度・速度は `docs/irodori-rs.md`) |
+| `crates/whisper/` | kotoba-whisper-v2.0 の純 Rust 推論(burn / wgpu) |
+| `crates/nemotron/` | Nemotron 3.5 ASR streaming(ONNX、onnxruntime / CPU)の Rust 実装 |
+| `crates/gemini/` | Gemini Live API(クラウド ASR)のクライアント |
+| `crates/audio/` | マイク入力(cpal)・リサンプル・Silero VAD・WAV ソース |
+| `crates/hub/` | HuggingFace Hub のキャッシュ探索とモデル自動ダウンロード |
+| `tools/reference/` | 開発用: PyTorch の参照出力を書き出す Python スクリプト(数値一致テスト用。アプリの実行には使わない) |
 | `output/` | 生成 WAV(チャンクごとに自動保存) |
 | `data/config.json` | GUI 設定(モデル・キャプション・自動発話等) |
-| `data/backend.json` | 任意。backend の上級設定(下記「低レイテンシ設定」) |
+| `data/backend.json` | 任意。エンジンの上級設定(下記) |
 
 ## セットアップ(Windows 11 + Intel Arc B570)
 
 要件:
 
-- Windows 11 / Intel Arc ドライバ **32.0.101.7028 以上**(XPU 用。古い場合は更新)
-- Rust stable(cargo 1.99 で検証)/ MSVC ビルドツール
-- [uv](https://docs.astral.sh/uv/) と git
+- Windows 11 / GPU は Vulkan が使えるもの(Intel Arc、NVIDIA、AMD。Intel Arc B570 で検証)
+- Rust stable(1.95 以上)/ MSVC ビルドツール
 
 ```bat
-:: 1) Python 環境(torch 2.14 XPU 含む。初回は数GBダウンロード)
-cd backend
-uv sync --extra xpu
-
-:: 2) XPU 疎通確認
-uv run --no-sync python -c "import torch; print(torch.xpu.is_available())"  :: True になること
-
-:: 3) GUI ビルド(リポジトリルートへ戻る)
-cd ..
 cargo build --release
 ```
 
-注意: 本リポジトリの Python 環境はグローバルに入れず、必ず上記 venv(uv)で隔離してください。
-
-## セットアップ(NVIDIA GPU / CUDA 13.0)
-
-RTX 20xx〜50xx 向け。PyTorch extra は **xpu / cu130 / cpu のどれか1つ**だけ指定します
-(`[tool.uv] conflicts` で同時指定は禁止。切り替えるときは指定し直して `uv sync`)。
-
-要件: NVIDIA ドライバ R570 以上(CUDA 13.0 ランタイムは torch wheel に同梱)。
-
-```bat
-cd backend
-uv sync --extra cu130
-:: 任意: ReazonSpeech ASR も使う場合
-:: uv sync --extra cu130 --extra reazonspeech
-
-:: 疎通確認(どちらも True / 1 以上になること)
-uv run --no-sync python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_capability())"
-uv run --no-sync python -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())"
-```
-
-`dev.ps1` からは `.\dev.ps1 -Mode real -Backend cu130`。Linux / macOS / GPU なしは
-`uv sync --extra cpu`(GUI の backend 探索は `backend/.venv/bin/python` にも対応)。
-
-- **TTS**: `tts.device=auto` で CUDA を使います。`tts.precision=auto` は compute capability
-  8.0 未満(RTX 2080Ti = sm_75 など Turing)では bf16 のハード支援が無いため **fp32**、
-  Ampere 以降は bf16。XPU は従来どおり bf16。
-- **ASR(kotoba-whisper)**: `asr.device=auto` で CTranslate2 が CUDA を認識すれば
-  **cuda / float16**、無ければ従来どおり cpu / int8。CUDA 初期化に失敗した場合
-  (Windows で cuDNN / cuBLAS の DLL が見つからない等)は自動で cpu / int8 に
-  フォールバックし、ログに理由を出します。Windows では torch 同梱の DLL
-  (`torch/lib`)を CTranslate2 の検索パスへ追加しています。
-- Intel Arc 環境では CTranslate2 が XPU 非対応のため ASR は CPU です
-  (速度が必要なら ReazonSpeech エンジンを検討)。
+これだけです。モデル(Irodori-TTS ≈3GB、コーデック ≈0.4GB、ASR は選んだエンジンの分)は
+**初回起動時に自動でダウンロード**されます(HuggingFace のキャッシュ `~/.cache/huggingface/hub` を共有)。
 
 ## 実行
 
@@ -97,12 +61,10 @@ uv run --no-sync python -c "import ctranslate2; print(ctranslate2.get_cuda_devic
 ```powershell
 .\dev.ps1                        # モードを対話式で選択(1: real / 2: mock、空欄で real)
 .\dev.ps1 -Mode real             # 実エンジンモードを直接指定(対話なし・自動化向け)
-.\dev.ps1 -Mode real -Backend cu130   # NVIDIA GPU 用に同期して起動(以降は記録され省略可)
 .\dev.ps1 -DebugBuild            # debug プロファイルで起動
 ```
 
-スクリプトは 前提確認(cargo / uv)→ `uv sync --extra <Backend>`(real は毎回。既定 xpu、初回指定は記録)→
-`cargo build`(毎回実行。変更がなければ差分ビルドで数秒)→ GUI 起動、を行います。
+スクリプトは `cargo build`(毎回実行。変更がなければ差分ビルドで数秒)→ GUI 起動、を行います。
 コード編集後に古いバイナリが起動することはありません。
 
 直接起動する場合:
@@ -111,7 +73,7 @@ uv run --no-sync python -c "import ctranslate2; print(ctranslate2.get_cuda_devic
 :: モックモード(モデルDLなし。UI/配線の確認用)
 cargo run --release -p sttts-gui -- --mock
 
-:: 実エンジンモード(初回発話時に Irodori モデル ≈3GB と ASR モデル ≈1GB を自動DL)
+:: 実エンジンモード(初回発話時にモデルを自動DL)
 cargo run --release -p sttts-gui -- --real
 ```
 
@@ -127,16 +89,15 @@ cargo run --release -p sttts-gui -- --real
   - **ライブ**: ライブ開始/停止とマイクの入力レベル
   - **音声キュー**: 「自動再生」ON で確定文をそのまま発話。OFF ではカードで止まり、
     「この内容で話す」「訂正する」「話さない」を選ぶ。「テンポと間を再現」は
-    元音声の速さと、任意の感情モデルによる表現を Irodori に渡します
+    元音声の速さを Irodori に渡します
   - **声**: 声バンクの選択と、話し方の指示(Irodori の caption)
   - **認識**: クラウド(Gemini)/ ローカルの切替。Gemini の API キーはここで入力します
 - **タイトルバー**: 全体の状態(準備完了 / 読み込み中 / エラー)、ライブ中の表示、
   **応答**(話し終わってから最初の音声が再生キューに入るまで。直近値と直近20回の中央値)、
   ⚙ 詳細設定、ログの開閉
 - **詳細設定(⚙)**: 入出力デバイス、音声合成モデル、seed など、環境で一度決めれば
-  普段は触らない設定。モデルを変えると(`tts.warmup` が有効なら)ロード + 短文合成で
-  ウォームアップします
-- **ステータスバー**: 認識時間 / 初音まで / 合成速度(RTF)。エラーが出るとログのボタンに
+  普段は触らない設定
+- **ステータスバー**: 認識時間 / 初音まで / 合成速度(RTF)/ VRAM・RAM。エラーが出るとログのボタンに
   件数が出ます。ログは `data/gui.log` にも保存されます(起動ごとに作り直し)
 
 入力欄の「演技」パレット、転写文と合成用絵文字の扱い、対応する全絵文字は
@@ -147,20 +108,7 @@ cargo run --release -p sttts-gui -- --real
 > マイクが拾い、それが文字起こし → 自動発話されてループします(エコーキャンセル未実装)。
 > デモ・収録はヘッドホンで行ってください。
 
-### バックエンド単体のセルフチェック
-
-```bat
-cd backend
-uv run --no-sync python -m sttts_server --self-check-tts "こんにちは" --model v4.1-small-mf
-uv run --no-sync python -m sttts_server --self-check-asr
-```
-
-`--self-check-tts` は Irodori の段階別時間(`stages`)も出力します。
-`--self-check-asr` は実際に使われた device / compute_type を出力します。
-
-## 低レイテンシ設定
-
-### 声のバンク(voice cloning)
+## 声のバンク(voice cloning)
 
 参照音声(wav / flac、10秒程度・話者の声)をアプリのウィンドウへドラッグ&ドロップするか、
 右レール「声」の「＋」から選ぶと `data/voices/` に取り込まれ、そのまま選択されます。
@@ -168,39 +116,37 @@ uv run --no-sync python -m sttts_server --self-check-asr
 新しい声に付きます。「ゴミ箱」で削除できます。Explorer での管理は不要です。選択すると Irodori-TTS は
 その音声を話者参照として合成し、話し方を模倣します。未選択(既定の声)は
 キャプション/自動音質での合成になります。選択は `data/config.json` に保存されます。
+参照音声の符号化結果はプロセス内にキャッシュされ、同じ声を使い続ける限り再計算しません。
 
 注意: 参照音声は本人の同意のある声のみ使ってください(モデルカードの利用制限参照)。
 
-GUI に UI の無い設定は `data/backend.json`(任意。`STTTS_CONFIG` 環境変数または
-`--config` で別パス)に書くと、backend 起動時に既定値へマージされます
-(GUI から送られる設定はその上に適用)。例:
+## 上級設定(`data/backend.json`)
+
+GUI に UI の無い設定は `data/backend.json`(任意。環境変数 `STTTS_CONFIG` で別パス)に書くと、
+起動時に既定値へマージされます(GUI から送られる設定はその上に適用)。例:
 
 ```json
 {
-  "asr": { "engine": "kotoba", "device": "auto", "vad_min_silence_ms": 280 },
+  "asr": { "engine": "nemotron", "vad_min_silence_ms": 280 },
   "pipeline": { "first_chunk_mora_max": 12, "speculative_tts": false },
-  "tts": { "precision": "auto", "warmup": true }
+  "tts": { "warmup": true, "sampling": { "duration_scale": 1.1 } }
 }
 ```
 
 | キー | 既定 | 説明 |
 |---|---|---|
-| `asr.engine` | `kotoba` | `kotoba`(faster-whisper)/ `reazonspeech`(sherpa-onnx、要 `--extra reazonspeech`)/ `nemotron`(onnxruntime)/ `gemini`(クラウド、要 APIキー)。GUI の「認識」ドロップダウンでも切替可 |
-| `asr.device` / `asr.compute_type` | `auto` / `auto` | kotoba 用。auto = CUDA なら cuda/float16、無ければ cpu/int8 |
-| `asr.cpu_threads` | `0` | CTranslate2 の CPU スレッド数(0 = 既定) |
-| `asr.final_beam_size` | `2` | 確定デコードのビーム幅(1 にすると少し速い) |
-| `asr.partial_interval_ms` | `800` | 途中経過デコードの間隔。`0` で無効(CPU kotoba では確定の待ちを減らせる) |
+| `asr.engine` | `kotoba` | `kotoba`(kotoba-whisper、GPU)/ `nemotron`(ONNX、CPU)/ `gemini`(クラウド、要 APIキー)。GUI の「認識」ドロップダウンでも切替可 |
+| `asr.model` | `kotoba-tech/kotoba-whisper-v2.0` | kotoba 用の HF リポジトリ |
+| `asr.final_beam_size` | `2` | kotoba の確定デコードのビーム幅(1 にすると少し速い) |
+| `asr.partial_interval_ms` | `800` | 途中経過デコードの間隔。`0` で無効 |
 | `asr.preload` | `true` | 起動時に ASR をロードして「マイク開始」を即座に使えるようにする |
-| `asr.vad_min_silence_ms` | `280` | 無音がこの長さ続いたら発話終了(従来 400)。短いほど速いが文中の間で切れやすい |
-| `asr.vad_threshold` | `0.5` | silero VAD のしきい値 |
-| `asr.reazon_model_dir` | `null` | ReazonSpeech のモデルディレクトリ(null で HF から自動DL) |
-| `asr.reazon_precision` | `fp32` | `int8` は短い発話で崩れやすいので非推奨 |
-| `asr.reazon_threads` | `4` | ReazonSpeech の CPU スレッド数 |
+| `asr.vad_min_silence_ms` | `280` | 無音がこの長さ続いたら発話終了。短いほど速いが文中の間で切れやすい |
+| `asr.vad_threshold` | `0.5` | Silero VAD のしきい値 |
 | `asr.nemotron_model_dir` | `null` | Nemotron の ONNX ディレクトリ(null で HF から自動DL。自前exportグラフはここへ) |
-| `asr.nemotron_chunk_ms` | `320` | ストリーミングチャンク。HF パッケージは 320 のみ(1120 は発話確定がさらに速い。下記「Nemotron 1120ms export」参照) |
-| `asr.nemotron_precision` | `fp16` | `int8` は dynamic quantum で精度劣化するため非推奨 |
-| `asr.nemotron_threads` | `4` | onnxruntime の intra_op スレッド数 |
-| `asr.gemini_api_key` | `null` | AI Studio の API キー。**通常は GUI で入力する**(「認識」で Gemini を選ぶと「キー」欄が出る。`data/config.json` に Windows DPAPI で暗号化保存され、保存した PC のユーザーでしか復号できない)。GUI 未入力なら backend.json のこの値 → 環境変数 `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
+| `asr.nemotron_chunk_ms` | `320` | ストリーミングチャンク。HF パッケージは 320 のみ |
+| `asr.nemotron_precision` | `fp16` | `int8` は精度劣化するため非推奨 |
+| `asr.nemotron_threads` | `4` | onnxruntime のスレッド数 |
+| `asr.gemini_api_key` | `null` | AI Studio の API キー。**通常は GUI で入力する**(「認識」で Gemini を選ぶと「キー」欄が出る。`data/config.json` に Windows DPAPI で暗号化保存される)。GUI 未入力なら backend.json のこの値 → 環境変数 `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
 | `asr.gemini_mode` | `VERBATIM` | 話し方を残す逐語転写。`SMART`=フィラー除去・句読点整形 |
 | `asr.gemini_timeout_s` | `20` | 1発話の確定待ちタイムアウト |
 | `pipeline.first_chunk_mora_min` / `max` | `8` / `12` | 先頭チャンクを読点または約 8〜12 モーラの文節境界で切る(`max=0` で無効) |
@@ -208,121 +154,65 @@ GUI に UI の無い設定は `data/backend.json`(任意。`STTTS_CONFIG` 環境
 | `pipeline.chunk_max_chars` | `80` | これを超える塊は読点 / 文節境界で分割(句読点の無い ASR 出力対策) |
 | `pipeline.speculative_tts` | `false` | 投機的 TTS(下記) |
 | `pipeline.speculative_stable_partials` | `2` | 同じ先頭チャンクが何回連続したら先行合成するか |
-| `pipeline.performance_enabled` | `true` | 元音声の速さと任意の感情候補を Irodori の発話単位指示へ写す。GUI の「テンポと間を再現」で切替 |
-| `pipeline.emotion_engine` | `none` | `emotion2vec` を選ぶと、ローカル CPU モデルを転写と並行実行する。任意 extra `emotion` が必要 |
-| `pipeline.emotion_model_dir` | `null` | 取得済み emotion2vec+ のローカルフォルダ。マイク稼働中にモデルをダウンロードしない |
+| `pipeline.performance_enabled` | `true` | 元音声の速さと間を Irodori の発話単位指示へ写す。GUI の「テンポと間を再現」で切替 |
 | `pipeline.performance_wait_ms` | `150` | ASR 確定後に表現分析を待つ上限。超過時は表現を付けず発話 |
-| `tts.precision` | `auto` | `auto` / `fp32` / `bf16`(auto: CUDA cc<8.0 → fp32、cc≥8.0・XPU → bf16、CPU → fp32) |
 | `tts.warmup` | `true` | モデル決定時にロード + 短文合成を先行して初回の待ちを無くす |
-| `tts.cache_conditions` | `true` | text / caption / 話者エンコードのメモ化(下記) |
-| `tts.ref_latent_cache` | `true` | 参照 WAV の DACVAE latent をキャッシュ(`~/.cache/sttts-gui/ref_latents`、Windows は `%LOCALAPPDATA%\sttts-gui\cache`) |
-| `tts.sampling` | `{}` | Irodori の `SamplingRequest` 項目を上書き(GUI 未対応でも使える)。例: `{"cfg_scale_text": 2.5, "cfg_scale_speaker": 6.0, "duration_scale": 1.1, "truncation_factor": 0.8, "lora_adapter": "..."}`。`text` / `caption` / `ref_*` / `no_ref` / `seed` は発話ごとにアプリが決めるため指定不可(エラー)。設定変更は次の発話から反映 |
-| `tts.codec_repo` / `tts.codec_device` / `tts.codec_precision` | `Aratako/Semantic-DACVAE-Japanese-32dim` / モデルと同じ / `fp32` | codec のロード設定(モデル再ロードで反映) |
-| `tts.compile` | `false` | `torch.compile`。初回が遅く、Windows では triton が必要。有効時はメモ化を無効化 |
+| `tts.num_steps` | `null` | MeanFlow のステップ数(null で checkpoint 既定の 4) |
+| `tts.sampling` | `{}` | Irodori の `SamplingRequest` 項目を上書き(GUI 未対応でも使える)。使える項目: `num_steps` `duration_scale` `seconds` `min_seconds` `max_seconds` `max_ref_seconds` `ref_normalize_db` `ref_ensure_max` `trim_tail` `tail_window_size` `tail_std_threshold` `tail_mean_threshold` `watermark`。`text` / `caption` / `ref_*` / `no_ref` / `seed` は発話ごとにアプリが決めるため指定不可、知らない項目もエラーで知らせます(黙って捨てません)。設定変更は次の発話から反映 |
 
 ### 何が速くなったか
 
 - **ASR を VAD スレッドから分離**: デコードは専用ワーカー。確定(final)を最優先し、
   途中経過(partial)は最新1件に合体。確定が来た発話の partial は待機中・処理中とも破棄。
-  音声キューは無制限で、ASR が遅れても音声は捨てません(従来は満杯時に破棄)。
-  なお Irodori と同様 CTranslate2 も途中中断できないため、partial のデコード中に発話が
-  終わると確定はその完了を待ちます(GPU なら数百 ms 以下、CPU kotoba では数秒)。
+  音声キューは無制限で、ASR が遅れても音声は捨てません。
+- **マイクを先に開く(mic-first)**: ASR のロードと並行してマイクを開き、ロード中の音声は
+  保持してロード完了後に流します。レベルメーターはロード中も止まりません。
 - **先頭チャンクを短く**: Irodori は1チャンク全体を一括生成するので、初音までの時間は
   先頭チャンクの長さにほぼ比例します。先頭だけ読点か約 8〜12 モーラで切り、以降は大きめに。
-  末尾の短い余りを前のチャンクへ連結する処理は廃止(最終チャンクが長くなるため)。
   全角 `！？` も文末として扱います。
 - **seed はリクエスト単位**: ランダム seed のときも1回の発話内の全チャンクで同じ seed を
   使うため、参照音声なしでもチャンク間で声質が変わりません。
 - **投機的 TTS(既定 OFF)**: 同じ先頭チャンクが `speculative_stable_partials` 回連続した
-  partial から先頭チャンクを先行合成します。結果は backend 内に保持し、確定文の先頭チャンク・
-  声・モデル設定が**完全一致したときだけ**再生に回します。不一致なら破棄するので、誤った
+  partial から先頭チャンクを先行合成します。結果はエンジン内に保持し、確定文の先頭チャンク・
+  声・設定が**完全一致したときだけ**再生に回します。不一致なら破棄するので、誤った
   音声が鳴ることはありません(外れた場合は GPU 時間を1チャンク分無駄にします)。
-- **TTS の固定コスト削減(Irodori 本体は無改変)**: 参照 WAV の再エンコードをキャッシュ、
-  1合成内で2回走る条件エンコード(尺予測とサンプラ)をメモ化で1回に、Turing では fp32。
-  CPU 実機(下記)で、メモ化・latent キャッシュの有無で**出力波形がビット一致**することを確認済み。
-  `encode_conditions` 自体の二重呼び出し解消は Irodori 本体の改変が必要なため対象外(今後の課題)。
+- **Nemotron の partial は続きから再開**: 伸びていく発話は直前のデコード状態から再開するので、
+  partial のコストが発話の長さに依存しません。
 
-## レイテンシ KPI と計測
+## レイテンシ KPI
 
 主 KPI は **発話終了→初音** = 話し終わり → 最初の音声チャンクが再生キューに入るまで。
-backend が計測フィールドを NDJSON に載せ(`asr_final.vad_wait_ms` / `asr_ms`、
-`tts_audio.first_chunk_ms` / `e2e_ms` / `rtf` / `stages` 等、`protocol.py` の
-`TIMING_FIELDS` 参照)、GUI は受信→再生キュー投入の時間を足してヘッダに表示します。
-内訳はおおよそ:
+エンジンが計測フィールドをメッセージに載せ(`asr_final.vad_wait_ms` / `asr_ms`、
+`tts_audio.first_chunk_ms` / `e2e_ms` / `rtf` / `stages` 等)、GUI は受信→再生キュー投入の時間を足して
+ヘッダに表示します。内訳はおおよそ:
 
 ```
-発話終了→初音 ≈ VAD 待ち(≈ vad_min_silence_ms) + ASR 確定デコード + TTS 先頭チャンク合成 (+ 転送・キュー待ち)
+発話終了→初音 ≈ VAD 待ち(≈ vad_min_silence_ms) + ASR 確定デコード + TTS 先頭チャンク合成
 ```
-
-計測ハーネス(固定 WAV を実時間ペースでマイク代わりに流す。VAD・ASR ワーカー・
-チャンク分割・TTS ワーカーは本番と同じ経路):
-
-```bat
-cd backend
-:: モデル不要(silero VAD は本物、ASR/TTS はモック、合成音声信号を使用)
-uv run --no-sync python scripts/bench_latency.py --mode mock
-:: 実 ASR + モック TTS(ASR 単体の寄与を測る)
-uv run --no-sync python scripts/bench_latency.py --mode real --mock-tts --asr-engine kotoba --wav 録音.wav
-:: 実 ASR + 実 Irodori(GPU 機での本番計測)
-uv run --no-sync python scripts/bench_latency.py --mode real --asr-engine kotoba --wav 録音.wav --repeat 3 --json result.json
-```
-
-P50 / P90 を表示します(`--speculative`、`--vad-min-silence-ms`、`--partial-interval-ms`、
-`--first-mora-max` で設定を変えて比較可能)。
-
-#### 参考実測(CPU のみ・GPU 未計測)
-
-計測環境: Linux / 8 vCPU Xeon(共有マシンのため数値は揺れます)。入力は日本語講演音声 207 秒
-(VAD で 20 発話)、TTS はモック(固定 50ms)にして ASR と配線の寄与だけを測ったもの。
-**GPU(CUDA / XPU)での数値はまだ測っていません**。
-
-| 構成(すべて CPU) | VAD 待ち P50 | ASR 確定 P50 / P90 | 発話終了→先頭送出 P50 / P90 |
-|---|---|---|---|
-| kotoba int8、partial 800ms | 312 ms | 3706 / 4426 ms | 5995 / 7536 ms |
-| kotoba int8、partial 無効 | 312 ms | 3644 / 3852 ms | 4013 / 4317 ms |
-| ReazonSpeech fp32(4 threads) | 312 ms | 240 / 401 ms | 604 / 838 ms |
-| ReazonSpeech + 投機的 TTS | 312 ms | 238 / 391 ms | 590 / 784 ms(先頭チャンク 20 中 11 で投機ヒット) |
-
-- CPU の kotoba は partial のデコード中に確定が待たされるため、partial 無効の方が約 2 秒速い
-  (GPU では1デコードが短いので差は小さくなる見込み。要実機確認)。
-- モックモード(合成音声信号 + 実 silero VAD + モック ASR/TTS)では VAD 待ち P50 306 ms、
-  発話終了→先頭送出 P50 358 ms。
-
-Irodori v4.1-Small-MF(CPU fp32)での TTS オーバーヘッド削減の確認(同一 seed):
-
-- 条件エンコードのメモ化 ON/OFF、参照 WAV 直接 / latent キャッシュ経由で **出力波形がビット一致**
-- 参照音声(10 秒)ありの `prepare_reference`: 3271 ms → キャッシュヒット時 0.8 ms
-- 同じ文の2回目の合成では `predict_duration` がほぼ 0 になる(条件エンコードがキャッシュに乗るため)
 
 ## モデルカタログ
 
-| エイリアス | 実体 | 備考 |
-|---|---|---|
-| `v4.1-small-mf` | Aratako/Irodori-TTS-v4.1-Small-MF | MeanFlow 4steps。**既定**(B570 で RTF≈0.9 を実測) |
-| `v4.1-small` | Aratako/Irodori-TTS-v4.1-Small | RF 40steps |
-| `v4-large` | Aratako/Irodori-TTS-v4-Large | 高品質。bf16 で VRAM ≈6.6GB+、生成は遅め |
-| `v4.1-small-int8` / `v4-large-int8` | 量子化版(subfolder int8-weight-only) | OOM 時のフォールバック |
+TTS: Irodori-TTS **v4.1 Small MeanFlow**(`v4.1-small-mf`、Aratako/Irodori-TTS-v4.1-Small-MF)のみ。
+Intel Arc B570 で RTF ≈ 0.3(定常)。v4.1-small(RF)・v4-large・INT8 版は Rust 版では扱いません
+(MeanFlow のチェックポイントのみ対応)。
 
 ASR(`asr.engine`):
 
 | エンジン | 実体 | 備考 |
 |---|---|---|
-| `kotoba`(既定) | `kotoba-tech/kotoba-whisper-v2.0-faster`(CTranslate2) | CUDA があれば float16、無ければ CPU int8。句読点は出ない |
-| `reazonspeech` | `reazon-research/reazonspeech-k2-v2`(sherpa-onnx、Apache-2.0) | CPU でも非常に速い(下表)。**句読点なし**・**固有名詞/英字略語に弱い**(例:「NLP」→「エネルギー」)・**int8 は短い発話で崩れる**ので fp32 推奨。`uv sync --extra <torch extra> --extra reazonspeech` |
-| `nemotron` | `nemotron-3.5-asr-streaming-0.6b` の ONNX export(cache-aware FastConformer-RNNT / onnxruntime、コード Apache-2.0 / 重み OpenMDW-1.1) | **句読点をネイティブ出力**・whisper large-v3 級の精度・発話確定 **平均 0.31 秒 / 最大 0.51 秒**(i5-12600KF、chunk=1120ms fp16 実測。chunk=320ms は平均 0.56 秒)。モデル ~2.5GB(fp16)。標準依存(`uv sync --extra <torch extra>`)。ストリーディングエンジンは `engines/vendor/nemotron_onnx_streaming.py` として同梱。**既知の弱点: 母音のみの連続(「あいうえお」等)を正しく認識しない**(直渡しでも「i」等に潰れる。kotoba は「アイウエオ」と認識。2026-10-09 検証)。通常の発話(子音を含む)では影響なし |
-| `gemini` | Google AI Studio「Gemini 3.5 Transcribe Live」(`gemini-3.5-transcribe-live` / Live API WebSocket) | **クラウド**。発話中に約100ms単位の PCM を送り、途中結果を表示し、ローカル VAD の終了時に `audio_stream_end` で確定。既定は `VERBATIM`。話者分離・単語タイムスタンプ非対応。標準依存 + API キー(GUI の「キー」欄で入力・「キーを取得」で AI Studio を開く) |
+| `kotoba`(既定) | `kotoba-tech/kotoba-whisper-v2.0`(Apache-2.0)を burn で実行 | GPU(wgpu)。句読点は出ない。10 秒の発話で約 4 秒(encoder が 30 秒窓固定で律速)。速度改善は今後の課題 |
+| `nemotron` | `nemotron-3.5-asr-streaming-0.6b` の ONNX export(cache-aware FastConformer-RNNT、onnxruntime / CPU、コード Apache-2.0 / 重み OpenMDW-1.1) | **句読点をネイティブ出力**・whisper large-v3 級の精度。一括デコード RTF ≈ 0.35(20 論理コア・4 スレッド)。モデル ≈2.5GB(fp16)でロードに数秒・メモリ約 5GB。**既知の弱点: 母音のみの連続(「あいうえお」等)を正しく認識しない** |
+| `gemini` | Google AI Studio「Gemini 3.5 Transcribe Live」(`gemini-3.5-transcribe-live` / Live API WebSocket) | **クラウド**。発話中に約100ms単位の PCM を送り、途中結果を表示し、ローカル VAD の終了時に確定。既定は `VERBATIM`。要 API キー(GUI の「キー」欄で入力・「キーを取得」で AI Studio を開く) |
 
-VAD は silero-vad(ONNX)。Gemini は発話中に Live セッションへ音声を送り、終了時に確定します。
-ローカル ASR は VAD 発話終了時にバッファ全体を再デコードし、
-発話中は partial_interval_ms(既定800ms)ごとに部分表示を更新します。
-kotoba / reazonspeech は句読点を出さないため、チャンク分割は文節境界の近似と長さで切ります
+VAD は Silero VAD(ONNX、モデルはバイナリに埋め込み)。ローカル ASR は VAD 発話終了時にバッファ全体を
+デコードし、発話中は `partial_interval_ms`(既定800ms)ごとに部分表示を更新します。
+kotoba は句読点を出さないため、チャンク分割は文節境界の近似と長さで切ります
 (nemotron のみ句読点をネイティブ出力するため、読点で綺麗に切れます)。
 
 ### Nemotron 1120ms export(発話確定をさらに速く)
 
-HF 配布の fp16 パッケージは 320ms チャンクのみ。発話単位デコードには
-chunk=1120ms(RTF 約 0.14、i5-12600KF 実測: 発話確定 平均 0.31s / 最大 0.51s)が最速なので、
-速さを優先する場合は下記で自前 export する(CPU だけで可、ベースモデル ~2.5GB を DL):
+HF 配布の fp16 パッケージは 320ms チャンクのみ。chunk=1120ms は発話単位デコードがより速いので、
+速さを優先する場合は自前で export します(CPU だけで可、ベースモデル ~2.5GB を DL):
 
 ```bash
 git clone --depth 1 https://github.com/codavidgarcia/nemotron-3.5-asr-streaming-onnx
@@ -335,48 +225,56 @@ uv run --no-project --with "torch>=2.6" --with onnx --with onnxruntime \
   --with "onnxmltools>=1.12" python export/quantize.py --model-dir ../onnx-out --fp16
 ```
 
-`encoder_1120ms_fp16.onnx(.data)` / `encoder_1120ms_first_fp16.onnx(.data)`(各ディレクトリ内)
-と `decoder.onnx` / `joiner.onnx` / `tokens.txt` / `nemotron_onnx_config.json` を
-`data/nemotron-onnx/`(gitignore 済み)へ平置きし、`data/backend.json` に:
+`encoder_1120ms_fp16.onnx(.data)` / `encoder_1120ms_first_fp16.onnx(.data)` と `decoder.onnx` /
+`joiner.onnx` / `tokens.txt` / `nemotron_onnx_config.json` を `data/nemotron-onnx/`(gitignore 済み)へ
+平置きし、`data/backend.json` に:
 
 ```json
 {"asr": {"engine": "nemotron", "nemotron_model_dir": "data/nemotron-onnx", "nemotron_chunk_ms": 1120}}
 ```
 
-参照実装のライセンスは Apache-2.0(vendor 同梱の LICENSE ファイル参照)、
-重みは OpenMDW-1.1(NVIDIA 所有・商用可)。
+(この export 作業だけは PyTorch が要ります。アプリの実行には不要です。)
+参照実装のライセンスは Apache-2.0(`crates/nemotron/LICENSE`)、重みは OpenMDW-1.1(NVIDIA 所有・商用可)。
 
 ## テスト
 
 ```bat
-cargo test            :: プロトコル単体(計測フィールド含む)+ rodio Sink のキャンセル + モックバックエンドとの往復統合テスト
-cd backend && uv run --no-sync pytest   :: チャンク分割・ASR ワーカー・投機的 TTS・キャンセル・計測フィールド・設定等
+cargo test -p sttts-engine      :: チャンク分割・ASR ワーカー・投機的 TTS・キャンセル・計測フィールド・設定・セッション(mic-first / クールダウン)・往復
+cargo test --workspace --release  :: 全クレート。PyTorch 等の参照データが無いパリティテストは skip します
+```
+
+数値一致(パリティ)テストは PyTorch の参照出力を使います。参照データは開発用の Python 環境で作ります
+(アプリの実行には不要):
+
+```bat
+cd tools\reference
+uv run python dump_irodori_ref.py    :: → target\irodori-ref
+uv run python dump_whisper_ref.py    :: → target\whisper-ref
 ```
 
 ## トラブルシューティング
 
 | 症状 | 対処 |
 |---|---|
-| `torch.xpu.is_available()` が False | Intel ドライバを 32.0.101.7028+ へ更新 |
-| TTS でメモリ不足(OOM) | モデルを INT8 版へ / `decode_mode` sequential 維持 / codec の CPU 追い出し(将来設定化) |
-| ASR が CUDA にならない | ログの「ASR ... フォールバック」を確認。`uv run --no-sync python -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())"` が 0 なら cu130 extra / ドライバを確認。`asr.device` を `cuda` にすると失敗理由がログに出ます |
+| 起動時に GPU を初期化できない | Vulkan 対応の GPU とドライバを確認。Intel Arc は最新ドライバへ。エンジンは GPU 専用で、CPU への自動フォールバックはありません |
+| 合成の途中で「音声合成デバイスが停止しました」 | GPU のデバイス喪失です。アプリを再起動してください(同一プロセスでは復帰できません) |
 | 文中の短い間で発話が切れる | `asr.vad_min_silence_ms` を 350〜400 に戻す |
 | スピーカーで自分の合成音声を拾ってループする | ヘッドホンを使う(マイクは再生中も開いています) |
-| 最初の発話まで数分かかる | 正常です。irodori の依存(torch/transformers 等)の import とモデル構築に冷起動で数分かかります。`tts.warmup`(既定 ON)により起動直後からバックグラウンドでロードが始まります |
-| マイクを開けない / レートエラー | バックエンドは既定レート(通常48kHz)で開き soxr で16kへ変換します。他アプリの排他占有を解除 |
-| ASR の部分表示・確定が遅い | クラウド(Gemini)を選ぶのが最速。kotoba を CUDA で動かすには CUDA 12 のランタイム(cublas64_12 / cudnn9)が別途必要(cu130 の torch は CUDA 13 を同梱)。CPU なら `asr.engine: "reazonspeech"`、または `asr.partial_interval_ms: 0` で partial を止めて確定を優先 |
-| 発話が止まって進まない | バックエンドログ(GUI 下段)を確認。モデル初回 DL 中は待つ必要があります |
-| タスクマネージャに python.exe が残る | GUI を強制終了した場合は子のバックエンドが孤児化します。正常終了は「終了」ボタンから。孤児は手動で終了してください |
+| 最初の発話まで時間がかかる | 初回はモデルのダウンロードと GPU カーネルの準備があります。`tts.warmup`(既定 ON)により起動直後からバックグラウンドでロードが始まります |
+| マイクを開けない | 他アプリの排他占有を解除。入力デバイスは詳細設定で選べます |
+| ASR の部分表示・確定が遅い | クラウド(Gemini)を選ぶのが最速。ローカルなら `asr.engine: "nemotron"`、または `asr.partial_interval_ms: 0` で partial を止めて確定を優先 |
+| 発話が止まって進まない | ログ(GUI 下段)を確認。モデル初回 DL 中は待つ必要があります |
 
 ## ライセンス・クレジット
 
 - [Irodori-TTS](https://github.com/Aratako/Irodori-TTS)(コード: MIT)
-  - モデルのライセンスはチェックポイントごとに異なります。配布・利用の際は各モデルカードを確認してください
-    - [v4.1-Small-MF](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF) / [v4.1-Small](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small) / [v4.1-Small-Quantized](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-Quantized): MIT
-    - [v4-Large](https://huggingface.co/Aratako/Irodori-TTS-v4-Large) / [v4-Large-Quantized](https://huggingface.co/Aratako/Irodori-TTS-v4-Large-Quantized): **Gemma Terms of Use**
-    - コーデック [Semantic-DACVAE-Japanese-32dim](https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim): MIT
+  - [v4.1-Small-MF](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF): MIT
+  - コーデック [Semantic-DACVAE-Japanese-32dim](https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim): MIT
+  - 透かし [SilentCipher](https://huggingface.co/sony/silentcipher)
   - 上記 Irodori-TTS の各モデルカードには、ライセンスに加えて倫理的な利用制限があります(本人の同意なく声優・著名人など実在人物の声を複製・なりすましに使わない、誤情報やディープフェイク目的に使わない 等)
-- [kotoba-whisper-v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0)(Apache-2.0)/ 本アプリが使う CTranslate2 変換版 [kotoba-whisper-v2.0-faster](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0-faster)(MIT)
-- [silero-vad](https://github.com/snakers4/silero-vad)(MIT)
+- [kotoba-whisper-v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0)(Apache-2.0)
+- Nemotron 3.5 ASR streaming(コード Apache-2.0 / 重み OpenMDW-1.1)
+- [silero-vad](https://github.com/snakers4/silero-vad)(MIT。モデルを埋め込み、`crates/audio/assets/LICENSE`)
+- [burn](https://burn.dev)(Apache-2.0 / MIT)/ onnxruntime(MIT)
 - gpui-kit(Apache-2.0)/ Zed GPUI(Apache-2.0)
 - 本リポジトリのコード: ライセンスは未確定(リポジトリオーナーが確定してください)

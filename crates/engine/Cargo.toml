@@ -1,0 +1,28 @@
+[package]
+name = "sttts-engine"
+description = "sttts-gui backend in Rust: mic -> VAD -> ASR -> chunking -> Irodori-TTS (in-process)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+# 本番構成: TTS / Whisper は GPU(wgpu)で動かす。GPU を使えない環境(テスト)では無効にできる。
+default = ["gpu"]
+gpu = ["irodori/gpu", "sttts-whisper/gpu"]
+
+[dependencies]
+sttts-protocol = { path = "../protocol" }
+irodori = { path = "../irodori" }
+sttts-audio = { path = "../audio" }
+sttts-whisper = { path = "../whisper" }
+sttts-gemini = { path = "../gemini" }
+sttts-nemotron = { path = "../nemotron" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+hound = "3"
+rand = "0.9"
+
+[dev-dependencies]
+tempfile = "3"

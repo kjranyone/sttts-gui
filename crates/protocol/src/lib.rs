@@ -1,8 +1,7 @@
-//! sttts-gui の GUI(Rust)⇄ バックエンド(Python)間 stdio NDJSON プロトコル定義。
+//! sttts-gui の GUI ⇄ エンジン(`sttts-engine`)間のメッセージ定義。
 //!
-//! 1メッセージ = 1行のJSONオブジェクト。`type` フィールドがタグ。
-//! Python 側の対応実装は `backend/src/sttts_server/protocol.py`。
-//! 両者は必ず同期して変更すること。
+//! 1メッセージ = JSON オブジェクト。`type` フィールドがタグ。エンジンは GUI と同じプロセスで動くので、
+//! 伝送路はチャネルだが、メッセージは JSON にそのまま直せる形(ログ・テスト・将来のプロセス分離用)に保つ。
 
 use std::collections::BTreeMap;
 
@@ -49,8 +48,6 @@ pub enum BackendMessage {
     Hello {
         protocol: u32,
         mock: bool,
-        #[serde(default)]
-        python: Option<String>,
         #[serde(default)]
         backend_version: Option<String>,
         #[serde(default)]
@@ -192,6 +189,7 @@ pub struct DeliveryInfo {
 }
 
 /// GUI → backend メッセージ。
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum GuiMessage {

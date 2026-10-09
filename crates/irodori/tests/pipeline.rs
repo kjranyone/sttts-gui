@@ -37,7 +37,7 @@ fn case_request(case: &str) -> SamplingRequest {
 #[test]
 fn end_to_end_matches_pytorch() {
     let Some(r) = refs() else {
-        eprintln!("skip: 参照出力がありません(backend/scripts/dump_irodori_ref.py)");
+        eprintln!("skip: 参照出力がありません(tools/reference/dump_irodori_ref.py)");
         return;
     };
     let Ok(paths) = TtsPaths::from_hf_cache() else {

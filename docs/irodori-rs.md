@@ -10,7 +10,7 @@ PyTorch / Python に依存しない Irodori-TTS(v4.1 Small MF)の推論。**目�
 - **モデルは自前の構造体**で持つ(burn の `Module` derive は使わない)。重みは `Weights::tensor::<D>(name, &device)` で名前から取り出す。
 - **精度**: 各段階を PyTorch の CPU fp32 と突き合わせる。目標は最大絶対誤差 ≤ 1e-4 × 参照の最大絶対値(`testing::assert_close(.., 1e-4)`)。ModernBERT や DiT のように深い段は 1e-3 まで許容してよいが、理由を残す。
 - **速度は後段**: まず一致、次に GPU、最後に最適化。最初から最適化しない(実際、最適化の中身は下の「GPU で分かったこと」のとおり、演算の速さよりメモリと形状の扱いだった)。
-- **PyTorch 実装が正**。原典は `backend/.venv/Lib/site-packages/irodori_tts/`(`model.py` / `inference_runtime.py` / `meanflow.py` / `codec.py` / `duration.py` / `text_normalization.py` / `attention.py`)。挙動に迷ったら原典を読み、参照出力で確かめる。
+- **PyTorch 実装が正**。原典は `tools/reference/.venv/Lib/site-packages/irodori_tts/`(`uv sync` で作る参照用環境)(`model.py` / `inference_runtime.py` / `meanflow.py` / `codec.py` / `duration.py` / `text_normalization.py` / `attention.py`)。挙動に迷ったら原典を読み、参照出力で確かめる。
 - MeanFlow(`flow_parameterization == "meanflow"`)のみ対象。RF(CFG あり)は対象外。
 
 ## 状態
@@ -47,7 +47,7 @@ PyTorch / Python に依存しない Irodori-TTS(v4.1 Small MF)の推論。**目�
 
 ```
 # 参照出力(PyTorch, CPU のみ。約 1 分)
-cd backend && uv run --no-sync python scripts/dump_irodori_ref.py
+cd tools/reference && uv run python dump_irodori_ref.py
 
 # テスト(CPU)/ GPU
 cargo test -p irodori --release
@@ -82,7 +82,7 @@ let out = tts.synthesize(&SamplingRequest { text: "…".into(), no_ref: true, ..
 ## 参照出力(PyTorch, CPU, fp32)
 
 ```
-cd backend && uv run --no-sync python scripts/dump_irodori_ref.py     # → target/irodori-ref/{refs.safetensors,meta.json,ref.wav}
+cd tools/reference && uv run python dump_irodori_ref.py     # → target/irodori-ref/{refs.safetensors,meta.json,ref.wav}
 ```
 
 約 1 分。`target/` は git 管理外。`irodori::testing::refs()` が読む(無ければ `None`。テストは無い時にスキップせず、`eprintln!` して return する)。モデルは `testing::checkpoint_dir()`(HF キャッシュ)。

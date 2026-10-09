@@ -1,8 +1,8 @@
 # Rust
 /target/
 
-# Python (uv)
-backend/.venv/
+# 参照データ生成ツール(開発用)の Python 環境
+tools/reference/.venv/
 __pycache__/
 *.py[cod]
 

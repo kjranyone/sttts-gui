@@ -95,12 +95,9 @@ pub struct StttsApp {
     /// PC リソース(RAM / GPU 専用メモリ)の最新サンプル
     sys: Option<sysmon::SysSample>,
     backend_pid: Arc<AtomicU32>,
-    /// 依存同期中(backend 起動前)に送られたメッセージ。起動直後にまとめて送る。
-    queued_sends: Vec<GuiMessage>,
     /// エンジンが loading になった時刻(経過秒の表示用)
     tts_loading_since: Option<Instant>,
     asr_loading_since: Option<Instant>,
-    backend_starting: bool,
     selected_voice_name: Option<String>,
     voice_select: Entity<SelectState<Vec<String>>>,
     /// 話し方の指示(Irodori の caption)
@@ -265,10 +262,8 @@ impl StttsApp {
             pending_voice_import: None,
             sys: None,
             backend_pid: Arc::new(AtomicU32::new(0)),
-            queued_sends: Vec::new(),
             tts_loading_since: None,
             asr_loading_since: None,
-            backend_starting: false,
             selected_voice_name: saved_voice,
             voice_select,
             caption_input,
@@ -418,44 +413,8 @@ impl StttsApp {
         .detach();
 
         let (tx_events, rx_events) = async_channel::unbounded::<AnyMessage>();
-        let (tx_stderr, rx_stderr) = async_channel::unbounded::<String>();
-
-        // stderr(人間可読ログ)の取り込みループ。依存同期の進捗もここへ流れる
-        cx.spawn(async move |this, cx| {
-            while let Ok(line) = rx_stderr.recv().await {
-                let line = if line.starts_with("[uv]") { line } else { format!("[py] {line}") };
-                if this
-                    .update(cx, |app, cx| {
-                        app.push_log(line);
-                        if app.log_open {
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
-
-        // 依存の同期は UI を止めないようバックグラウンドで行い、完了後にバックエンドを起動する
-        self.backend_starting = true;
-        self.status_hint = if self.mock { "バックエンド起動中…".into() } else { "依存を同期中…".into() };
-        let (mock, root, tx_sync) = (self.mock, self.root.clone(), tx_stderr.clone());
-        cx.spawn(async move |this, cx| {
-            let sync = cx
-                .background_executor()
-                .spawn(async move { backend::sync_dependencies(mock, &root, &tx_sync) })
-                .await;
-            let _ = this.update(cx, |app, cx| {
-                if let Err(e) = sync {
-                    app.push_log(format!("[error:deps] 依存の同期に失敗(既存の環境で続行): {e:#}"));
-                }
-                app.launch_backend(tx_events, tx_stderr, rx_events, cx);
-            });
-        })
-        .detach();
+        self.status_hint = "バックエンド起動中…".into();
+        self.launch_backend(tx_events, rx_events, cx);
     }
 
     /// RAM / GPU 専用メモリの監視(読み取り専用。デバイスには触れない)。
@@ -481,29 +440,14 @@ impl StttsApp {
     fn launch_backend(
         &mut self,
         tx_events: async_channel::Sender<AnyMessage>,
-        tx_stderr: async_channel::Sender<String>,
         rx_events: async_channel::Receiver<AnyMessage>,
         cx: &mut Context<Self>,
     ) {
         let output_dir: PathBuf = self.root.join("output");
         let _ = std::fs::create_dir_all(&output_dir);
-        let spawn_cfg = backend::default_spawn(self.mock, &output_dir);
-
-        self.backend_starting = false;
-        let handle = match backend::BackendHandle::spawn(spawn_cfg, tx_events, tx_stderr) {
-            Ok(h) => h,
-            Err(e) => {
-                self.queued_sends.clear();
-                self.push_log(format!("バックエンド起動エラー: {e:#}"));
-                self.status_hint = "バックエンド起動エラー".into();
-                return;
-            }
-        };
+        let handle = backend::BackendHandle::start(self.mock, &self.root, &output_dir, tx_events);
         self.backend_pid.store(handle.pid(), Ordering::Relaxed);
         self.backend = Some(handle);
-        for msg in std::mem::take(&mut self.queued_sends) {
-            self.send(msg);
-        }
         self.status_hint = "バックエンド接続待ち…".into();
 
         // backend → UI の取り込みループ
@@ -529,11 +473,7 @@ impl StttsApp {
 
     fn send(&mut self, msg: GuiMessage) {
         if let Some(b) = &self.backend {
-            if let Err(e) = b.send(&msg) {
-                self.push_log(format!("送信失敗: {e}"));
-            }
-        } else if self.backend_starting {
-            self.queued_sends.push(msg);
+            b.send(&msg);
         } else {
             self.push_log("バックエンド未接続".into());
         }
@@ -558,6 +498,23 @@ impl StttsApp {
                 self.connected = true;
                 self.mock = mock;
                 self.models = models;
+                // 保存されていたモデルが今のエンジンで扱えない(以前の版で選んだ大型モデル等)ときは既定へ戻す
+                if !self.models.iter().any(|m| m.id == self.selected_model_id)
+                    && let Some(first) = self.models.first().cloned()
+                {
+                    self.push_log(format!(
+                        "音声合成モデル {} は使えないため {} に切り替えました",
+                        self.selected_model_id, first.label
+                    ));
+                    self.selected_model_id.clone_from(&first.id);
+                    self.send(GuiMessage::Configure {
+                        tts: Some(TtsConfig { model: Some(first.id), ..Default::default() }),
+                        asr: None,
+                        audio: None,
+                        voice: None,
+                        pipeline: None,
+                    });
+                }
                 // backend(再)起動で request id は 1 から振り直される
                 self.last_accepted_request = 0;
                 self.cancelled_upto = 0;

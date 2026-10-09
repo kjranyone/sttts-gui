@@ -17,7 +17,7 @@ struct Ctx {
 
 fn setup() -> Option<Ctx> {
     let Some(refs) = testing::refs() else {
-        eprintln!("skip: reference dump not found (run backend/scripts/dump_irodori_ref.py)");
+        eprintln!("skip: reference dump not found (run tools/reference/dump_irodori_ref.py)");
         return None;
     };
     let Some(dir) = testing::checkpoint_dir() else {

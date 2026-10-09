@@ -7,7 +7,7 @@ Irodori-TTS v4.1 は読み上げる `text` 内の絵文字、`caption`、参照�
 1. Gemini Transcribe Live の確定文を原文として表示・保持する。表現用の絵文字は原文へ書き戻さない。
 2. 元音声から無音と発話速度を測る。発話の途中で Gemini へ PCM を送り、VAD 終了時に確定を要求する。ローカル音響分析と任意の SER は転写と並行する。
 3. 表現反映が有効で、観測値が話者内の最近の発話と大きく異なるときだけ、`⏩` / `🐢` と控えめな `duration_scale` を発話単位で選ぶ。最初の数発話では基準がないため速度を変えない。発話内の長い間が多い場合は caption に「間を取りながら」を加える。語の位置までは指定しない。
-4. 任意の emotion2vec+ が明確な分類を返した場合、次の表の感情絵文字と短いスタイル文を選ぶ。配布モデルの「开心/happy」のような二言語ラベルも解釈する。曖昧・未知・期限超過は付与しない。参照音声は選択された声のままにする。
+4. 感情分類器(現在は Rust 版では未対応)が明確な分類を返した場合、次の表の感情絵文字と短いスタイル文を選ぶ。曖昧・未知・期限超過は付与しない。参照音声は選択された声のままにする。
 5. TTS のチャンク分割後、各チャンクの先頭へ発話単位の絵文字を付ける。`caption` には声の既定文と今回のスタイル文を結合する。`duration_scale` は今回のジョブだけに渡す。GUI の発話カードには転写文と適用した表現を分けて表示する。
 
 | SER の分類 | 自動付与する絵文字 | caption に付ける短文 |
@@ -38,18 +38,8 @@ Irodori-TTS v4.1 は読み上げる `text` 内の絵文字、`caption`、参照�
 
 `🤐` は公式表にあるが、[挙動が期待と異なる報告](https://github.com/Aratako/Irodori-TTS/issues/35)がある。自動分類からは挿入しない。笑い・咳・ため息なども、感情分類だけから発生したとみなさない。文中へ手動で入力した場合はそのまま送る。
 
-## ローカル感情モデルを使う場合
+## ローカル感情モデル(Rust 版では未対応)
 
-標準設定は `pipeline.emotion_engine = "none"`。音響分析だけが動く。emotion2vec+ を使うには、依存を `uv sync --extra <torch extra> --extra emotion` で入れ、[emotion2vec+ base](https://huggingface.co/emotion2vec/emotion2vec_plus_base)をマイク開始前にローカルフォルダへ取得して、`data/backend.json` で次を指定する。
-
-```json
-{
-  "pipeline": {
-    "emotion_engine": "emotion2vec",
-    "emotion_model_dir": "C:/models/emotion2vec_plus_base",
-    "performance_wait_ms": 150
-  }
-}
-```
-
-モデルは CPU で実行し、Gemini の転写文は置き換えない。モデルの日本語での判定品質と本体の CPU 遅延は実測で検証する。起動中にモデルを自動ダウンロードしない。モデルが無い、結果が曖昧、解析が期限を超えた場合は文字列を明瞭に読み上げる。Gemini の転写が失敗した場合は自動発話しない。
+emotion2vec+ による感情分類は Python(funasr)専用のモデルだったため、Python バックエンドの廃止とともに外した。
+`pipeline.emotion_engine` は `none` のみ有効で、`emotion2vec` を指定すると「未対応」のエラーを一度だけ通知し、音響分析(速さと間)だけで動く。
+Rust 製の分類器を足す場合の入り口は `crates/engine/src/performance.rs` の `plan_delivery` の `emotion` 引数。
