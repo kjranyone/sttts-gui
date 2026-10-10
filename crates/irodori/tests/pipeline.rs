@@ -40,7 +40,7 @@ fn end_to_end_matches_pytorch() {
         eprintln!("skip: 参照出力がありません(tools/reference/dump_irodori_ref.py)");
         return;
     };
-    let Ok(paths) = TtsPaths::from_hf_cache(irodori::pipeline::MODEL_REPO) else {
+    let Ok(paths) = TtsPaths::from_hf_cache(irodori::pipeline::MODEL_REPO, irodori::pipeline::MODEL_WEIGHTS) else {
         eprintln!("skip: モデルが HF キャッシュにありません");
         return;
     };

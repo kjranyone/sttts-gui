@@ -25,8 +25,10 @@ use crate::weights::Weights;
 /// 読み込むファイルの場所
 #[derive(Debug, Clone)]
 pub struct TtsPaths {
-    /// `model.safetensors` と `tokenizer/tokenizer.json` があるディレクトリ
-    pub model_dir: PathBuf,
+    /// モデルの重み(`model.safetensors`。量子化版はリポジトリ内のサブフォルダにある)
+    pub model_weights: PathBuf,
+    /// `tokenizer.json` があるディレクトリ(リポジトリの `tokenizer/`)
+    pub tokenizer_dir: PathBuf,
     /// DACVAE の `weights.pth`
     pub codec_weights: PathBuf,
     /// SilentCipher の `44_1_khz/73999_iteration`(None なら透かしなし)
@@ -38,13 +40,18 @@ pub const MODEL_REPO: &str = "Aratako/Irodori-TTS-v4.1-Small-MF";
 pub const CODEC_REPO: &str = "Aratako/Semantic-DACVAE-Japanese-32dim";
 pub const WATERMARK_REPO: &str = "sony/silentcipher";
 
-/// モデルの HF リポジトリに置かれているファイル(重みとトークナイザ)
-pub const MODEL_FILES: [&str; 3] = ["model.safetensors", "tokenizer/tokenizer.json", "tokenizer/tokenizer_config.json"];
+/// 量子化していないモデルの重み(リポジトリ直下)
+pub const MODEL_WEIGHTS: &str = "model.safetensors";
+
+/// モデルの HF リポジトリから取るファイル(重み `weights` とトークナイザ)
+pub fn model_files(weights: &str) -> [&str; 3] {
+    [weights, "tokenizer/tokenizer.json", "tokenizer/tokenizer_config.json"]
+}
 
 impl TtsPaths {
-    /// HF キャッシュに無いモデル(`model_repo`)とコーデック・透かしをダウンロードして(あれば再利用して)パスを返す。
-    pub fn ensure_downloaded(model_repo: &str, progress: &dyn Fn(&str)) -> Result<Self> {
-        let model_dir = crate::hub::ensure_files(model_repo, &MODEL_FILES, progress)?;
+    /// HF キャッシュに無いモデル(`model_repo` の `weights`)とコーデック・透かしをダウンロードして(あれば再利用して)パスを返す。
+    pub fn ensure_downloaded(model_repo: &str, weights: &str, progress: &dyn Fn(&str)) -> Result<Self> {
+        let model_dir = crate::hub::ensure_files(model_repo, &model_files(weights), progress)?;
         let codec_dir = crate::hub::ensure_files(CODEC_REPO, &["weights.pth"], progress)?;
         let wm = crate::hub::ensure_files(
             WATERMARK_REPO,
@@ -56,16 +63,21 @@ impl TtsPaths {
             progress(&format!("警告: 透かし(SilentCipher)を取得できませんでした。透かしなしで合成します: {e:#}"));
         }
         let watermark_dir = wm.ok().map(|d| d.join("44_1_khz/73999_iteration"));
-        Ok(Self { model_dir, codec_weights: codec_dir.join("weights.pth"), watermark_dir })
+        Ok(Self {
+            model_weights: model_dir.join(weights),
+            tokenizer_dir: model_dir.join("tokenizer"),
+            codec_weights: codec_dir.join("weights.pth"),
+            watermark_dir,
+        })
     }
 
-    /// HuggingFace キャッシュ(`~/.cache/huggingface/hub`)からモデル(`model_repo`)を探す
-    pub fn from_hf_cache(model_repo: &str) -> Result<Self> {
-        let model_dir = crate::hub::find_snapshot(model_repo, &["model.safetensors"]).with_context(|| format!("{model_repo} が HF キャッシュにありません"))?;
+    /// HuggingFace キャッシュ(`~/.cache/huggingface/hub`)からモデル(`model_repo` の `weights`)を探す
+    pub fn from_hf_cache(model_repo: &str, weights: &str) -> Result<Self> {
+        let model_dir = crate::hub::find_snapshot(model_repo, &model_files(weights)).with_context(|| format!("{model_repo} が HF キャッシュにありません"))?;
         let codec_weights = crate::codec::default_weights_path().context("DACVAE の weights.pth が HF キャッシュにありません")?;
         let watermark_dir = crate::hub::find_snapshot(WATERMARK_REPO, &["44_1_khz/73999_iteration/enc_c.ckpt"])
             .map(|d| d.join("44_1_khz/73999_iteration"));
-        Ok(Self { model_dir, codec_weights, watermark_dir })
+        Ok(Self { model_weights: model_dir.join(weights), tokenizer_dir: model_dir.join("tokenizer"), codec_weights, watermark_dir })
     }
 }
 
@@ -262,12 +274,12 @@ pub struct Tts {
 
 impl Tts {
     pub fn load(paths: &TtsPaths, device: &Device) -> Result<Self> {
-        let w = Weights::open(paths.model_dir.join("model.safetensors"))?;
+        let w = Weights::open(&paths.model_weights)?;
         let cond = TextConditioner::load(&w, device)?;
         let cfg = cond.cfg.clone();
         // 参照音声の潜在をパッチ化する処理は未実装(v4.1 Small MF は 1)
         ensure!(cfg.latent_patch_size == 1, "latent_patch_size != 1 は未対応です({})", cfg.latent_patch_size);
-        let tokenizer = Tokenizer::load(paths.model_dir.join("tokenizer"))?;
+        let tokenizer = Tokenizer::load(&paths.tokenizer_dir)?;
         let dit = Dit::load(&w, &cfg, device)?;
         let duration = if cfg.use_duration_predictor { Some(DurationPredictor::load(&w, &cfg, device)?) } else { None };
         let codec = DacVae::load(&paths.codec_weights, device)?;

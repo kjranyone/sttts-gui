@@ -1,10 +1,15 @@
 //! safetensors の読み込み(mmap)。dtype は F32 / F16 / BF16 を f32 へ変換して返す。
+//!
+//! torchao で量子化したチェックポイント(`Aratako/Irodori-TTS-*-Quantized`)も読む。量子化した重みは
+//! `<親>._weight_qdata`(I8 `[out, in]`)と `<親>._weight_scale`(行ごとの scale `[out, 1]`)に分かれて入っており、
+//! 元の名前(`<親>.weight`)で引くと `qdata * scale` に戻した f32 を返す。int8 のまま使うときは [`Weights::int8`]。
+//! 対応は int8 weight-only(W8A16)のみ。活性も量子化する版や float8 / int4 はエラーにする。
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use burn::tensor::{Device, Tensor, TensorData};
 use memmap2::Mmap;
 use serde_json::Value;
@@ -22,7 +27,19 @@ pub struct Weights {
     base: usize,
     entries: HashMap<String, Entry>,
     metadata: HashMap<String, String>,
+    /// 量子化した重み: 元の名前 → (qdata の名前, scale の名前)
+    quantized: HashMap<String, (String, String)>,
 }
+
+/// int8 weight-only の重み(torchao `Int8Tensor`)。`[out, in]` の値と、行ごとの scale
+pub struct Int8Weight {
+    pub shape: [usize; 2],
+    pub values: Vec<i8>,
+    pub row_scales: Vec<f32>,
+}
+
+/// 対応する量子化(`irodori_quantization_json` の `quantization_type`)
+const SUPPORTED_QUANTIZATION: &str = "int8_weight_only";
 
 impl Weights {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -70,7 +87,30 @@ impl Weights {
             }
             entries.insert(k.clone(), Entry { dtype, shape, start, end });
         }
-        Ok(Self { mmap, base: 8 + n, entries, metadata })
+        let quantized = quantized_tensors(&metadata, &entries).with_context(|| format!("{}", path.display()))?;
+        Ok(Self { mmap, base: 8 + n, entries, metadata, quantized })
+    }
+
+    /// torchao で量子化したチェックポイントか
+    pub fn is_quantized(&self) -> bool {
+        !self.quantized.is_empty()
+    }
+
+    /// 量子化した重みか(元の名前で引く)
+    pub fn is_int8(&self, name: &str) -> bool {
+        self.quantized.contains_key(name)
+    }
+
+    /// int8 の重みをそのまま返す(GPU に int8 のまま置くため)
+    pub fn int8(&self, name: &str) -> Result<Int8Weight> {
+        let (q, sc) = self.quantized.get(name).ok_or_else(|| anyhow!("not an int8 tensor: {name}"))?;
+        let e = self.entry(q)?;
+        let [out, inp] = e.shape[..] else { bail!("{name}: int8 weight must be 2-D, got {:?}", e.shape) };
+        let values: Vec<i8> = self.mmap[self.base + e.start..self.base + e.end].iter().map(|&b| b as i8).collect();
+        let (sshape, row_scales) = self.f32_vec(sc)?;
+        ensure!(sshape == [out, 1], "{name}: scale shape {sshape:?} != [{out}, 1] (only per-row int8 is supported)");
+        ensure!(values.len() == out * inp, "size mismatch for {name}");
+        Ok(Int8Weight { shape: [out, inp], values, row_scales })
     }
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
@@ -78,7 +118,7 @@ impl Weights {
     }
 
     pub fn contains(&self, name: &str) -> bool {
-        self.entries.contains_key(name)
+        self.entries.contains_key(name) || self.quantized.contains_key(name)
     }
 
     pub fn metadata(&self, key: &str) -> Option<&str> {
@@ -86,15 +126,24 @@ impl Weights {
     }
 
     pub fn shape(&self, name: &str) -> Result<&[usize]> {
-        Ok(&self.entry(name)?.shape)
+        match self.quantized.get(name) {
+            Some((q, _)) => Ok(&self.entry(q)?.shape),
+            None => Ok(&self.entry(name)?.shape),
+        }
     }
 
     fn entry(&self, name: &str) -> Result<&Entry> {
         self.entries.get(name).ok_or_else(|| anyhow!("tensor not found: {name}"))
     }
 
-    /// (shape, f32 値) を返す。
+    /// (shape, f32 値) を返す。量子化した重みは `qdata * scale` に戻す。
     pub fn f32_vec(&self, name: &str) -> Result<(Vec<usize>, Vec<f32>)> {
+        if self.quantized.contains_key(name) {
+            let q = self.int8(name)?;
+            let [_, inp] = q.shape;
+            let data = q.values.iter().enumerate().map(|(i, &v)| f32::from(v) * q.row_scales[i / inp]).collect();
+            return Ok((q.shape.to_vec(), data));
+        }
         let e = self.entry(name)?;
         let bytes = &self.mmap[self.base + e.start..self.base + e.end];
         let numel: usize = e.shape.iter().product();
@@ -137,4 +186,34 @@ impl Weights {
         };
         Ok((e.shape.clone(), out))
     }
+}
+
+/// メタデータから量子化した重みを集める。対応外の量子化はここでエラーにする(黙って誤った値で動かさない)。
+fn quantized_tensors(metadata: &HashMap<String, String>, entries: &HashMap<String, Entry>) -> Result<HashMap<String, (String, String)>> {
+    let Some(raw) = metadata.get("irodori_quantization_json") else { return Ok(HashMap::new()) };
+    let q: Value = serde_json::from_str(raw).context("irodori_quantization_json")?;
+    let (version, backend, kind) = (q["format_version"].as_u64(), q["backend"].as_str(), q["quantization_type"].as_str().unwrap_or(""));
+    ensure!(version == Some(1) && backend == Some("torchao"), "unsupported quantization format: {raw}");
+    ensure!(
+        kind == SUPPORTED_QUANTIZATION,
+        "unsupported quantization {kind:?} (the Rust Irodori supports {SUPPORTED_QUANTIZATION}, i.e. the int8-weight-only checkpoints)"
+    );
+    let mut out = HashMap::new();
+    for (name, v) in metadata {
+        // テンソルごとの記述は JSON(`{"_type": "Tensor" | "Int8Tensor" | ...}`)。それ以外のメタデータは飛ばす
+        let Ok(desc) = serde_json::from_str::<Value>(v) else { continue };
+        match desc.get("_type").and_then(Value::as_str) {
+            Some("Int8Tensor") => {}
+            Some("Tensor") | None => continue,
+            Some(other) => bail!("unsupported quantized tensor {name}: {other}"),
+        }
+        ensure!(desc["_data"]["act_quant_kwargs"].is_null(), "{name}: activation quantization is not supported");
+        let (parent, attr) = name.rsplit_once('.').ok_or_else(|| anyhow!("bad quantized tensor name {name}"))?;
+        let (qd, sc) = (format!("{parent}._{attr}_qdata"), format!("{parent}._{attr}_scale"));
+        ensure!(entries.get(&qd).is_some_and(|e| e.dtype == "I8"), "{name}: missing int8 data {qd}");
+        ensure!(entries.contains_key(&sc), "{name}: missing scale {sc}");
+        out.insert(name.clone(), (qd, sc));
+    }
+    ensure!(!out.is_empty(), "quantized checkpoint without quantized tensors");
+    Ok(out)
 }

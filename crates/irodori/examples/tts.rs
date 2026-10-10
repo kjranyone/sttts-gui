@@ -2,7 +2,7 @@
 //!
 //!   cargo run -p irodori --release --features gpu --example tts -- \
 //!       --text "こんにちは" [--caption "落ち着いた声で"] [--ref ref.wav] [--seed 1] \
-//!       [--model Aratako/Irodori-TTS-v4.1-Small] [--steps 40] [--device gpu|cpu] [--repeat 3] [--out out.wav] [--no-watermark]
+//!       [--model Aratako/Irodori-TTS-v4.1-Small [--weights int8-weight-only/model.safetensors]] [--steps 40] [--device gpu|cpu] [--repeat 3] [--out out.wav] [--no-watermark]
 //!
 //! `--repeat` は同じ設定で繰り返し、2 回目以降(カーネルのコンパイル後)の速度を見るためのもの。
 
@@ -21,6 +21,7 @@ fn main() -> Result<()> {
     let mut texts: Vec<String> = Vec::new();
     let mut out: Option<PathBuf> = None;
     let mut model = irodori::pipeline::MODEL_REPO.to_string();
+    let mut weights = irodori::pipeline::MODEL_WEIGHTS.to_string();
     req.no_ref = true;
     while let Some(a) = args.next() {
         let mut val = |name: &str| args.next().with_context(|| format!("{name} needs a value"));
@@ -35,6 +36,7 @@ fn main() -> Result<()> {
             "--steps" => req.num_steps = Some(val("--steps")?.parse()?),
             "--seconds" => req.seconds = Some(val("--seconds")?.parse()?),
             "--model" => model = val("--model")?,
+            "--weights" => weights = val("--weights")?,
             "--device" => device_kind = val("--device")?,
             "--repeat" => repeat = val("--repeat")?.parse()?,
             "--out" => out = Some(PathBuf::from(val("--out")?)),
@@ -56,7 +58,7 @@ fn main() -> Result<()> {
     eprintln!("device: {device:?}");
 
     let t0 = std::time::Instant::now();
-    let paths = TtsPaths::from_hf_cache(&model)?;
+    let paths = TtsPaths::from_hf_cache(&model, &weights)?;
     let tts = Tts::load(&paths, &device)?;
     eprintln!("load: {:.1}s (watermark: {})", t0.elapsed().as_secs_f64(), tts.has_watermark());
 

@@ -84,8 +84,13 @@ All lines are validated (voices exist, sampling keys valid, ids unique) before a
 
 - `v4.1-small-mf` (default): MeanFlow, 4 steps. Fast; good for drafts and auditions.
 - `v4.1-small`: RF, 40 steps with guidance (CFG). Reads kanji and clones the reference voice more accurately, at about 20 times the computation. Prefer it for final renders when time allows.
+- `v4.1-small-int8`: `v4.1-small` with int8 weights, for GPUs with little memory (0.9 GB download).
+- `v4-large`: 3.3B parameters; best at following captions and long reference audio. Needs about 16 GB of GPU memory (13 GB download).
+- `v4-large-int8`: `v4-large` with int8 weights, for mid-range GPUs (3.8 GB download).
 
-`sttts-say model use NAME` records the choice in `data/backend.json` (`tts.model`); it is not a per-command flag. Ask the user before switching (the first use downloads about 3 GB). After switching, `render` re-synthesizes every line, because the model is part of each take's settings. RF-only options (`cfg_scale_text`, `cfg_scale_speaker`, `cfg_guidance_mode`, ...) go in `sampling`; MeanFlow ignores them.
+The v4 Large models are subject to the Gemma Terms of Use (`model use` prints the link); tell the user before switching to them.
+
+`sttts-say model use NAME` records the choice in `data/backend.json` (`tts.model`); it is not a per-command flag. Ask the user before switching (the first use downloads the weights, see `download_mb`). After switching, `render` re-synthesizes every line, because the model is part of each take's settings. RF-only options (`cfg_scale_text`, `cfg_scale_speaker`, `cfg_guidance_mode`, ...) go in `sampling`; MeanFlow ignores them.
 
 ## Pinning a character (do this before producing many lines)
 

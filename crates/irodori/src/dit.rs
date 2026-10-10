@@ -15,6 +15,7 @@ use burn::tensor::ops::AttentionModuleOptions;
 use burn::tensor::{Device, Tensor, TensorData};
 
 use crate::config::ModelConfig;
+use crate::nn::Linear;
 use crate::weights::Weights;
 
 /// 無効キーに足すバイアス(softmax 後に厳密に 0 になる)
@@ -23,37 +24,6 @@ const MASK_NEG: f64 = -1.0e9;
 // ---------------------------------------------------------------------------------------------
 // 基本部品
 // ---------------------------------------------------------------------------------------------
-
-struct Linear {
-    /// `[in, out]`(ロード時に転置済み)
-    wt: Tensor<2>,
-    b: Option<Tensor<1>>,
-}
-
-impl Linear {
-    fn load(w: &Weights, prefix: &str, bias: bool, dev: &Device) -> Result<Self> {
-        let wt = w.tensor::<2>(&format!("{prefix}.weight"), dev)?.transpose();
-        let b = if bias { Some(w.tensor::<1>(&format!("{prefix}.bias"), dev)?) } else { None };
-        Ok(Self { wt, b })
-    }
-
-    fn forward2(&self, x: Tensor<2>) -> Tensor<2> {
-        let y = x.matmul(self.wt.clone());
-        match &self.b {
-            Some(b) => {
-                let n = b.dims()[0];
-                y.add(b.clone().reshape([1, n]))
-            }
-            None => y,
-        }
-    }
-
-    fn forward3(&self, x: Tensor<3>) -> Tensor<3> {
-        let [b, s, i] = x.dims();
-        let o = self.wt.dims()[1];
-        self.forward2(x.reshape([b * s, i])).reshape([b, s, o])
-    }
-}
 
 /// RMSNorm(重みは放送できる形 `[1, .., 1, dims..]` で保持)
 struct RmsNorm<const D: usize> {
@@ -455,7 +425,7 @@ impl JointAttention {
     fn project_context(&self, c: &Conditions) -> Result<LayerKv> {
         let proj = |lk: &Linear, lv: &Linear, s: &Tensor<3>| {
             let [b, n, _] = s.dims();
-            let hd = lk.wt.dims()[1] / self.heads;
+            let hd = lk.out_dim() / self.heads;
             let k = self.k_norm.forward(lk.forward3(s.clone()).reshape([b, n, self.heads, hd]));
             let v = lv.forward3(s.clone()).reshape([b, n, self.heads, hd]);
             (k.swap_dims(1, 2), v.swap_dims(1, 2))

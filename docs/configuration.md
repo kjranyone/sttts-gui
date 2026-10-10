@@ -38,7 +38,7 @@ GUI に UI の無い設定は `data/backend.json`(任意。環境変数 `STTTS_C
 | `pipeline.performance_enabled` | `true` | 元音声の速さと間を Irodori の発話単位指示へ写す。GUI の「テンポと間を再現」で切替 |
 | `pipeline.performance_wait_ms` | `150` | ASR 確定後に表現分析を待つ上限。超過時は表現を付けず発話 |
 | `tts.warmup` | `true` | モデル決定時にロード + 短文合成を先行して初回の待ちを無くす |
-| `tts.model` | `v4.1-small-mf` | 合成モデル。`v4.1-small-mf`(MeanFlow、4 ステップ、会話向け)か `v4.1-small`(RF、40 ステップ + CFG、高品質・低速)。`sttts-say model use` が書く。GUI は詳細設定での選択を使う |
+| `tts.model` | `v4.1-small-mf` | 合成モデル。`v4.1-small-mf`(MeanFlow、4 ステップ、会話向け)、`v4.1-small`(RF、40 ステップ + CFG、高品質・低速)、`v4.1-small-int8`(その int8 版)、`v4-large`(33 億パラメータ、GPU メモリ 16GB 程度)、`v4-large-int8`(その int8 版)。`sttts-say model use` が書く。GUI は詳細設定での選択を使う |
 | `tts.num_steps` | `null` | サンプラのステップ数(null でモデルの既定: MeanFlow 4、RF 40) |
 | `tts.sampling` | `{}` | Irodori の `SamplingRequest` 項目を上書き(GUI 未対応でも使える)。使える項目: `num_steps` `duration_scale` `seconds` `min_seconds` `max_seconds` `max_ref_seconds` `ref_normalize_db` `ref_ensure_max` `trim_tail` `tail_window_size` `tail_std_threshold` `tail_mean_threshold` `watermark`、RF のモデルだけで効く `cfg_scale_text` `cfg_scale_caption` `cfg_scale_speaker` `cfg_scale` `cfg_guidance_mode`(independent / joint / alternating)`cfg_min_t` `cfg_max_t` `truncation_factor` `rescale_k` `rescale_sigma` `speaker_kv_scale` `speaker_kv_min_t` `speaker_kv_max_layers` `speaker_uncond_mode`(mask / noise)`t_schedule_mode`(linear / sway)`sway_coeff`(MeanFlow は原典と同じく無視する)。`text` / `caption` / `ref_*` / `no_ref` / `seed` は発話ごとにアプリが決めるため指定不可、知らない項目もエラーで知らせます(黙って捨てません)。設定変更は次の発話から反映 |
 

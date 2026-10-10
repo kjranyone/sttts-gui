@@ -122,7 +122,17 @@ sttts-say voice save mio --from <chosen take>.wav   # pin the character with the
 sttts-say model use v4.1-small      # switch to the higher-quality RF model (slower; recorded once)
 ```
 
-`sttts-say model list` shows the models you can choose. The default `v4.1-small-mf` (MeanFlow, 4 steps) is fast enough for conversation; `v4.1-small` (RF, 40 steps with guidance) reads kanji and clones voices more accurately at about 20 times the computation, which suits the CLI where nothing has to be real time. The choice is stored in `data/backend.json` (`tts.model`); the GUI keeps its own choice under Advanced settings.
+`sttts-say model list` shows the models you can choose:
+
+| Model | Download | Use |
+|---|---|---|
+| `v4.1-small-mf` (default) | 3.1 GB | MeanFlow, 4 steps. Fast enough for conversation |
+| `v4.1-small` | 3.1 GB | RF, 40 steps with guidance. More accurate kanji reading and voice cloning, about 20x the computation |
+| `v4.1-small-int8` | 0.9 GB | `v4.1-small` with int8 weights: about a quarter of the GPU memory for its main layers, for GPUs with little memory |
+| `v4-large` | 13 GB | 3.3B parameters. Follows captions and long reference audio best. Needs about 16 GB of GPU memory |
+| `v4-large-int8` | 3.8 GB | `v4-large` with int8 weights, for mid-range GPUs |
+
+The CLI does not have to be real time, so the slower, more accurate models suit it. The choice is stored in `data/backend.json` (`tts.model`); the GUI keeps its own choice under Advanced settings. The v4 Large models are subject to the [Gemma Terms of Use](https://ai.google.dev/gemma/terms) because their text encoder derives from T5Gemma 2.
 
 Prebuilt binaries are on [Releases](https://github.com/kjranyone/sttts-gui/releases) (including a CLI-only zip). Builds of `sttts-say` for macOS (Apple Silicon) and Linux x64 are there too, but they are experimental: built and tested in CI, not yet verified on real hardware (macOS uses Metal; Linux needs a Vulkan driver and OpenSSL 3; if macOS blocks the unsigned binary, run `xattr -d com.apple.quarantine sttts-say`). To build from source, run `cargo build --release -p sttts-say`. Only one process uses the GPU at a time (it stops with an error while the GUI is open). See [sttts-say](docs/sttts-say.md) (in Japanese) for the design and [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md) for the Skill.
 
@@ -131,7 +141,8 @@ Prebuilt binaries are on [Releases](https://github.com/kjranyone/sttts-gui/relea
 | Role | Model | Runs on | Notes |
 |---|---|---|---|
 | TTS | [Irodori-TTS v4.1 Small MeanFlow](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF) | GPU (burn / wgpu) | Default. RTF ≈ 0.3 (Arc B570). No CPU inference |
-| TTS | [Irodori-TTS v4.1 Small](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small) (RF) | GPU (burn / wgpu) | 40 steps with guidance (CFG): more accurate, about 20x the computation. For `sttts-say` and other offline use |
+| TTS | [Irodori-TTS v4.1 Small](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small) (RF) and its [int8 version](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-Quantized) | GPU (burn / wgpu) | 40 steps with guidance (CFG): more accurate, about 20x the computation. For `sttts-say` and other offline use |
+| TTS | [Irodori-TTS v4 Large](https://huggingface.co/Aratako/Irodori-TTS-v4-Large) (RF) and its [int8 version](https://huggingface.co/Aratako/Irodori-TTS-v4-Large-Quantized) | GPU (burn / wgpu) | 3.3B parameters, T5Gemma 2 text encoder ([Gemma Terms of Use](https://ai.google.dev/gemma/terms)) |
 | ASR | Nemotron 3.5 ASR streaming 0.6B | CPU (onnxruntime) | **Outputs punctuation**, whisper large-v3 class accuracy. Partial results continue from the previous computation, so they are cheap. Weak on runs of vowels only (e.g. 「あいうえお」) |
 | ASR | [kotoba-whisper-v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0) | GPU (burn / wgpu) | Default. No punctuation. About 4 s for a 10-second utterance |
 | ASR | Gemini 3.5 Transcribe Live | Cloud | Fastest. Requires an API key (entered in the GUI and stored encrypted with DPAPI) |

@@ -119,7 +119,17 @@ sttts-say voice save mio --from <選んだテイク>.wav   # テイクを参照�
 sttts-say model use v4.1-small      # 高品質な RF のモデルに切り替える(遅い。一度選べば記録される)
 ```
 
-選べるモデルは `sttts-say model list` で見られます。既定の `v4.1-small-mf`(MeanFlow、4 ステップ)は会話に使える速さです。`v4.1-small`(RF、40 ステップ + CFG)は漢字の読みと声の再現がより正確な代わりに計算量が約 20 倍で、リアルタイムでなくてよい CLI に向いています。選んだモデルは `data/backend.json` の `tts.model` に記録されます(GUI は詳細設定での自分の選択を使います)。
+選べるモデルは `sttts-say model list` で見られます。
+
+| モデル | ダウンロード | 向き |
+|---|---|---|
+| `v4.1-small-mf`(既定) | 3.1 GB | MeanFlow、4 ステップ。会話に使える速さ |
+| `v4.1-small` | 3.1 GB | RF、40 ステップ + CFG。漢字の読みと声の再現がより正確。計算量は約 20 倍 |
+| `v4.1-small-int8` | 0.9 GB | `v4.1-small` の重みを int8 にしたもの。主な層の GPU メモリが約 1/4。GPU メモリが少ない環境向け |
+| `v4-large` | 13 GB | 33 億パラメータ。キャプションと長い参照音声への追従が最も良い。GPU メモリは 16GB 程度必要 |
+| `v4-large-int8` | 3.8 GB | `v4-large` の重みを int8 にしたもの。中程度の GPU 向け |
+
+CLI はリアルタイムでなくてよいので、遅くても正確なモデルが向いています。選んだモデルは `data/backend.json` の `tts.model` に記録されます(GUI は詳細設定での自分の選択を使います)。v4 Large はテキストエンコーダが T5Gemma 2 由来のため、[Gemma の利用規約](https://ai.google.dev/gemma/terms)に従います。
 
 ビルド済みのものは [Releases](https://github.com/kjranyone/sttts-gui/releases) にあります(CLI だけの zip もあります)。macOS(Apple Silicon)と Linux x64 向けの `sttts-say` も置いていますが、CI でのビルドとテストのみで、実機では未検証の実験版です。macOS は Metal、Linux は Vulkan ドライバと OpenSSL 3 が必要です。macOS で未署名のためブロックされたら `xattr -d com.apple.quarantine sttts-say` を実行してください。ソースからは `cargo build --release -p sttts-say` でビルドできます。GPU を使うのは同時に 1 プロセスだけです(GUI を開いている間はエラーで止まります)。仕組みは [sttts-say](docs/sttts-say.md)、Skill は [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md) にあります。
 
@@ -128,7 +138,8 @@ sttts-say model use v4.1-small      # 高品質な RF のモデルに切り替�
 | 役割 | モデル | 実行環境 | 備考 |
 |---|---|---|---|
 | TTS | [Irodori-TTS v4.1 Small MeanFlow](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF) | GPU(burn / wgpu) | 既定。RTF ≈ 0.3(Arc B570)。CPU 推論はしません |
-| TTS | [Irodori-TTS v4.1 Small](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small)(RF) | GPU(burn / wgpu) | 40 ステップ + CFG。より正確だが計算量は約 20 倍。`sttts-say` などリアルタイムでない用途向け |
+| TTS | [Irodori-TTS v4.1 Small](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small)(RF)と [int8 版](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-Quantized) | GPU(burn / wgpu) | 40 ステップ + CFG。より正確だが計算量は約 20 倍。`sttts-say` などリアルタイムでない用途向け |
+| TTS | [Irodori-TTS v4 Large](https://huggingface.co/Aratako/Irodori-TTS-v4-Large)(RF)と [int8 版](https://huggingface.co/Aratako/Irodori-TTS-v4-Large-Quantized) | GPU(burn / wgpu) | 33 億パラメータ、T5Gemma 2 のテキストエンコーダ([Gemma の利用規約](https://ai.google.dev/gemma/terms)) |
 | ASR | Nemotron 3.5 ASR streaming 0.6B | CPU(onnxruntime) | **句読点を出力**、whisper large-v3 級の精度。途中経過は前回の続きから計算するので軽い。母音だけの連続(「あいうえお」等)は苦手 |
 | ASR | [kotoba-whisper-v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0) | GPU(burn / wgpu) | 既定。句読点は出ない。10 秒の発話で約 4 秒 |
 | ASR | Gemini 3.5 Transcribe Live | クラウド | 最速。要 API キー(GUI から入力し、DPAPI で暗号化して保存) |

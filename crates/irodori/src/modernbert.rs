@@ -11,6 +11,7 @@ use burn::tensor::activation::{gelu, softmax};
 use burn::tensor::{Device, Tensor, TensorData};
 use serde_json::Value;
 
+use crate::nn::Linear;
 use crate::weights::Weights;
 
 const PREFIX: &str = "pretrained_text_backbone.backbone";
@@ -19,14 +20,14 @@ const MASK_NEG: f32 = -1.0e9;
 
 struct Layer {
     attn_norm: Option<Tensor<1>>,
-    /// `[hidden, 3*hidden]`(転置済み)
-    wqkv: Tensor<2>,
-    wo: Tensor<2>,
+    /// hidden → 3*hidden
+    wqkv: Linear,
+    wo: Linear,
     mlp_norm: Tensor<1>,
-    /// `[hidden, 2*intermediate]`
-    wi: Tensor<2>,
-    /// `[intermediate, hidden]`
-    mlp_wo: Tensor<2>,
+    /// hidden → 2*intermediate
+    wi: Linear,
+    /// intermediate → hidden
+    mlp_wo: Linear,
     sliding: bool,
 }
 
@@ -131,9 +132,7 @@ impl ModernBert {
         }
 
         let t1 = |name: &str| w.tensor::<1>(&format!("{PREFIX}.{name}"), dev);
-        let t2t = |name: &str| -> Result<Tensor<2>> {
-            Ok(w.tensor::<2>(&format!("{PREFIX}.{name}"), dev)?.transpose())
-        };
+        let t2t = |name: &str| Linear::weight(w, &format!("{PREFIX}.{name}"), dev);
         let mut layers = Vec::with_capacity(n_layers);
         for (i, ty) in layer_types.iter().enumerate() {
             layers.push(Layer {
@@ -216,7 +215,7 @@ impl ModernBert {
                 Some(wn) => layer_norm(x.clone(), wn, self.eps),
                 None => x.clone(),
             };
-            let qkv = linear(h, &l.wqkv).reshape([b, s, 3, self.heads, hd]);
+            let qkv = l.wqkv.forward3(h).reshape([b, s, 3, self.heads, hd]);
             let part = |i: usize| -> Tensor<4> {
                 qkv.clone().narrow(2, i, 1).reshape([b, s, self.heads, hd]).swap_dims(1, 2)
             };
@@ -226,13 +225,13 @@ impl ModernBert {
             let scores = q.matmul(k.swap_dims(2, 3)) * scale + m.clone();
             let attn = softmax(scores, 3).matmul(v); // [B,H,S,hd]
             let attn = attn.swap_dims(1, 2).reshape([b, s, self.hidden]);
-            x = x + linear(attn, &l.wo);
+            x = x + l.wo.forward3(attn);
 
             let h = layer_norm(x.clone(), &l.mlp_norm, self.eps);
-            let wi = linear(h, &l.wi);
+            let wi = l.wi.forward3(h);
             let input = wi.clone().narrow(2, 0, self.intermediate);
             let gate = wi.narrow(2, self.intermediate, self.intermediate);
-            x = x + linear(gelu(input) * gate, &l.mlp_wo);
+            x = x + l.mlp_wo.forward3(gelu(input) * gate);
         }
         let x = layer_norm(x, &self.final_norm, self.eps);
 

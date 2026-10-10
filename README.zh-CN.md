@@ -122,7 +122,17 @@ sttts-say voice save mio --from <选中的录音>.wav   # 以该录音作为参�
 sttts-say model use v4.1-small      # 切换到高质量的 RF 模型(较慢;选择一次即会记录)
 ```
 
-可选模型可用 `sttts-say model list` 查看。默认的 `v4.1-small-mf`(MeanFlow,4 步)速度足以用于对话;`v4.1-small`(RF,40 步 + CFG)汉字读音与声音还原更准确,但计算量约为 20 倍,适合无需实时的 CLI。所选模型记录在 `data/backend.json` 的 `tts.model` 中(GUI 使用其详细设置中的选择)。
+可选模型可用 `sttts-say model list` 查看:
+
+| 模型 | 下载量 | 用途 |
+|---|---|---|
+| `v4.1-small-mf`(默认) | 3.1 GB | MeanFlow,4 步。速度足以用于对话 |
+| `v4.1-small` | 3.1 GB | RF,40 步 + CFG。汉字读音与声音还原更准确,计算量约为 20 倍 |
+| `v4.1-small-int8` | 0.9 GB | `v4.1-small` 的 int8 权重版。主要层显存约为四分之一,适合显存较少的环境 |
+| `v4-large` | 13 GB | 33 亿参数。对描述和长参考音频的遵循最好。需要约 16GB 显存 |
+| `v4-large-int8` | 3.8 GB | `v4-large` 的 int8 权重版,适合中端 GPU |
+
+CLI 无需实时,因此适合较慢但更准确的模型。所选模型记录在 `data/backend.json` 的 `tts.model` 中(GUI 使用其详细设置中的选择)。v4 Large 的文本编码器源自 T5Gemma 2,须遵守 [Gemma 使用条款](https://ai.google.dev/gemma/terms)。
 
 预构建版本见 [Releases](https://github.com/kjranyone/sttts-gui/releases)(另有仅含 CLI 的 zip)。也提供 macOS(Apple Silicon)与 Linux x64 版的 `sttts-say`,但属于实验版:仅在 CI 中构建和测试,尚未在真机上验证。macOS 使用 Metal;Linux 需要 Vulkan 驱动和 OpenSSL 3。macOS 因未签名而拦截时,请运行 `xattr -d com.apple.quarantine sttts-say`。从源码构建请运行 `cargo build --release -p sttts-say`。同一时间只有一个进程使用 GPU(GUI 打开期间会报错停止)。设计见 [sttts-say](docs/sttts-say.md)(日语),Skill 见 [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md)。
 
@@ -131,7 +141,8 @@ sttts-say model use v4.1-small      # 切换到高质量的 RF 模型(较慢;选
 | 角色 | 模型 | 运行环境 | 备注 |
 |---|---|---|---|
 | TTS | [Irodori-TTS v4.1 Small MeanFlow](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF) | GPU(burn / wgpu) | 默认。RTF ≈ 0.3(Arc B570)。不进行 CPU 推理 |
-| TTS | [Irodori-TTS v4.1 Small](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small)(RF) | GPU(burn / wgpu) | 40 步 + CFG:更准确,计算量约为 20 倍。适合 `sttts-say` 等非实时用途 |
+| TTS | [Irodori-TTS v4.1 Small](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small)(RF)及其 [int8 版](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-Quantized) | GPU(burn / wgpu) | 40 步 + CFG:更准确,计算量约为 20 倍。适合 `sttts-say` 等非实时用途 |
+| TTS | [Irodori-TTS v4 Large](https://huggingface.co/Aratako/Irodori-TTS-v4-Large)(RF)及其 [int8 版](https://huggingface.co/Aratako/Irodori-TTS-v4-Large-Quantized) | GPU(burn / wgpu) | 33 亿参数,T5Gemma 2 文本编码器([Gemma 使用条款](https://ai.google.dev/gemma/terms)) |
 | ASR | Nemotron 3.5 ASR streaming 0.6B | CPU(onnxruntime) | **输出标点**,精度接近 whisper large-v3。中间结果从上次的计算继续,开销小。不擅长只有元音的连续(如「あいうえお」) |
 | ASR | [kotoba-whisper-v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0) | GPU(burn / wgpu) | 默认。不输出标点。10 秒的发话约需 4 秒 |
 | ASR | Gemini 3.5 Transcribe Live | 云端 | 最快。需要 API 密钥(在 GUI 中输入,用 DPAPI 加密保存) |

@@ -4,13 +4,22 @@ PyTorch の実行は CPU・fp32 のみ(XPU / GPU には触れない)。各ケー
 (トークナイザ、ModernBERT、条件エンコーダ、長さ予測、DiT の各ステップ、codec のデコード、透かし)を
 safetensors に保存する。Rust 側のテストはこれを読んで段階ごとに突き合わせる。
 
-使い方:  cd tools/reference && uv run python dump_irodori_ref.py [--rf] [出力ディレクトリ]
-既定の出力先: <repo>/target/irodori-ref(MeanFlow)、--rf のとき <repo>/target/irodori-ref-rf(RF + CFG)
+使い方:  cd tools/reference && uv run python dump_irodori_ref.py [--rf | --int8 | --large | --large-int8] [出力ディレクトリ]
+既定の出力先は <repo>/target/ の下:
+  (なし)        irodori-ref            v4.1 Small MeanFlow
+  --rf          irodori-ref-rf         v4.1 Small(RF + CFG)
+  --int8        irodori-ref-int8       v4.1 Small の int8 weight-only
+  --large       irodori-ref-large      v4 Large(RF + CFG、T5Gemma 2。重み 13GB、RAM 40GB 程度)
+  --large-int8  irodori-ref-large-int8 v4 Large の int8 weight-only
+
+int8 は torchao を使わず、int8 の重みを `qdata * scale` で fp32 に戻したチェックポイントを作って fp32 で動かす
+(Rust 版も同じく、int8 の重みを fp32 に戻して fp32 で計算する。PyTorch の量子化版は bf16 で計算するので比べない)。
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -18,6 +27,7 @@ import numpy as np
 import soundfile as sf
 import torch
 from huggingface_hub import snapshot_download
+from safetensors import safe_open
 from safetensors.torch import save_file
 
 from irodori_tts.inference_runtime import InferenceRuntime, RuntimeKey, SamplingRequest
@@ -66,6 +76,61 @@ RF_CASES = {
     "RE": dict(text=TEXT, caption=CAPTION, no_ref=True, seed=14, num_steps=6, cfg_guidance_mode="joint", cfg_scale=2.0, cfg_min_t=0.3),
 }
 
+# int8 weight-only(torchao で量子化したもの)。量子化した層(DiT・話者エンコーダ・テキストのバックボーン)を全部通る
+INT8_SUBFOLDER = "int8-weight-only"
+INT8_CASES = {
+    "QA": dict(text=TEXT, caption=CAPTION, no_ref=True, seed=20, num_steps=6),
+    "QC": dict(text=TEXT, no_ref=False, seed=21, num_steps=6),
+}
+
+# v4 Large(T5Gemma 2 のテキストエンコーダ、話者は 4 フレームずつまとめる)。CPU で重いのでステップは少なく
+LARGE_CASES = {
+    "LA": dict(text=TEXT, caption=CAPTION, no_ref=True, seed=30, num_steps=4),
+    "LC": dict(text=TEXT, no_ref=False, seed=31, num_steps=4),
+}
+
+# モード → (リポジトリ, 量子化版のサブフォルダ, ケース, 既定の出力先)
+MODES = {
+    "mf": (REPO, None, CASES, "irodori-ref"),
+    "rf": (RF_REPO, None, RF_CASES, "irodori-ref-rf"),
+    "int8": ("Aratako/Irodori-TTS-v4.1-Small-Quantized", INT8_SUBFOLDER, INT8_CASES, "irodori-ref-int8"),
+    "large": ("Aratako/Irodori-TTS-v4-Large", None, LARGE_CASES, "irodori-ref-large"),
+    "large-int8": ("Aratako/Irodori-TTS-v4-Large-Quantized", INT8_SUBFOLDER, INT8_CASES, "irodori-ref-large-int8"),
+}
+
+
+def dequantized_checkpoint(snapshot: Path, out_dir: Path) -> Path:
+    """int8 weight-only の量子化チェックポイントを fp32 に戻して保存する(トークナイザも隣に置く)。"""
+    src = snapshot / INT8_SUBFOLDER / "model.safetensors"
+    dst_dir = out_dir / "ckpt" / INT8_SUBFOLDER
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    dst = dst_dir / "model.safetensors"
+    with safe_open(str(src), framework="pt", device="cpu") as f:
+        meta = f.metadata()
+        q = json.loads(meta["irodori_quantization_json"])
+        assert q["quantization_type"] == "int8_weight_only", q
+        state = {}
+        for name, desc in meta.items():
+            try:
+                d = json.loads(desc)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(d, dict) or "_type" not in d:
+                continue
+            if d["_type"] == "Int8Tensor":
+                parent, attr = name.rsplit(".", 1)
+                qdata = f.get_tensor(f"{parent}._{attr}_qdata")
+                scale = f.get_tensor(f"{parent}._{attr}_scale")
+                state[name] = qdata.to(torch.float32) * scale.to(torch.float32)
+            elif d["_type"] == "Tensor":
+                state[name] = f.get_tensor(name).to(torch.float32)
+            else:
+                raise ValueError(f"unexpected tensor type {d['_type']} for {name}")
+    keep = {k: meta[k] for k in ("config_json", "text_encoder_config_json") if k in meta}
+    save_file(state, str(dst), metadata=keep)
+    shutil.copytree(snapshot / "tokenizer", out_dir / "ckpt" / "tokenizer", dirs_exist_ok=True)
+    return dst
+
 
 def make_ref_wav(path: Path, sr: int = 24000, seconds: float = 3.0) -> None:
     """再現可能な合成「声っぽい」信号(基本周波数が揺れる倍音 + 少量のノイズ)。"""
@@ -81,16 +146,22 @@ def make_ref_wav(path: Path, sr: int = 24000, seconds: float = 3.0) -> None:
 
 def main() -> None:
     args = sys.argv[1:]
-    rf = "--rf" in args
-    args = [a for a in args if a != "--rf"]
-    repo, cases = (RF_REPO, RF_CASES) if rf else (REPO, CASES)
-    default_dir = "irodori-ref-rf" if rf else "irodori-ref"
+    flags = [a for a in args if a.startswith("--")]
+    args = [a for a in args if not a.startswith("--")]
+    mode = flags[0].removeprefix("--") if flags else "mf"
+    if len(flags) > 1 or mode not in MODES:
+        raise SystemExit(f"usage: dump_irodori_ref.py [--{' | --'.join(m for m in MODES if m != 'mf')}] [out_dir]")
+    repo, subfolder, cases, default_dir = MODES[mode]
     out_dir = Path(args[0]) if args else Path(__file__).resolve().parents[2] / "target" / default_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     torch.set_num_threads(max(1, torch.get_num_threads()))
 
-    ckpt_dir = Path(snapshot_download(repo))
-    checkpoint = str(ckpt_dir / "model.safetensors")
+    if subfolder is not None:
+        snapshot = Path(snapshot_download(repo, allow_patterns=[f"{subfolder}/*", "tokenizer/*"]))
+        checkpoint = str(dequantized_checkpoint(snapshot, out_dir))
+    else:
+        ckpt_dir = Path(snapshot_download(repo))
+        checkpoint = str(ckpt_dir / "model.safetensors")
     rt = InferenceRuntime.from_key(
         RuntimeKey(
             checkpoint=checkpoint,

@@ -15,6 +15,7 @@ use burn::tensor::{Device, Tensor, TensorData};
 
 use crate::config::ModelConfig;
 use crate::modernbert::{ModernBert, linear};
+use crate::t5gemma::T5Gemma2Encoder;
 use crate::tokenizer::{Encoded, Tokenizer};
 use crate::weights::Weights;
 
@@ -75,10 +76,34 @@ impl ConditionProjector {
     }
 }
 
-/// ModernBERT(text/caption 共有)+ 射影 + ノルム。
+/// テキスト/キャプション共有のバックボーン(Small は ModernBERT、Large は T5Gemma 2)
+pub enum Backbone {
+    ModernBert(Box<ModernBert>),
+    T5Gemma2(Box<T5Gemma2Encoder>),
+}
+
+impl Backbone {
+    fn load(w: &Weights, dev: &Device) -> Result<Self> {
+        if T5Gemma2Encoder::is_t5gemma2(w) {
+            Ok(Self::T5Gemma2(Box::new(T5Gemma2Encoder::load(w, dev)?)))
+        } else {
+            Ok(Self::ModernBert(Box::new(ModernBert::load(w, dev)?)))
+        }
+    }
+
+    /// `[B][S]` の ID とマスクから `last_hidden_state * mask`(`[B, S, hidden]`)
+    pub fn forward(&self, ids: &[Vec<i64>], mask: &[Vec<bool>]) -> Tensor<3> {
+        match self {
+            Self::ModernBert(m) => m.forward(ids, mask),
+            Self::T5Gemma2(t) => t.forward(ids, mask),
+        }
+    }
+}
+
+/// バックボーン(text/caption 共有)+ 射影 + ノルム。
 pub struct TextConditioner {
     pub cfg: ModelConfig,
-    backbone: ModernBert,
+    backbone: Backbone,
     text_encoder: ConditionProjector,
     text_norm: Tensor<1>,
     caption: Option<(ConditionProjector, Tensor<1>)>,
@@ -96,7 +121,7 @@ impl TextConditioner {
             bail!("unsupported pretrained_projector_type {:?}", cfg.pretrained_projector_type);
         }
         let eps = cfg.norm_eps;
-        let backbone = ModernBert::load(w, dev)?;
+        let backbone = Backbone::load(w, dev)?;
         let text_encoder = ConditionProjector::load(w, "text_encoder", eps, dev)?;
         let text_norm = w.tensor::<1>("text_norm.weight", dev).context("text_norm")?;
         let caption = if cfg.use_caption_condition {
@@ -110,7 +135,7 @@ impl TextConditioner {
         Ok(Self { cfg, backbone, text_encoder, text_norm, caption, eps, device: dev.clone() })
     }
 
-    pub fn backbone(&self) -> &ModernBert {
+    pub fn backbone(&self) -> &Backbone {
         &self.backbone
     }
 

@@ -21,12 +21,23 @@ impl Tokenizer {
         let file = if path.is_dir() { path.join("tokenizer.json") } else { path.to_path_buf() };
         let inner = tokenizers::Tokenizer::from_file(&file)
             .map_err(|e| anyhow!("load tokenizer {}: {e}", file.display()))?;
-        let bos_id = inner.token_to_id("<s>").map(i64::from);
-        // 原典は pad_token が無ければ eos を使う。このチェックポイントには `<pad>` がある。
-        let pad_id = inner
-            .token_to_id("<pad>")
-            .or_else(|| inner.token_to_id("</s>"))
-            .ok_or_else(|| anyhow!("tokenizer has neither <pad> nor </s>"))?;
+        // 特殊トークンの名前は tokenizer_config.json にある(ModernBERT-ja は <s> / <pad>、Gemma は <bos> / <pad>)
+        let config: serde_json::Value = file
+            .parent()
+            .map(|d| d.join("tokenizer_config.json"))
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        let special = |key: &str, fallback: &str| -> Option<u32> {
+            let v = &config[key];
+            let name = v.as_str().or_else(|| v["content"].as_str()).unwrap_or(fallback);
+            inner.token_to_id(name)
+        };
+        let bos_id = special("bos_token", "<s>").map(i64::from);
+        // 原典は pad_token が無ければ eos を使う
+        let pad_id = special("pad_token", "<pad>")
+            .or_else(|| special("eos_token", "</s>"))
+            .ok_or_else(|| anyhow!("tokenizer has neither a pad nor an eos token"))?;
         Ok(Self { inner, bos_id, pad_id: i64::from(pad_id) })
     }
 
@@ -59,7 +70,7 @@ impl Tokenizer {
             bail!("max_length must be > 0");
         }
         let bos = if add_bos {
-            Some(self.bos_id.ok_or_else(|| anyhow!("tokenizer has no <s> but add_bos=true"))?)
+            Some(self.bos_id.ok_or_else(|| anyhow!("tokenizer has no bos token but add_bos=true"))?)
         } else {
             None
         };

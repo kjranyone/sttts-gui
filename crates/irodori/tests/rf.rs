@@ -68,7 +68,7 @@ fn setup() -> Option<(Weights, TtsPaths, Device)> {
         eprintln!("skip: RF の参照出力がありません(tools/reference/dump_irodori_ref.py --rf)");
         return None;
     };
-    let Ok(paths) = TtsPaths::from_hf_cache(RF_MODEL_REPO) else {
+    let Ok(paths) = TtsPaths::from_hf_cache(RF_MODEL_REPO, irodori::pipeline::MODEL_WEIGHTS) else {
         eprintln!("skip: {RF_MODEL_REPO} が HF キャッシュにありません");
         return None;
     };
@@ -109,7 +109,7 @@ fn rf_schedule_matches_reference() {
 #[test]
 fn rf_dit_forward_matches() {
     let Some((r, paths, dev)) = setup() else { return };
-    let w = Weights::open(paths.model_dir.join("model.safetensors")).unwrap();
+    let w = Weights::open(&paths.model_weights).unwrap();
     let cfg = irodori::config::ModelConfig::from_weights(&w).unwrap();
     assert!(!cfg.is_meanflow());
     let dit = irodori::dit::Dit::load(&w, &cfg, &dev).unwrap();

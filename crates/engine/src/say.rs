@@ -297,8 +297,9 @@ pub fn list_models(cfg: &Value) -> Vec<Value> {
                 "method": if m.meanflow { "meanflow" } else { "rf" },
                 "default_steps": m.default_steps(),
                 "download_mb": m.download_mb,
-                "downloaded": irodori::hub::find_snapshot(m.repo, &irodori::pipeline::MODEL_FILES).is_some(),
+                "downloaded": irodori::hub::find_snapshot(m.repo, &irodori::pipeline::model_files(m.weights)).is_some(),
                 "summary": m.summary,
+                "license": m.license.map(|(name, url)| json!({"name": name, "url": url})),
             })
         })
         .collect()
@@ -315,7 +316,16 @@ pub fn use_model(root: &Path, cfg: &Value, alias: &str) -> Result<Value> {
         "model": model.alias,
         "previous": previous,
         "config": path,
-        "downloaded": irodori::hub::find_snapshot(model.repo, &irodori::pipeline::MODEL_FILES).is_some(),
+        "downloaded": irodori::hub::find_snapshot(model.repo, &irodori::pipeline::model_files(model.weights)).is_some(),
+        "license": model.license.map(|(name, url)| json!({
+            "name": name,
+            "url": url,
+            "note": trf!(
+                "This model is subject to the {name} ({url}) and the ethical restrictions on its model card",
+                "このモデルは {name}({url})とモデルカードの倫理上の制限に従って使ってください",
+                "使用此模型须遵守 {name}({url})及模型卡中的伦理限制"
+            ),
+        })),
     }))
 }
 

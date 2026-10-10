@@ -38,6 +38,36 @@ pub fn rf_refs() -> Option<Weights> {
 /// RF の参照を作ったモデル
 pub const RF_MODEL_REPO: &str = "Aratako/Irodori-TTS-v4.1-Small";
 
+/// int8(v4.1 Small の int8 weight-only)の参照出力のディレクトリ(`IRODORI_INT8_REF_DIR` か `target/irodori-ref-int8`)
+pub fn int8_ref_dir() -> PathBuf {
+    if let Some(d) = std::env::var_os("IRODORI_INT8_REF_DIR") {
+        return PathBuf::from(d);
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/irodori-ref-int8")
+}
+
+/// int8 の参照テンソル。無ければ None。生成: `uv run python dump_irodori_ref.py --int8`
+pub fn int8_refs() -> Option<Weights> {
+    let p = int8_ref_dir().join("refs.safetensors");
+    p.is_file().then(|| Weights::open(p).ok()).flatten()
+}
+
+/// `target/<name>`(環境変数 `var` があればそれ)にある参照出力。無ければ None
+pub fn named_refs(var: &str, name: &str) -> Option<(PathBuf, Weights)> {
+    let dir = std::env::var_os(var).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target").join(name));
+    let p = dir.join("refs.safetensors");
+    let w = p.is_file().then(|| Weights::open(&p).ok()).flatten()?;
+    Some((dir, w))
+}
+
+/// v4 Large と、その int8 weight-only
+pub const LARGE_MODEL_REPO: &str = "Aratako/Irodori-TTS-v4-Large";
+pub const LARGE_INT8_MODEL_REPO: &str = "Aratako/Irodori-TTS-v4-Large-Quantized";
+
+/// int8 の参照を作ったモデル(リポジトリと、その中の重み)
+pub const INT8_MODEL_REPO: &str = "Aratako/Irodori-TTS-v4.1-Small-Quantized";
+pub const INT8_MODEL_WEIGHTS: &str = "int8-weight-only/model.safetensors";
+
 /// HF キャッシュ内のスナップショット(`org/name`。最新)
 pub fn hf_snapshot(repo: &str) -> Option<PathBuf> {
     crate::hub::find_snapshot(repo, &[])

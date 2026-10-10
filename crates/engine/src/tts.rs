@@ -449,6 +449,8 @@ struct RefKey {
 pub struct TtsModel {
     pub alias: &'static str,
     pub repo: &'static str,
+    /// リポジトリ内の重み(量子化版はサブフォルダ)
+    pub weights: &'static str,
     /// 表示名(今の表示言語)
     pub label: &'static str,
     /// MeanFlow(数ステップ)か RF(40 ステップ + CFG)か
@@ -457,7 +459,12 @@ pub struct TtsModel {
     pub download_mb: u32,
     /// 特徴(今の表示言語)
     pub summary: &'static str,
+    /// MIT 以外の利用条件(名前, URL)。選ぶときに示す
+    pub license: Option<(&'static str, &'static str)>,
 }
+
+/// v4 Large は T5Gemma 2 由来のエンコーダを含むので Gemma の利用規約に従う
+const GEMMA_TERMS: (&str, &str) = ("Gemma Terms of Use", "https://ai.google.dev/gemma/terms");
 
 /// 既定のモデル
 pub const DEFAULT_TTS_MODEL: &str = "v4.1-small-mf";
@@ -468,6 +475,7 @@ pub fn tts_models() -> Vec<TtsModel> {
         TtsModel {
             alias: DEFAULT_TTS_MODEL,
             repo: "Aratako/Irodori-TTS-v4.1-Small-MF",
+            weights: irodori::pipeline::MODEL_WEIGHTS,
             label: tr!(
                 "Irodori v4.1 Small MeanFlow (fast, for conversation)",
                 "Irodori v4.1 Small MeanFlow(高速・会話向け)",
@@ -480,10 +488,12 @@ pub fn tts_models() -> Vec<TtsModel> {
                 "MeanFlow、4 ステップ。会話に使える速さ(既定)",
                 "MeanFlow,4 步。速度足以用于实时对话(默认)"
             ),
+            license: None,
         },
         TtsModel {
             alias: "v4.1-small",
             repo: "Aratako/Irodori-TTS-v4.1-Small",
+            weights: irodori::pipeline::MODEL_WEIGHTS,
             label: tr!(
                 "Irodori v4.1 Small RF (high quality, slow)",
                 "Irodori v4.1 Small RF(高品質・低速)",
@@ -496,6 +506,53 @@ pub fn tts_models() -> Vec<TtsModel> {
                 "RF、40 ステップ + CFG。漢字の読みと声の再現が MeanFlow より正確だが、計算量は約 20 倍。sttts-say などリアルタイムでない用途向け",
                 "RF,40 步 + CFG。汉字读音与声音还原比 MeanFlow 更准确,但计算量约为 20 倍。适合 sttts-say 等非实时用途"
             ),
+            license: None,
+        },
+        TtsModel {
+            alias: "v4.1-small-int8",
+            repo: "Aratako/Irodori-TTS-v4.1-Small-Quantized",
+            weights: "int8-weight-only/model.safetensors",
+            label: tr!(
+                "Irodori v4.1 Small RF int8 (for GPUs with little memory)",
+                "Irodori v4.1 Small RF int8(GPU メモリが少ない環境向け)",
+                "Irodori v4.1 Small RF int8(适合显存较少的环境)"
+            ),
+            meanflow: false,
+            download_mb: 914,
+            summary: tr!(
+                "v4.1 Small (RF) with int8 weights: about a quarter of the GPU memory and download for its main layers, slightly less accurate than the full model",
+                "v4.1 Small(RF)の重みを int8 にしたもの。主な層の GPU メモリとダウンロード量が約 1/4 になる代わりに、元のモデルよりわずかに精度が落ちる",
+                "将 v4.1 Small(RF)的权重量化为 int8。主要层的显存与下载量约为四分之一,精度略低于原模型"
+            ),
+            license: None,
+        },
+        TtsModel {
+            alias: "v4-large",
+            repo: "Aratako/Irodori-TTS-v4-Large",
+            weights: irodori::pipeline::MODEL_WEIGHTS,
+            label: tr!("Irodori v4 Large RF (highest quality, needs a large GPU)", "Irodori v4 Large RF(最高品質・大容量の GPU 向け)", "Irodori v4 Large RF(最高质量,需大显存 GPU)"),
+            meanflow: false,
+            download_mb: 13153,
+            summary: tr!(
+                "RF, 3.3B parameters. Follows captions (voice design) and long reference audio best; kanji reading is about the same as v4.1 Small. Needs about 16 GB of GPU memory",
+                "RF、33 億パラメータ。キャプション(声のデザイン)と長い参照音声への追従が最も良い。漢字の読みは v4.1 Small と同程度。GPU メモリは 16GB 程度必要",
+                "RF,33 亿参数。对描述(声音设计)和长参考音频的遵循最好;汉字读音与 v4.1 Small 相当。需要约 16GB 显存"
+            ),
+            license: Some(GEMMA_TERMS),
+        },
+        TtsModel {
+            alias: "v4-large-int8",
+            repo: "Aratako/Irodori-TTS-v4-Large-Quantized",
+            weights: "int8-weight-only/model.safetensors",
+            label: tr!("Irodori v4 Large RF int8 (high quality, mid-range GPUs)", "Irodori v4 Large RF int8(高品質・中程度の GPU 向け)", "Irodori v4 Large RF int8(高质量,适合中端 GPU)"),
+            meanflow: false,
+            download_mb: 3840,
+            summary: tr!(
+                "v4 Large with int8 weights: about a third of the GPU memory and download, slightly less accurate than the full model",
+                "v4 Large の重みを int8 にしたもの。GPU メモリとダウンロード量が約 1/3 になる代わりに、元のモデルよりわずかに精度が落ちる",
+                "将 v4 Large 的权重量化为 int8。显存与下载量约为三分之一,精度略低于原模型"
+            ),
+            license: Some(GEMMA_TERMS),
         },
     ]
 }
@@ -529,8 +586,15 @@ const REF_CACHE_MAX: usize = 8;
 impl IrodoriTts {
     pub fn load(model_id: &str, num_steps: Option<usize>, progress: &dyn Fn(&str)) -> Result<Self> {
         let model = tts_model(model_id)?;
+        if let Some((name, url)) = model.license {
+            progress(&trf!(
+                "{model_id} is subject to the {name}: {url}",
+                "{model_id} は {name} に従って使ってください: {url}",
+                "{model_id} 须遵守 {name}:{url}"
+            ));
+        }
         progress(tr!("Fetching the TTS model", "TTS モデル取得中", "正在获取 TTS 模型"));
-        let paths = irodori::pipeline::TtsPaths::ensure_downloaded(model.repo, progress)?;
+        let paths = irodori::pipeline::TtsPaths::ensure_downloaded(model.repo, model.weights, progress)?;
         progress(tr!(
             "Building the TTS model (the first run takes a while to prepare GPU kernels)",
             "TTS モデル構築中(初回は GPU のカーネル準備に時間がかかります)",
