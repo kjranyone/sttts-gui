@@ -235,3 +235,35 @@ fn audition_then_save_promotes_the_take_to_a_reference_voice() {
     // 既存の声は上書きしない
     assert!(s.save_voice("mio", &chosen).is_err());
 }
+
+#[test]
+fn choosing_a_model_is_recorded_and_retakes_the_lines() {
+    let root = tempfile::tempdir().unwrap();
+    let script = root.path().join("ep.jsonl");
+    std::fs::write(&script, "{\"id\":\"a\",\"text\":\"おはよう。\",\"seed\":3}\n").unwrap();
+    let (s, _) = studio(root.path(), cfg());
+    assert_eq!(s.render(&script, None).unwrap()["lines"][0]["status"], "rendered");
+
+    // 一覧には既定と RF があり、今の選択がわかる
+    let models = list_models(&cfg());
+    let current: Vec<&str> = models.iter().filter(|m| m["current"] == true).map(|m| m["model"].as_str().unwrap()).collect();
+    assert_eq!(current, [crate::tts::DEFAULT_TTS_MODEL]);
+    assert!(models.iter().any(|m| m["model"] == "v4.1-small" && m["method"] == "rf" && m["default_steps"] == 40));
+
+    // 選んだモデルは backend.json に残り、指定が変わった行は撮り直しになる
+    let r = use_model(root.path(), &cfg(), "v4.1-small").unwrap();
+    assert_eq!((r["model"].as_str(), r["previous"].as_str()), (Some("v4.1-small"), Some(crate::tts::DEFAULT_TTS_MODEL)));
+    let user = crate::config::load_user_config(&crate::config::default_user_config_path(root.path()), &|_| {});
+    assert_eq!(user["tts"]["model"], "v4.1-small");
+    let cfg2 = merge_config(&cfg(), &user);
+    let (s2, _) = studio(root.path(), cfg2.clone());
+    assert_eq!(s2.render(&script, None).unwrap()["lines"][0]["status"], "rendered");
+    assert_eq!(s2.render(&script, None).unwrap()["lines"][0]["status"], "unchanged");
+
+    // 知らないモデルは記録せず、合成の前に止まる
+    assert!(use_model(root.path(), &cfg2, "v9-huge").unwrap_err().to_string().contains("v4.1-small"));
+    let bad = merge_config(&cfg(), &json!({"tts": {"model": "v9-huge"}}));
+    let (s3, loads) = studio(root.path(), bad);
+    assert!(s3.render(&script, None).is_err());
+    assert_eq!(loads.get(), 0);
+}

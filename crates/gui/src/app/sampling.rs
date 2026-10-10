@@ -47,8 +47,10 @@ impl SamplingEditor {
                 (f.kind != SamplingKind::Bool).then(|| {
                     cx.new(|cx| {
                         let mut state = InputState::new(window, cx).placeholder(default_placeholder(f));
-                        if let Some(v) = values.get(f.key).filter(|v| v.is_number()) {
-                            state.set_value(show(v), window, cx);
+                        match values.get(f.key) {
+                            Some(v) if v.is_number() => state.set_value(show(v), window, cx),
+                            Some(Value::String(v)) => state.set_value(v.clone(), window, cx),
+                            _ => {}
                         }
                         state
                     })
@@ -73,6 +75,7 @@ impl SamplingEditor {
 fn show(v: &Value) -> String {
     match v {
         Value::Null => tr!("none", "なし", "无").into(),
+        Value::String(s) => s.clone(),
         other => other.to_string(),
     }
 }
@@ -109,6 +112,15 @@ fn parse(field: &SamplingField, text: &str) -> Result<Option<Value>, String> {
             }
         },
         SamplingKind::Bool => Ok(None),
+        SamplingKind::Choice(names) => {
+            let lower = text.to_ascii_lowercase();
+            if names.contains(&lower.as_str()) {
+                Ok(Some(Value::from(lower)))
+            } else {
+                let (label, names) = (field.label, names.join(" / "));
+                Err(trf!("{label}: enter one of {names}", "{label}: {names} のどれかを入力してください", "{label}:请输入 {names} 之一"))
+            }
+        }
     }
 }
 
@@ -400,6 +412,9 @@ mod tests {
         assert!(parse(&field("duration_scale"), "NaN").is_err());
         // 空欄 = 上書きしない
         assert_eq!(parse(&field("seconds"), "  "), Ok(None));
+        // 選択肢(大文字小文字は問わず、小文字で記録する)
+        assert_eq!(parse(&field("cfg_guidance_mode"), " Joint "), Ok(Some(Value::from("joint"))));
+        assert!(parse(&field("cfg_guidance_mode"), "both").is_err());
     }
 
     #[test]

@@ -37,6 +37,11 @@ seed が同じでも文が変わると声質が揺れる。そこで CLI は次�
 ## 設定
 
 GUI と同じ `data/backend.json` を読む(`tts.model` / `tts.num_steps` / `tts.sampling` / `voice` / `pipeline.chunk_max_chars`)。
+
+モデルは `sttts-say model list` / `model use NAME` で選ぶ(`tts.model` に記録。フラグで毎回指定はしない)。CLI はリアルタイムでなくてよいので、
+GUI の既定(MeanFlow、4 ステップ)より遅くても正確な RF(`v4.1-small`、40 ステップ + CFG)を選べる。重みは最初の合成で取得する。
+モデルは増分レンダリングの比較キーに入っているので、切り替えた後の `render` は全行を撮り直す。未知のモデル名は合成前にエラーになる。
+GUI は自分の選択(詳細設定)をエンジンへ送るので、`tts.model` は事実上 CLI 用。
 sampling は `tts.sampling` → 声 → 行の順に重なる。声を指定しない行は `backend.json` の `voice` を使う。
 表示言語(標準エラーの文言)は GUI と同じく `data/config.json` の `language` → OS の表示言語。
 

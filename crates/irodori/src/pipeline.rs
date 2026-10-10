@@ -1,5 +1,5 @@
 //! テキスト(+キャプション+参照音声)から音声を作る一連の処理。
-//! PyTorch 実装 `irodori_tts.inference_runtime.InferenceRuntime.synthesize`(MeanFlow)に対応する。
+//! PyTorch 実装 `irodori_tts.inference_runtime.InferenceRuntime.synthesize` に対応する(MeanFlow と RF)。
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -13,7 +13,10 @@ use crate::condition::{TextConditioner, caption_inputs};
 use crate::config::ModelConfig;
 use crate::dit::{Conditions, Dit};
 use crate::duration::{DurationInputs, DurationPredictor, frames_from_log};
-use crate::sampler::{find_flattening_point, sample_euler_meanflow_padded, unpatchify_latent};
+use crate::sampler::{
+    CfgGuidanceMode, RfOptions, SpeakerKvScale, SpeakerUncondMode, TSchedule, find_flattening_point, sample_euler_meanflow_padded,
+    sample_euler_rf_cfg_padded, unpatchify_latent,
+};
 use crate::text::normalize_text;
 use crate::tokenizer::Tokenizer;
 use crate::watermark::{IRODORI_PAYLOAD, Watermarker};
@@ -30,15 +33,18 @@ pub struct TtsPaths {
     pub watermark_dir: Option<PathBuf>,
 }
 
-/// Irodori-TTS v4.1 Small MF のモデルと、組み合わせるコーデック・透かしの HF リポジトリ
+/// 既定のモデル(Irodori-TTS v4.1 Small MF)と、組み合わせるコーデック・透かしの HF リポジトリ
 pub const MODEL_REPO: &str = "Aratako/Irodori-TTS-v4.1-Small-MF";
 pub const CODEC_REPO: &str = "Aratako/Semantic-DACVAE-Japanese-32dim";
 pub const WATERMARK_REPO: &str = "sony/silentcipher";
 
+/// モデルの HF リポジトリに置かれているファイル(重みとトークナイザ)
+pub const MODEL_FILES: [&str; 3] = ["model.safetensors", "tokenizer/tokenizer.json", "tokenizer/tokenizer_config.json"];
+
 impl TtsPaths {
-    /// HF キャッシュに無いモデルをダウンロードして(あれば再利用して)パスを返す。
-    pub fn ensure_downloaded(progress: &dyn Fn(&str)) -> Result<Self> {
-        let model_dir = crate::hub::ensure_files(MODEL_REPO, &["model.safetensors", "tokenizer/tokenizer.json", "tokenizer/tokenizer_config.json"], progress)?;
+    /// HF キャッシュに無いモデル(`model_repo`)とコーデック・透かしをダウンロードして(あれば再利用して)パスを返す。
+    pub fn ensure_downloaded(model_repo: &str, progress: &dyn Fn(&str)) -> Result<Self> {
+        let model_dir = crate::hub::ensure_files(model_repo, &MODEL_FILES, progress)?;
         let codec_dir = crate::hub::ensure_files(CODEC_REPO, &["weights.pth"], progress)?;
         let wm = crate::hub::ensure_files(
             WATERMARK_REPO,
@@ -53,9 +59,9 @@ impl TtsPaths {
         Ok(Self { model_dir, codec_weights: codec_dir.join("weights.pth"), watermark_dir })
     }
 
-    /// HuggingFace キャッシュ(`~/.cache/huggingface/hub`)から既定のモデルを探す
-    pub fn from_hf_cache() -> Result<Self> {
-        let model_dir = crate::hub::find_snapshot(MODEL_REPO, &["model.safetensors"]).context("Irodori-TTS v4.1 Small MF が HF キャッシュにありません")?;
+    /// HuggingFace キャッシュ(`~/.cache/huggingface/hub`)からモデル(`model_repo`)を探す
+    pub fn from_hf_cache(model_repo: &str) -> Result<Self> {
+        let model_dir = crate::hub::find_snapshot(model_repo, &["model.safetensors"]).with_context(|| format!("{model_repo} が HF キャッシュにありません"))?;
         let codec_weights = crate::codec::default_weights_path().context("DACVAE の weights.pth が HF キャッシュにありません")?;
         let watermark_dir = crate::hub::find_snapshot(WATERMARK_REPO, &["44_1_khz/73999_iteration/enc_c.ckpt"])
             .map(|d| d.join("44_1_khz/73999_iteration"));
@@ -63,7 +69,8 @@ impl TtsPaths {
     }
 }
 
-/// 1 回の合成の指定(`SamplingRequest` の MeanFlow で意味のある項目)
+/// 1 回の合成の指定(原典 `SamplingRequest`)。`cfg_*` 以下は RF のモデルだけで効く(MeanFlow は CFG を蒸留で
+/// 織り込み済みで、原典と同じく無視する)。
 #[derive(Debug, Clone)]
 pub struct SamplingRequest {
     pub text: String,
@@ -76,7 +83,8 @@ pub struct SamplingRequest {
     pub no_ref: bool,
     /// None なら乱数で決め、`SynthResult::used_seed` に返す(PyTorch とは別の乱数列)
     pub seed: Option<u64>,
-    pub num_steps: usize,
+    /// None ならモデルの既定(MeanFlow 4、RF 40)
+    pub num_steps: Option<usize>,
     pub duration_scale: f64,
     /// 長さを秒で指定(長さ予測を使わない)
     pub seconds: Option<f64>,
@@ -91,6 +99,29 @@ pub struct SamplingRequest {
     pub tail_mean_threshold: f32,
     /// SilentCipher の透かしを入れる(使えるときのみ)
     pub watermark: bool,
+    pub cfg_scale_text: f64,
+    pub cfg_scale_caption: f64,
+    pub cfg_scale_speaker: f64,
+    /// 指定すると text / caption / speaker の倍率をすべてこの値にする
+    pub cfg_scale: Option<f64>,
+    pub cfg_guidance_mode: CfgGuidanceMode,
+    /// CFG をかける時刻の範囲
+    pub cfg_min_t: f64,
+    pub cfg_max_t: f64,
+    /// 初期ノイズに掛ける倍率
+    pub truncation_factor: Option<f64>,
+    /// Temporal score rescaling(両方指定したときだけ効く)
+    pub rescale_k: Option<f64>,
+    pub rescale_sigma: Option<f64>,
+    /// 話者 K/V の強調(参照音声があるときだけ効く)
+    pub speaker_kv_scale: Option<f64>,
+    /// 時刻がこれを下回ったら強調をやめる(None は 0.9)
+    pub speaker_kv_min_t: Option<f64>,
+    pub speaker_kv_max_layers: Option<usize>,
+    pub speaker_uncond_mode: SpeakerUncondMode,
+    /// false = linear、true = sway(`sway_coeff` を使う)
+    pub t_schedule_sway: bool,
+    pub sway_coeff: f64,
 }
 
 impl Default for SamplingRequest {
@@ -102,7 +133,7 @@ impl Default for SamplingRequest {
             ref_latent: None,
             no_ref: false,
             seed: None,
-            num_steps: 4,
+            num_steps: None,
             duration_scale: 1.0,
             seconds: None,
             min_seconds: 0.5,
@@ -115,7 +146,70 @@ impl Default for SamplingRequest {
             tail_std_threshold: 0.05,
             tail_mean_threshold: 0.1,
             watermark: true,
+            cfg_scale_text: 3.0,
+            cfg_scale_caption: 3.0,
+            cfg_scale_speaker: 5.0,
+            cfg_scale: None,
+            cfg_guidance_mode: CfgGuidanceMode::Independent,
+            cfg_min_t: 0.5,
+            cfg_max_t: 1.0,
+            truncation_factor: None,
+            rescale_k: None,
+            rescale_sigma: None,
+            speaker_kv_scale: None,
+            speaker_kv_min_t: None,
+            speaker_kv_max_layers: None,
+            speaker_uncond_mode: SpeakerUncondMode::Mask,
+            t_schedule_sway: false,
+            sway_coeff: -1.0,
         }
+    }
+}
+
+impl SamplingRequest {
+    /// RF サンプラの指定へ(原典 `synthesize` の CFG 整理と `resolve_cfg_scales`)。話者条件・キャプションが
+    /// 無いときはその CFG を 0 にする。
+    fn rf_options(&self, steps: usize, has_speaker: bool, has_caption: bool, messages: &mut Vec<String>) -> Result<RfOptions> {
+        let (mut text, mut caption, mut speaker) = (self.cfg_scale_text, self.cfg_scale_caption, self.cfg_scale_speaker);
+        if let Some(all) = self.cfg_scale {
+            (text, caption, speaker) = (all, all, all);
+        }
+        if !has_speaker {
+            if speaker > 0.0 {
+                messages.push("info: speaker conditioning is disabled for this checkpoint or request; ignoring cfg_scale_speaker.".into());
+            }
+            speaker = 0.0;
+        }
+        if !has_caption {
+            caption = 0.0;
+        }
+        let speaker_kv = match self.speaker_kv_scale {
+            Some(_) if !has_speaker => {
+                messages.push("info: speaker conditioning is disabled for this request; ignoring speaker_kv_scale.".into());
+                None
+            }
+            Some(scale) => {
+                ensure!(scale > 0.0, "speaker_kv_scale must be > 0, got {scale}");
+                let min_t = self.speaker_kv_min_t.unwrap_or(0.9);
+                ensure!((0.0..=1.0).contains(&min_t), "speaker_kv_min_t must be in [0, 1], got {min_t}");
+                Some(SpeakerKvScale { scale: scale as f32, max_layers: self.speaker_kv_max_layers, min_t: min_t as f32 })
+            }
+            None => None,
+        };
+        Ok(RfOptions {
+            steps,
+            cfg_scale_text: text as f32,
+            cfg_scale_caption: caption as f32,
+            cfg_scale_speaker: speaker as f32,
+            mode: self.cfg_guidance_mode,
+            cfg_min_t: self.cfg_min_t,
+            cfg_max_t: self.cfg_max_t,
+            truncation_factor: self.truncation_factor.map(|f| f as f32),
+            rescale: self.rescale_k.zip(self.rescale_sigma).map(|(k, s)| (k as f32, s as f32)),
+            speaker_kv,
+            speaker_uncond: self.speaker_uncond_mode,
+            schedule: if self.t_schedule_sway { TSchedule::Sway(self.sway_coeff as f32) } else { TSchedule::Linear },
+        })
     }
 }
 
@@ -171,7 +265,6 @@ impl Tts {
         let w = Weights::open(paths.model_dir.join("model.safetensors"))?;
         let cond = TextConditioner::load(&w, device)?;
         let cfg = cond.cfg.clone();
-        ensure!(cfg.is_meanflow(), "MeanFlow のチェックポイントのみ対応です(flow_parameterization={})", cfg.flow_parameterization);
         // 参照音声の潜在をパッチ化する処理は未実装(v4.1 Small MF は 1)
         ensure!(cfg.latent_patch_size == 1, "latent_patch_size != 1 は未対応です({})", cfg.latent_patch_size);
         let tokenizer = Tokenizer::load(paths.model_dir.join("tokenizer"))?;
@@ -194,6 +287,11 @@ impl Tts {
             self.synthesize(&req)?;
         }
         Ok(())
+    }
+
+    /// MeanFlow のモデルか(false なら RF。既定のステップ数と CFG の扱いが違う)
+    pub fn is_meanflow(&self) -> bool {
+        self.cfg.is_meanflow()
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -226,7 +324,8 @@ impl Tts {
             timings.push((name.to_string(), sec));
             *t0 = Instant::now();
         };
-        ensure!(req.num_steps > 0, "num_steps must be > 0");
+        let steps = req.num_steps.unwrap_or_else(|| self.cfg.default_num_steps());
+        ensure!(steps > 0, "num_steps must be > 0");
         ensure!(req.duration_scale > 0.0, "duration_scale must be > 0");
         ensure!(req.min_seconds > 0.0 && req.max_seconds >= req.min_seconds, "bad min/max seconds");
         let mut t0 = Instant::now();
@@ -362,12 +461,20 @@ impl Tts {
         let patch = self.cfg.latent_patch_size;
         let patched_steps = latent_steps.div_ceil(patch);
         let padded_steps = bucket(patched_steps);
-        let z_patched = sample_euler_meanflow_padded(&self.dit, &cond, patched_steps, padded_steps, req.num_steps, noise, used_seed)?
-            .narrow(1, 0, patched_steps);
+        let z_patched = if self.cfg.is_meanflow() {
+            messages.push(format!(
+                "info: MeanFlow checkpoint uses fused training-time CFG with {steps} NFE; runtime CFG and RF sampler controls are ignored."
+            ));
+            sample_euler_meanflow_padded(&self.dit, &cond, patched_steps, padded_steps, steps, noise, used_seed)?
+        } else {
+            let opts = req.rf_options(steps, has_speaker, has_caption_text, &mut messages)?;
+            sample_euler_rf_cfg_padded(&self.dit, &cond, patched_steps, padded_steps, &opts, noise, used_seed)?
+        }
+        .narrow(1, 0, patched_steps);
         let z = unpatchify_latent(z_patched, patch, self.cfg.latent_dim);
         let z = z.narrow(1, 0, latent_steps);
         let z_host = to_host(z.clone())?;
-        lap("sample_meanflow", &mut t0);
+        lap(if self.cfg.is_meanflow() { "sample_meanflow" } else { "sample_rf" }, &mut t0);
 
         // --- デコード・末尾トリム
         // 窓ごとにデコードする(ピークメモリが一定になり、同じ形状のカーネルを使い回せる。全体版との差は 1e-7 級)

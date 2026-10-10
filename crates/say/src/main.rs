@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 use sttts_engine::config::{default_config, default_user_config_path, load_user_config, merge_config};
-use sttts_engine::say::{Line, Studio, line_like, list_voices, load_voice, read_take};
+use sttts_engine::say::{Line, Studio, line_like, list_models, list_voices, load_voice, read_take, use_model};
 use sttts_engine::config::get;
 use sttts_engine::tts::{IrodoriTts, TtsEngine};
 
@@ -26,12 +26,17 @@ USAGE
   sttts-say voice list
   sttts-say voice show NAME
   sttts-say voice save NAME --from TAKE
+  sttts-say model list
+  sttts-say model use NAME
 
   --voice    a voice in data/voices (reference audio NAME.wav and/or settings NAME.json)
   --style    how this line is delivered; appended to the voice's caption
   --caption  replaces the voice's caption (timbre / character description)
   --like     reuse a take's settings and seed (TAKE = its .wav or .json); other options override
   --seed random  draw a new seed (e.g. with --like for a retake)
+  model use  records the model in data/backend.json (tts.model); later runs use it and
+             re-render changed lines. v4.1-small (RF) is slower but more accurate than
+             the default v4.1-small-mf (MeanFlow). Weights download on first use.
 
 Results are JSON on stdout; progress and errors go to stderr.
 Settings come from data/backend.json (tts.sampling etc.), the same as the GUI.
@@ -46,6 +51,8 @@ enum Command {
     VoiceList,
     VoiceShow { name: String },
     VoiceSave { name: String, from: PathBuf },
+    ModelList,
+    ModelUse { name: String },
 }
 
 fn parse(args: &[String]) -> Result<Command> {
@@ -114,6 +121,11 @@ fn parse(args: &[String]) -> Result<Command> {
             [sub, name] if sub == "save" => Command::VoiceSave { name: name.clone(), from: from.context("voice save needs --from TAKE")? },
             _ => bail!("voice needs list | show NAME | save NAME --from TAKE"),
         },
+        "model" => match positional.as_slice() {
+            [sub] if sub == "list" => Command::ModelList,
+            [sub, name] if sub == "use" => Command::ModelUse { name: name.clone() },
+            _ => bail!("model needs list | use NAME"),
+        },
         other => bail!("unknown command {other} (see sttts-say help)"),
     };
     Ok(cmd)
@@ -138,13 +150,13 @@ fn run(cmd: Command) -> Result<Option<Value>> {
     let root = sttts_engine::root::app_root();
     let warn = |m: &str| eprintln!("[warn] {m}");
     let cfg = merge_config(&default_config(), &load_user_config(&default_user_config_path(&root), &warn));
-    let loader_cfg = cfg.clone();
+    let (loader_cfg, model_cfg) = (cfg.clone(), cfg.clone());
     let studio = Studio::new(
         root.clone(),
         cfg,
         move || {
             let progress = |m: &str| eprintln!("{m}");
-            let model = get(&loader_cfg, "tts", "model").as_str().unwrap_or("v4.1-small-mf");
+            let model = get(&loader_cfg, "tts", "model").as_str().unwrap_or(sttts_engine::tts::DEFAULT_TTS_MODEL);
             let steps = get(&loader_cfg, "tts", "num_steps").as_u64().map(|n| n as usize);
             let engine: Arc<dyn TtsEngine> = Arc::new(IrodoriTts::load(model, steps, &progress)?);
             Ok(engine)
@@ -168,6 +180,8 @@ fn run(cmd: Command) -> Result<Option<Value>> {
         Command::VoiceList => serde_json::to_value(list_voices(&root)?)?,
         Command::VoiceShow { name } => serde_json::to_value(load_voice(&root, &name)?)?,
         Command::VoiceSave { name, from } => studio.save_voice(&name, &from)?,
+        Command::ModelList => Value::from(list_models(&model_cfg)),
+        Command::ModelUse { name } => use_model(&root, &model_cfg, &name)?,
     };
     Ok(Some(value))
 }
@@ -218,6 +232,7 @@ mod tests {
         assert!(parse(&args(&["render"])).is_err());
         assert!(parse(&args(&["voice", "save", "x"])).is_err());
         assert!(parse(&args(&["sing"])).is_err());
+        assert!(parse(&args(&["model", "use"])).is_err());
         assert_eq!(parse(&args(&[])).unwrap(), Command::Help);
     }
 
@@ -237,6 +252,8 @@ mod tests {
     fn subcommands_parse() {
         assert_eq!(parse(&args(&["render", "s.jsonl", "--out-dir", "o"])).unwrap(), Command::Render { script: "s.jsonl".into(), out_dir: Some("o".into()) });
         assert_eq!(parse(&args(&["voice", "list"])).unwrap(), Command::VoiceList);
+        assert_eq!(parse(&args(&["model", "list"])).unwrap(), Command::ModelList);
+        assert_eq!(parse(&args(&["model", "use", "v4.1-small"])).unwrap(), Command::ModelUse { name: "v4.1-small".into() });
         assert_eq!(parse(&args(&["voice", "save", "mio", "--from", "t.wav"])).unwrap(), Command::VoiceSave { name: "mio".into(), from: "t.wav".into() });
         let Command::Audition { count, .. } = parse(&args(&["audition", "--text", "a", "--count", "6"])).unwrap() else { panic!() };
         assert_eq!(count, 6);

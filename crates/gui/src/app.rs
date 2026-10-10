@@ -283,7 +283,7 @@ impl StttsApp {
             Err(e) => (None, Some(format!("{e:#}"))),
         };
 
-        let selected_model_id = saved.tts_model.unwrap_or_else(|| "v4.1-small-mf".into());
+        let selected_model_id = saved.tts_model.unwrap_or_else(|| sttts_engine::tts::DEFAULT_TTS_MODEL.into());
 
         let mut app = Self {
             mock,

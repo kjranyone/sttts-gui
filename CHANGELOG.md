@@ -9,7 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Model choice: Irodori-TTS v4.1 Small (RF, 40 steps with classifier-free guidance) besides the default v4.1 Small MeanFlow. It reads kanji and clones voices more accurately at about 20 times the computation, which suits `sttts-say`. Choose it with `sttts-say model use v4.1-small` (recorded in `data/backend.json` as `tts.model`) or in the GUI's Advanced settings.
+- `sttts-say model list` / `model use NAME`.
+- The RF sampler options of Irodori in `tts.sampling` (and in the GUI's synthesis parameters): `cfg_scale_text`, `cfg_scale_caption`, `cfg_scale_speaker`, `cfg_scale`, `cfg_guidance_mode`, `cfg_min_t`, `cfg_max_t`, `truncation_factor`, `rescale_k`, `rescale_sigma`, `speaker_kv_scale`, `speaker_kv_min_t`, `speaker_kv_max_layers`, `speaker_uncond_mode`, `t_schedule_mode`, `sway_coeff`.
 - Each card shows the seed its voice was synthesized with. Click it to make it the fixed seed, so a voice you liked while on random can be used again.
+
+### Changed
+
+- `tts.num_steps` and `tts.sampling.num_steps` default to the model's own step count (4 for MeanFlow, 40 for RF) when unset.
 
 ## [0.1.0] - 2026-10-10
 

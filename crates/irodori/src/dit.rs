@@ -331,7 +331,7 @@ pub struct LayerKv {
 
 /// [`Dit::prepare`] の結果(条件・系列長が固定の間、全ステップで使い回す)
 pub struct Prepared {
-    kv: ContextKv,
+    pub kv: ContextKv,
     bias: Tensor<4>,
     rope: Rope,
     batch: usize,
@@ -341,6 +341,24 @@ pub struct Prepared {
 /// `build_context_kv_cache` の結果(条件が固定の間、全ステップで使い回す)
 pub struct ContextKv {
     pub layers: Vec<LayerKv>,
+    /// 連結した条件キーのうち話者トークンの範囲(話者条件が無ければ None)
+    speaker_range: Option<(usize, usize)>,
+}
+
+impl ContextKv {
+    /// 話者トークンの K/V を `scale` 倍する(原典 `rf.py::scale_speaker_kv_cache`)。`max_layers` は先頭から何層までか
+    pub fn scale_speaker(&mut self, scale: f32, max_layers: Option<usize>) {
+        let Some((start, end)) = self.speaker_range else { return };
+        let n = max_layers.map_or(self.layers.len(), |m| m.min(self.layers.len()));
+        for l in &mut self.layers[..n] {
+            let [_, _, sctx, _] = l.k.dims();
+            let dev = l.k.device();
+            let factor: Vec<f32> = (0..sctx).map(|i| if (start..end).contains(&i) { scale } else { 1.0 }).collect();
+            let factor = Tensor::<4>::from_data(TensorData::new(factor, vec![1, 1, sctx, 1]), &dev);
+            l.k = l.k.clone().mul(factor.clone());
+            l.v = l.v.clone().mul(factor);
+        }
+    }
 }
 
 /// エンコード済み条件(`encode_conditions` の出力に相当)。マスクは f32(1.0 / 0.0)。
@@ -356,6 +374,24 @@ pub struct Conditions {
 impl Conditions {
     pub fn batch(&self) -> usize {
         self.text_state.dims()[0]
+    }
+
+    /// バッチ方向に連結する(CFG で条件あり・なしを 1 回の forward にまとめる)。話者・キャプションの有無はそろっていること
+    pub fn cat(parts: &[Conditions]) -> Result<Conditions> {
+        ensure!(!parts.is_empty(), "no conditions to concatenate");
+        fn opt<const D: usize>(items: Vec<Option<Tensor<D>>>, what: &str) -> Result<Option<Tensor<D>>> {
+            let n = items.iter().filter(|x| x.is_some()).count();
+            ensure!(n == 0 || n == items.len(), "cannot concatenate {what} with mixed presence");
+            Ok((n > 0).then(|| Tensor::cat(items.into_iter().flatten().collect(), 0)))
+        }
+        Ok(Conditions {
+            text_state: Tensor::cat(parts.iter().map(|c| c.text_state.clone()).collect(), 0),
+            text_mask: Tensor::cat(parts.iter().map(|c| c.text_mask.clone()).collect(), 0),
+            speaker_state: opt(parts.iter().map(|c| c.speaker_state.clone()).collect(), "speaker_state")?,
+            speaker_mask: opt(parts.iter().map(|c| c.speaker_mask.clone()).collect(), "speaker_mask")?,
+            caption_state: opt(parts.iter().map(|c| c.caption_state.clone()).collect(), "caption_state")?,
+            caption_mask: opt(parts.iter().map(|c| c.caption_mask.clone()).collect(), "caption_mask")?,
+        })
     }
 
     /// K/V の連結順(text, speaker, caption)と同じ順のキーマスク `[B, Sctx]`
@@ -488,7 +524,8 @@ pub struct Dit {
     device: Device,
     blocks: Vec<DiffusionBlock>,
     cond_module: CondMlp,
-    delta_cond_module: CondMlp,
+    /// MeanFlow の区間長埋め込み(RF のチェックポイントには無い)
+    delta_cond_module: Option<CondMlp>,
     in_proj: Linear,
     out_norm: RmsNorm<3>,
     out_proj: Linear,
@@ -520,7 +557,11 @@ fn host_vec(t: Tensor<1>) -> Result<Vec<f32>> {
 
 impl Dit {
     pub fn load(w: &Weights, cfg: &ModelConfig, device: &Device) -> Result<Self> {
-        ensure!(cfg.is_meanflow(), "only MeanFlow checkpoints are supported");
+        ensure!(
+            cfg.is_meanflow() || cfg.flow_parameterization.eq_ignore_ascii_case("rf_velocity"),
+            "unsupported flow_parameterization: {}",
+            cfg.flow_parameterization
+        );
         ensure!(cfg.model_dim.is_multiple_of(cfg.num_heads) && (cfg.model_dim / cfg.num_heads).is_multiple_of(2), "bad head dim");
         ensure!(cfg.num_heads.is_multiple_of(2), "num_heads must be even for half-head RoPE");
         let eps = cfg.norm_eps;
@@ -548,7 +589,7 @@ impl Dit {
             device: device.clone(),
             blocks,
             cond_module: CondMlp::load(w, "cond_module", device)?,
-            delta_cond_module: CondMlp::load(w, "delta_cond_module", device)?,
+            delta_cond_module: if cfg.is_meanflow() { Some(CondMlp::load(w, "delta_cond_module", device)?) } else { None },
             in_proj: Linear::load(w, "in_proj", true, device)?,
             out_norm: RmsNorm::from_weights(w, "out_norm.weight", [1, 1, cfg.model_dim], eps, device)?,
             out_proj: Linear::load(w, "out_proj", true, device)?,
@@ -610,16 +651,29 @@ impl Dit {
     /// 層ごとの text / speaker / caption の K,V を事前計算する(条件が固定の間は全ステップで共通)
     pub fn build_context_kv_cache(&self, c: &Conditions) -> Result<ContextKv> {
         let layers = self.blocks.iter().map(|b| b.attention.project_context(c)).collect::<Result<Vec<_>>>()?;
-        Ok(ContextKv { layers })
+        let has_speaker = self.blocks.first().is_some_and(|b| b.attention.wk_speaker.is_some());
+        let speaker_range = match (&c.speaker_state, has_speaker) {
+            (Some(s), true) => {
+                let start = c.text_state.dims()[1];
+                Some((start, start + s.dims()[1]))
+            }
+            _ => None,
+        };
+        Ok(ContextKv { layers, speaker_range })
+    }
+
+    /// MeanFlow のチェックポイントか(`delta_t` が要る)
+    pub fn is_meanflow(&self) -> bool {
+        self.delta_cond_module.is_some()
     }
 
     /// `x_t`: `[B, S, latent_dim*latent_patch]`、`t` / `delta_t`: `[B]`。速度 `[B, S, ..]` を返す。
-    /// `kv` が `None` のときは都度 `build_context_kv_cache` する。
+    /// `delta_t` は MeanFlow のときだけ渡す(RF は None)。`kv` が `None` のときは都度 `build_context_kv_cache` する。
     pub fn forward_with_encoded_conditions(
         &self,
         x_t: Tensor<3>,
         t: Tensor<1>,
-        delta_t: Tensor<1>,
+        delta_t: Option<Tensor<1>>,
         cond: &Conditions,
         kv: Option<&ContextKv>,
     ) -> Result<Tensor<3>> {
@@ -634,17 +688,16 @@ impl Dit {
         &self,
         x_t: Tensor<3>,
         t: Tensor<1>,
-        delta_t: Tensor<1>,
+        delta_t: Option<Tensor<1>>,
         cond: &Conditions,
         kv: Option<&ContextKv>,
         valid_len: usize,
     ) -> Result<Tensor<3>> {
         let [b, s, _] = x_t.dims();
         let tv = host_vec(t)?;
-        let dv = host_vec(delta_t)?;
-        ensure!(tv.len() == b && dv.len() == b, "t / delta_t must have batch size {b}");
+        let dv = delta_t.map(host_vec).transpose()?;
         let prepared = self.prepare_inner(cond, kv, b, s, valid_len)?;
-        self.forward_prepared(x_t, &tv, &dv, &prepared)
+        self.forward_prepared(x_t, &tv, dv.as_deref(), &prepared)
     }
 
     /// 同じ条件・系列長で何度も forward する(サンプラの各ステップ)ときに共通の部分(条件の K/V、
@@ -665,7 +718,10 @@ impl Dit {
         let dev = &self.device;
         let heads = self.cfg.num_heads;
         let kv = match kv {
-            Some(k) => ContextKv { layers: k.layers.iter().map(|l| LayerKv { k: l.k.clone(), v: l.v.clone() }).collect() },
+            Some(k) => ContextKv {
+                layers: k.layers.iter().map(|l| LayerKv { k: l.k.clone(), v: l.v.clone() }).collect(),
+                speaker_range: k.speaker_range,
+            },
             None => self.build_context_kv_cache(cond)?,
         };
         ensure!(kv.layers.len() == self.blocks.len(), "context kv cache layer count mismatch");
@@ -682,14 +738,23 @@ impl Dit {
     }
 
     /// [`Self::prepare`] 済みの共通部分を使って 1 ステップ進める。`t` / `delta_t` はホスト側の値(バッチ長)。
-    pub fn forward_prepared(&self, x_t: Tensor<3>, t: &[f32], delta_t: &[f32], p: &Prepared) -> Result<Tensor<3>> {
+    /// `delta_t` は MeanFlow では必須、RF では None。
+    pub fn forward_prepared(&self, x_t: Tensor<3>, t: &[f32], delta_t: Option<&[f32]>, p: &Prepared) -> Result<Tensor<3>> {
         let [b, s, _] = x_t.dims();
         ensure!(b == p.batch && s == p.seq_len, "x_t shape {:?} != prepared ({}, {})", x_t.dims(), p.batch, p.seq_len);
-        ensure!(t.len() == b && delta_t.len() == b, "t / delta_t must have batch size {b}");
+        ensure!(t.len() == b, "t must have batch size {b}");
         let dev = &self.device;
         let ted = self.cfg.timestep_embed_dim;
         let mut cond_embed = self.cond_module.forward(timestep_embedding(t, ted, dev));
-        cond_embed = cond_embed.add(self.delta_cond_module.forward(timestep_embedding(delta_t, ted, dev)));
+        match (&self.delta_cond_module, delta_t) {
+            (Some(m), Some(dt)) => {
+                ensure!(dt.len() == b, "delta_t must have batch size {b}");
+                cond_embed = cond_embed.add(m.forward(timestep_embedding(dt, ted, dev)));
+            }
+            (None, None) => {}
+            (Some(_), None) => bail!("delta_t is required for a MeanFlow forward pass"),
+            (None, Some(_)) => bail!("delta_t was provided to an RF velocity model"),
+        }
 
         let mut x = self.in_proj.forward3(x_t);
         for (blk, lkv) in self.blocks.iter().zip(&p.kv.layers) {

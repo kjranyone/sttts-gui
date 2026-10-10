@@ -102,7 +102,7 @@ fn dit_forward_matches() {
             let t = vec1(&c, &format!("{case}.dit.in.t.{n}"));
             let dt = vec1(&c, &format!("{case}.dit.in.delta_t.{n}"));
             let t0 = Instant::now();
-            let out = c.dit.forward_with_encoded_conditions(x_t, t, dt, &cond, None).unwrap();
+            let out = c.dit.forward_with_encoded_conditions(x_t, t, Some(dt), &cond, None).unwrap();
             let el = t0.elapsed();
             let want = to_vec(t3(&c, &format!("{case}.dit.out.{n}")));
             assert_close(&format!("{case} dit.out.{n} ({el:.2?})"), &to_vec(out), &want, 1e-4);
@@ -144,7 +144,7 @@ fn sampler_steps_match() {
         let b = x.dims()[0];
         let t = Tensor::<1>::from_data(TensorData::new(vec![sched[n]; b], vec![b]), &c.dev);
         let d = Tensor::<1>::from_data(TensorData::new(vec![sched[n] - sched[n + 1]; b], vec![b]), &c.dev);
-        let v = c.dit.forward_with_encoded_conditions(x.clone(), t, d, &cond, Some(&kv)).unwrap();
+        let v = c.dit.forward_with_encoded_conditions(x.clone(), t, Some(d), &cond, Some(&kv)).unwrap();
         let next = x.add(v.mul_scalar(sched[n + 1] - sched[n]));
         assert_close(&format!("A x_t.{} from step", n + 1), &to_vec(next), &to_vec(t3(&c, &format!("A.dit.in.x_t.{}", n + 1))), 1e-4);
     }

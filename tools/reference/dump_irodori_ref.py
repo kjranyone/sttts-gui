@@ -4,8 +4,8 @@ PyTorch の実行は CPU・fp32 のみ(XPU / GPU には触れない)。各ケー
 (トークナイザ、ModernBERT、条件エンコーダ、長さ予測、DiT の各ステップ、codec のデコード、透かし)を
 safetensors に保存する。Rust 側のテストはこれを読んで段階ごとに突き合わせる。
 
-使い方:  cd tools/reference && uv run python dump_irodori_ref.py [出力ディレクトリ]
-既定の出力先: <repo>/target/irodori-ref
+使い方:  cd tools/reference && uv run python dump_irodori_ref.py [--rf] [出力ディレクトリ]
+既定の出力先: <repo>/target/irodori-ref(MeanFlow)、--rf のとき <repo>/target/irodori-ref-rf(RF + CFG)
 """
 
 from __future__ import annotations
@@ -35,6 +35,37 @@ CASES = {
     "D": dict(text=LONG_TEXT, no_ref=True, seed=3),
 }
 
+# RF(v4.1 Small、CFG あり)。Rust の CPU テストが現実的な時間で済むよう、ステップ数は少なめにして
+# CFG のかけ方と RF サンプラの各オプションを一通り通す。
+RF_REPO = "Aratako/Irodori-TTS-v4.1-Small"
+RF_CASES = {
+    # text CFG のみ
+    "RA": dict(text=TEXT, no_ref=True, seed=10, num_steps=8),
+    # text + caption(independent: 3 本を 1 バッチ)
+    "RB": dict(text=TEXT, caption=CAPTION, no_ref=True, seed=11, num_steps=8),
+    # text + speaker
+    "RC": dict(text=TEXT, no_ref=False, seed=12, num_steps=8),
+    # alternating、sway、話者 K/V 強調、score rescale、truncation
+    "RD": dict(
+        text=TEXT,
+        caption=CAPTION,
+        no_ref=False,
+        seed=13,
+        num_steps=6,
+        cfg_guidance_mode="alternating",
+        t_schedule_mode="sway",
+        sway_coeff=-0.5,
+        speaker_kv_scale=1.3,
+        speaker_kv_min_t=0.7,
+        speaker_kv_max_layers=4,
+        rescale_k=1.1,
+        rescale_sigma=0.5,
+        truncation_factor=0.9,
+    ),
+    # joint(倍率を cfg_scale でそろえる)、CFG をかける範囲を広げる
+    "RE": dict(text=TEXT, caption=CAPTION, no_ref=True, seed=14, num_steps=6, cfg_guidance_mode="joint", cfg_scale=2.0, cfg_min_t=0.3),
+}
+
 
 def make_ref_wav(path: Path, sr: int = 24000, seconds: float = 3.0) -> None:
     """再現可能な合成「声っぽい」信号(基本周波数が揺れる倍音 + 少量のノイズ)。"""
@@ -49,11 +80,16 @@ def make_ref_wav(path: Path, sr: int = 24000, seconds: float = 3.0) -> None:
 
 
 def main() -> None:
-    out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[2] / "target" / "irodori-ref"
+    args = sys.argv[1:]
+    rf = "--rf" in args
+    args = [a for a in args if a != "--rf"]
+    repo, cases = (RF_REPO, RF_CASES) if rf else (REPO, CASES)
+    default_dir = "irodori-ref-rf" if rf else "irodori-ref"
+    out_dir = Path(args[0]) if args else Path(__file__).resolve().parents[2] / "target" / default_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     torch.set_num_threads(max(1, torch.get_num_threads()))
 
-    ckpt_dir = Path(snapshot_download(REPO))
+    ckpt_dir = Path(snapshot_download(repo))
     checkpoint = str(ckpt_dir / "model.safetensors")
     rt = InferenceRuntime.from_key(
         RuntimeKey(
@@ -70,7 +106,7 @@ def main() -> None:
     make_ref_wav(ref_wav)
 
     tensors: dict[str, torch.Tensor] = {}
-    meta: dict[str, object] = {"repo": REPO, "cases": {}}
+    meta: dict[str, object] = {"repo": repo, "cases": {}}
     state = {"case": "", "calls": {}}
 
     def put(stage: str, value) -> None:
@@ -141,7 +177,7 @@ def main() -> None:
 
     rt.model.pretrained_text_backbone.register_forward_hook(backbone_hook, with_kwargs=True)
 
-    for name, kw in CASES.items():
+    for name, kw in cases.items():
         state["case"] = name
         state["calls"] = {}
         meta["cases"][name] = {"request": {k: v for k, v in kw.items()}}

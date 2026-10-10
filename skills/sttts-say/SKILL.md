@@ -62,6 +62,10 @@ sttts-say render ep1.jsonl --out-dir ep1_audio
 # Voices
 sttts-say voice list
 sttts-say voice show mio
+
+# Models
+sttts-say model list
+sttts-say model use v4.1-small
 ```
 
 Script (`ep1.jsonl`):
@@ -73,6 +77,15 @@ Script (`ep1.jsonl`):
 
 `render` is incremental: a line whose settings match its previous take is left as is (`"status":"unchanged"`), and when nothing changed the model is not even loaded. To change one line, edit it and re-run. To force a retake of a line, delete its `.wav` or give it a different `seed`.
 All lines are validated (voices exist, sampling keys valid, ids unique) before anything is synthesized.
+
+## Choosing the model
+
+`sttts-say model list` shows the models, which one is current, and whether its weights are already downloaded.
+
+- `v4.1-small-mf` (default): MeanFlow, 4 steps. Fast; good for drafts and auditions.
+- `v4.1-small`: RF, 40 steps with guidance (CFG). Reads kanji and clones the reference voice more accurately, at about 20 times the computation. Prefer it for final renders when time allows.
+
+`sttts-say model use NAME` records the choice in `data/backend.json` (`tts.model`); it is not a per-command flag. Ask the user before switching (the first use downloads about 3 GB). After switching, `render` re-synthesizes every line, because the model is part of each take's settings. RF-only options (`cfg_scale_text`, `cfg_scale_speaker`, `cfg_guidance_mode`, ...) go in `sampling`; MeanFlow ignores them.
 
 ## Pinning a character (do this before producing many lines)
 

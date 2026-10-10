@@ -76,6 +76,8 @@ pub enum SamplingKind {
     Int,
     Float,
     Bool,
+    /// 決まった文字列のどれか
+    Choice(&'static [&'static str]),
 }
 
 /// `tts.sampling` で指定できる Irodori の項目(GUI はこの一覧から編集欄を作る)。
@@ -103,9 +105,9 @@ pub fn sampling_fields() -> Vec<SamplingField> {
             "num_steps",
             tr!("Steps", "ステップ数", "步数"),
             tr!(
-                "More is more careful but slower (MeanFlow needs only a few)",
-                "多いほど丁寧だが遅い(MeanFlow は少数で足りる)",
-                "越多越精细但越慢(MeanFlow 少量即可)"
+                "More is more careful but slower (empty = the model's default: 4 for MeanFlow, 40 for RF)",
+                "多いほど丁寧だが遅い(空 = モデルの既定: MeanFlow は 4、RF は 40)",
+                "越多越精细但越慢(空 = 模型默认:MeanFlow 为 4,RF 为 40)"
             ),
             Int,
             d.num_steps.into(),
@@ -221,8 +223,179 @@ pub fn sampling_fields() -> Vec<SamplingField> {
             Bool,
             d.watermark.into(),
         ),
+        f(
+            "cfg_scale_text",
+            tr!("Text guidance (RF)", "テキストの CFG(RF)", "文本 CFG(RF)"),
+            tr!(
+                "How strongly to follow the text. RF models only; MeanFlow ignores it",
+                "テキストにどれだけ強く従うか。RF のモデルのみ(MeanFlow は無視)",
+                "遵循文本的强度。仅 RF 模型(MeanFlow 忽略)"
+            ),
+            Float,
+            d.cfg_scale_text.into(),
+        ),
+        f(
+            "cfg_scale_caption",
+            tr!("Caption guidance (RF)", "キャプションの CFG(RF)", "描述 CFG(RF)"),
+            tr!(
+                "How strongly to follow the caption (voice / style). RF models only",
+                "キャプション(声・話し方)にどれだけ強く従うか。RF のモデルのみ",
+                "遵循描述(声音、说话方式)的强度。仅 RF 模型"
+            ),
+            Float,
+            d.cfg_scale_caption.into(),
+        ),
+        f(
+            "cfg_scale_speaker",
+            tr!("Speaker guidance (RF)", "話者の CFG(RF)", "说话人 CFG(RF)"),
+            tr!(
+                "How strongly to follow the reference audio. RF models only",
+                "参照音声にどれだけ強く寄せるか。RF のモデルのみ",
+                "贴近参考音频的强度。仅 RF 模型"
+            ),
+            Float,
+            d.cfg_scale_speaker.into(),
+        ),
+        f(
+            "cfg_scale",
+            tr!("All guidance (RF)", "CFG 一括(RF)", "CFG 统一(RF)"),
+            tr!(
+                "If set, uses this value for text, caption and speaker guidance",
+                "指定するとテキスト・キャプション・話者の CFG をすべてこの値にする",
+                "指定后文本、描述、说话人的 CFG 都使用此值"
+            ),
+            Float,
+            d.cfg_scale.into(),
+        ),
+        f(
+            "cfg_guidance_mode",
+            tr!("Guidance mode (RF)", "CFG のかけ方(RF)", "CFG 方式(RF)"),
+            tr!(
+                "independent: each condition separately (default) / joint: all at once (equal scales) / alternating: one per step",
+                "independent: 条件ごと(既定)/ joint: まとめて(倍率をそろえる)/ alternating: 1 ステップに 1 つずつ",
+                "independent:逐个条件(默认)/ joint:一起(倍率需相同)/ alternating:每步一个"
+            ),
+            Choice(&irodori::sampler::CfgGuidanceMode::NAMES),
+            d.cfg_guidance_mode.name().into(),
+        ),
+        f(
+            "cfg_min_t",
+            tr!("Guidance from t (RF)", "CFG をかける t の下限(RF)", "施加 CFG 的 t 下限(RF)"),
+            tr!(
+                "Guidance applies while the time t is between this and the upper bound (1 = noise, 0 = audio)",
+                "時刻 t がこれと上限の間のステップだけ CFG をかける(1 = ノイズ、0 = 音声)",
+                "仅在时刻 t 介于此值与上限之间时施加 CFG(1 = 噪声,0 = 音频)"
+            ),
+            Float,
+            d.cfg_min_t.into(),
+        ),
+        f(
+            "cfg_max_t",
+            tr!("Guidance up to t (RF)", "CFG をかける t の上限(RF)", "施加 CFG 的 t 上限(RF)"),
+            tr!("Upper bound of the guidance range", "CFG をかける範囲の上限", "施加 CFG 范围的上限"),
+            Float,
+            d.cfg_max_t.into(),
+        ),
+        f(
+            "truncation_factor",
+            tr!("Noise scale (RF)", "初期ノイズの倍率(RF)", "初始噪声倍率(RF)"),
+            tr!(
+                "Scales the starting noise; below 1 is steadier, less varied",
+                "初期ノイズに掛ける倍率。1 より小さいと安定するが単調になる",
+                "初始噪声的倍率;小于 1 更稳定但更单调"
+            ),
+            Float,
+            d.truncation_factor.into(),
+        ),
+        f(
+            "rescale_k",
+            tr!("Score rescale k (RF)", "スコア補正 k(RF)", "分数校正 k(RF)"),
+            tr!(
+                "Temporal score rescaling; takes effect when both k and sigma are set",
+                "Temporal score rescaling。k と sigma を両方指定したときだけ効く",
+                "Temporal score rescaling;同时指定 k 和 sigma 时才生效"
+            ),
+            Float,
+            d.rescale_k.into(),
+        ),
+        f(
+            "rescale_sigma",
+            tr!("Score rescale sigma (RF)", "スコア補正 sigma(RF)", "分数校正 sigma(RF)"),
+            tr!("See score rescale k", "スコア補正 k を参照", "参见分数校正 k"),
+            Float,
+            d.rescale_sigma.into(),
+        ),
+        f(
+            "speaker_kv_scale",
+            tr!("Speaker emphasis (RF)", "話者の強調(RF)", "说话人强调(RF)"),
+            tr!(
+                "Multiplies the reference voice's attention keys/values (above 1 = closer to the reference)",
+                "参照音声の注意のキー・値に掛ける倍率(1 より大きいと参照音声に寄る)",
+                "参考音频注意力键/值的倍率(大于 1 更贴近参考音频)"
+            ),
+            Float,
+            d.speaker_kv_scale.into(),
+        ),
+        f(
+            "speaker_kv_min_t",
+            tr!("Emphasis until t (RF)", "強調をやめる t(RF)", "停止强调的 t(RF)"),
+            tr!(
+                "The emphasis stops once the time t falls below this (empty = 0.9)",
+                "時刻 t がこれを下回ったら強調をやめる(空 = 0.9)",
+                "时刻 t 低于此值后停止强调(空 = 0.9)"
+            ),
+            Float,
+            d.speaker_kv_min_t.into(),
+        ),
+        f(
+            "speaker_kv_max_layers",
+            tr!("Emphasis layers (RF)", "強調する層数(RF)", "强调层数(RF)"),
+            tr!(
+                "Applies the emphasis to this many first layers (empty = all)",
+                "先頭からこの層数だけ強調する(空 = 全層)",
+                "只对前这么多层强调(空 = 全部)"
+            ),
+            Int,
+            d.speaker_kv_max_layers.into(),
+        ),
+        f(
+            "speaker_uncond_mode",
+            tr!("Speaker-free branch (RF)", "話者なし側の中身(RF)", "无说话人分支(RF)"),
+            tr!(
+                "What the speaker guidance compares against: mask (no speaker, default) / noise",
+                "話者の CFG で比べる相手: mask(話者なし、既定)/ noise(ノイズ)",
+                "说话人 CFG 的比较对象:mask(无说话人,默认)/ noise(噪声)"
+            ),
+            Choice(&irodori::sampler::SpeakerUncondMode::NAMES),
+            d.speaker_uncond_mode.name().into(),
+        ),
+        f(
+            "t_schedule_mode",
+            tr!("Time schedule (RF)", "時刻の刻み方(RF)", "时间步划分(RF)"),
+            tr!(
+                "linear (default) / sway: denser steps on the noise side (uses sway_coeff)",
+                "linear(既定)/ sway: ノイズ側を細かく刻む(sway_coeff を使う)",
+                "linear(默认)/ sway:在噪声侧划分更细(使用 sway_coeff)"
+            ),
+            Choice(&T_SCHEDULE_MODES),
+            (if d.t_schedule_sway { "sway" } else { "linear" }).into(),
+        ),
+        f(
+            "sway_coeff",
+            tr!("Sway coefficient (RF)", "sway の係数(RF)", "sway 系数(RF)"),
+            tr!(
+                "Negative values refine the noise side, positive the audio side",
+                "負だとノイズ側、正だと音声側を細かく刻む",
+                "负值细化噪声侧,正值细化音频侧"
+            ),
+            Float,
+            d.sway_coeff.into(),
+        ),
     ]
 }
+
+/// `t_schedule_mode` の値
+const T_SCHEDULE_MODES: [&str; 2] = ["linear", "sway"];
 
 /// f32 の既定値を JSON へ(0.05f32 → 0.05。f64 へ広げたときの端数を見せない)
 fn f32_value(x: f32) -> f64 {
@@ -271,26 +444,93 @@ struct RefKey {
     ensure_max: bool,
 }
 
-/// モデルエイリアス → HF リポジトリ。Rust 版が扱えるのは MeanFlow の v4.1 Small のみ。
-pub const MODEL_ALIASES: [(&str, &str); 1] = [("v4.1-small-mf", "Aratako/Irodori-TTS-v4.1-Small-MF")];
+/// 選べる Irodori のモデル(`tts.model` には `alias` を書く)
+#[derive(Debug, Clone, PartialEq)]
+pub struct TtsModel {
+    pub alias: &'static str,
+    pub repo: &'static str,
+    /// 表示名(今の表示言語)
+    pub label: &'static str,
+    /// MeanFlow(数ステップ)か RF(40 ステップ + CFG)か
+    pub meanflow: bool,
+    /// モデルの重みのダウンロード量(MB。コーデックと透かしは全モデル共通で別)
+    pub download_mb: u32,
+    /// 特徴(今の表示言語)
+    pub summary: &'static str,
+}
+
+/// 既定のモデル
+pub const DEFAULT_TTS_MODEL: &str = "v4.1-small-mf";
+
+/// Rust 版 Irodori が扱えるモデルの一覧
+pub fn tts_models() -> Vec<TtsModel> {
+    vec![
+        TtsModel {
+            alias: DEFAULT_TTS_MODEL,
+            repo: "Aratako/Irodori-TTS-v4.1-Small-MF",
+            label: tr!(
+                "Irodori v4.1 Small MeanFlow (fast, for conversation)",
+                "Irodori v4.1 Small MeanFlow(高速・会話向け)",
+                "Irodori v4.1 Small MeanFlow(高速、适合对话)"
+            ),
+            meanflow: true,
+            download_mb: 3093,
+            summary: tr!(
+                "MeanFlow, 4 steps. Fast enough for live conversation (default)",
+                "MeanFlow、4 ステップ。会話に使える速さ(既定)",
+                "MeanFlow,4 步。速度足以用于实时对话(默认)"
+            ),
+        },
+        TtsModel {
+            alias: "v4.1-small",
+            repo: "Aratako/Irodori-TTS-v4.1-Small",
+            label: tr!(
+                "Irodori v4.1 Small RF (high quality, slow)",
+                "Irodori v4.1 Small RF(高品質・低速)",
+                "Irodori v4.1 Small RF(高质量、低速)"
+            ),
+            meanflow: false,
+            download_mb: 3064,
+            summary: tr!(
+                "RF, 40 steps with guidance (CFG). Better kanji reading and voice cloning than MeanFlow, but about 20x the computation: for sttts-say and other offline use",
+                "RF、40 ステップ + CFG。漢字の読みと声の再現が MeanFlow より正確だが、計算量は約 20 倍。sttts-say などリアルタイムでない用途向け",
+                "RF,40 步 + CFG。汉字读音与声音还原比 MeanFlow 更准确,但计算量约为 20 倍。适合 sttts-say 等非实时用途"
+            ),
+        },
+    ]
+}
+
+impl TtsModel {
+    /// 既定のステップ数(MeanFlow 4、RF 40)
+    pub fn default_steps(&self) -> usize {
+        if self.meanflow { 4 } else { 40 }
+    }
+}
+
+/// 別名からモデルを引く。未知ならエラー(選べるものを示す)
+pub fn tts_model(alias: &str) -> Result<TtsModel> {
+    let models = tts_models();
+    if let Some(m) = models.iter().find(|m| m.alias == alias) {
+        return Ok(m.clone());
+    }
+    let known = models.iter().map(|m| m.alias).collect::<Vec<_>>().join(", ");
+    bail!(
+        "{}",
+        trf!(
+            "Unsupported TTS model: {alias} (available: {known})",
+            "未対応の TTS モデル: {alias}(選べるもの: {known})",
+            "不支持的 TTS 模型:{alias}(可选:{known})"
+        )
+    )
+}
 
 const REF_CACHE_MAX: usize = 8;
 
 impl IrodoriTts {
     pub fn load(model_id: &str, num_steps: Option<usize>, progress: &dyn Fn(&str)) -> Result<Self> {
-        if !MODEL_ALIASES.iter().any(|(alias, _)| *alias == model_id) {
-            let known = MODEL_ALIASES.iter().map(|(a, _)| *a).collect::<Vec<_>>().join(", ");
-            bail!(
-                "{}",
-                trf!(
-                    "Unsupported TTS model: {model_id} (the Rust Irodori supports only the MeanFlow {known})",
-                    "未対応の TTS モデル: {model_id}(Rust 版 Irodori が扱えるのは MeanFlow の {known} のみ)",
-                    "不支持的 TTS 模型:{model_id}(Rust 版 Irodori 仅支持 MeanFlow 的 {known})"
-                )
-            );
-        }
+        let model = tts_model(model_id)?;
         progress(tr!("Fetching the TTS model", "TTS モデル取得中", "正在获取 TTS 模型"));
-        let paths = irodori::pipeline::TtsPaths::ensure_downloaded(progress)?;
+        let paths = irodori::pipeline::TtsPaths::ensure_downloaded(model.repo, progress)?;
         progress(tr!(
             "Building the TTS model (the first run takes a while to prepare GPU kernels)",
             "TTS モデル構築中(初回は GPU のカーネル準備に時間がかかります)",
@@ -356,6 +596,20 @@ pub fn apply_sampling(req: &mut irodori::pipeline::SamplingRequest, sampling: &M
             )
         })
     };
+    let opt_f64 = |k: &str, v: &Value| if v.is_null() { Ok(None) } else { f64_of(k, v).map(Some) };
+    let choice_of = |k: &str, v: &Value, names: &[&str]| {
+        v.as_str().filter(|s| names.contains(&s.trim().to_ascii_lowercase().as_str())).map(|s| s.trim().to_ascii_lowercase()).ok_or_else(|| {
+            let names = names.join(" / ");
+            anyhow!(
+                "{}",
+                trf!(
+                    "tts.sampling.{k} must be one of {names}: {v}",
+                    "tts.sampling.{k} は {names} のどれかで指定してください: {v}",
+                    "tts.sampling.{k} 必须是 {names} 之一:{v}"
+                )
+            )
+        })
+    };
     let bool_of = |k: &str, v: &Value| {
         v.as_bool().ok_or_else(|| {
             anyhow!(
@@ -370,7 +624,7 @@ pub fn apply_sampling(req: &mut irodori::pipeline::SamplingRequest, sampling: &M
     };
     for (k, v) in sampling {
         match k.as_str() {
-            "num_steps" if !v.is_null() => req.num_steps = usize_of(k, v)?,
+            "num_steps" => req.num_steps = if v.is_null() { None } else { Some(usize_of(k, v)?) },
             "duration_scale" => req.duration_scale = f64_of(k, v)?,
             "seconds" => req.seconds = if v.is_null() { None } else { Some(f64_of(k, v)?) },
             "min_seconds" => req.min_seconds = f64_of(k, v)?,
@@ -383,15 +637,36 @@ pub fn apply_sampling(req: &mut irodori::pipeline::SamplingRequest, sampling: &M
             "tail_std_threshold" => req.tail_std_threshold = f64_of(k, v)? as f32,
             "tail_mean_threshold" => req.tail_mean_threshold = f64_of(k, v)? as f32,
             "watermark" => req.watermark = bool_of(k, v)?,
-            "num_steps" => {}
+            "cfg_scale_text" => req.cfg_scale_text = f64_of(k, v)?,
+            "cfg_scale_caption" => req.cfg_scale_caption = f64_of(k, v)?,
+            "cfg_scale_speaker" => req.cfg_scale_speaker = f64_of(k, v)?,
+            "cfg_scale" => req.cfg_scale = opt_f64(k, v)?,
+            "cfg_guidance_mode" => {
+                let name = choice_of(k, v, &irodori::sampler::CfgGuidanceMode::NAMES)?;
+                req.cfg_guidance_mode = irodori::sampler::CfgGuidanceMode::parse(&name).expect("checked above");
+            }
+            "cfg_min_t" => req.cfg_min_t = f64_of(k, v)?,
+            "cfg_max_t" => req.cfg_max_t = f64_of(k, v)?,
+            "truncation_factor" => req.truncation_factor = opt_f64(k, v)?,
+            "rescale_k" => req.rescale_k = opt_f64(k, v)?,
+            "rescale_sigma" => req.rescale_sigma = opt_f64(k, v)?,
+            "speaker_kv_scale" => req.speaker_kv_scale = opt_f64(k, v)?,
+            "speaker_kv_min_t" => req.speaker_kv_min_t = opt_f64(k, v)?,
+            "speaker_kv_max_layers" => req.speaker_kv_max_layers = if v.is_null() { None } else { Some(usize_of(k, v)?) },
+            "speaker_uncond_mode" => {
+                let name = choice_of(k, v, &irodori::sampler::SpeakerUncondMode::NAMES)?;
+                req.speaker_uncond_mode = irodori::sampler::SpeakerUncondMode::parse(&name).expect("checked above");
+            }
+            "t_schedule_mode" => req.t_schedule_sway = choice_of(k, v, &T_SCHEDULE_MODES)? == "sway",
+            "sway_coeff" => req.sway_coeff = f64_of(k, v)?,
             other => {
                 let keys = sampling_fields().iter().map(|f| f.key).collect::<Vec<_>>().join(", ");
                 bail!(
                     "{}",
                     trf!(
-                        "tts.sampling key {other:?} is not supported by the Rust Irodori (keys that matter for MeanFlow: {keys})",
-                        "tts.sampling の項目 {other:?} は Rust 版 Irodori が対応していません(MeanFlow で意味のある項目: {keys})",
-                        "Rust 版 Irodori 不支持 tts.sampling 的项 {other:?}(对 MeanFlow 有意义的项:{keys})"
+                        "tts.sampling key {other:?} is not supported by the Rust Irodori (supported keys: {keys})",
+                        "tts.sampling の項目 {other:?} は Rust 版 Irodori が対応していません(指定できる項目: {keys})",
+                        "Rust 版 Irodori 不支持 tts.sampling 的项 {other:?}(可指定的项:{keys})"
                     )
                 )
             }
@@ -418,7 +693,7 @@ impl TtsEngine for IrodoriTts {
             ..Default::default()
         };
         if let Some(n) = self.num_steps {
-            sr.num_steps = n;
+            sr.num_steps = Some(n);
         }
         apply_sampling(&mut sr, req.sampling)?;
         let mut stages: BTreeMap<String, f64> = BTreeMap::new();
@@ -552,14 +827,25 @@ mod tests {
             &map(json!({"duration_scale": 1.1, "num_steps": 8, "seconds": 3.0, "trim_tail": false, "max_ref_seconds": null})),
         )
         .unwrap();
-        assert_eq!((req.duration_scale, req.num_steps, req.seconds, req.trim_tail, req.max_ref_seconds), (1.1, 8, Some(3.0), false, None));
+        assert_eq!((req.duration_scale, req.num_steps, req.seconds, req.trim_tail, req.max_ref_seconds), (1.1, Some(8), Some(3.0), false, None));
+        apply_sampling(
+            &mut req,
+            &map(json!({"cfg_scale_text": 2.0, "cfg_guidance_mode": "Joint", "t_schedule_mode": "sway", "speaker_kv_max_layers": 4, "num_steps": null})),
+        )
+        .unwrap();
+        assert_eq!(req.cfg_scale_text, 2.0);
+        assert_eq!(req.cfg_guidance_mode, irodori::sampler::CfgGuidanceMode::Joint);
+        assert!(req.t_schedule_sway);
+        assert_eq!((req.speaker_kv_max_layers, req.num_steps), (Some(4), None));
     }
 
     #[test]
     fn unknown_sampling_key_is_an_error_not_silently_dropped() {
         let mut req = irodori::pipeline::SamplingRequest::default();
-        let err = apply_sampling(&mut req, &map(json!({"cfg_scale_text": 2.0}))).unwrap_err().to_string();
-        assert!(err.contains("cfg_scale_text"), "{err}");
+        let err = apply_sampling(&mut req, &map(json!({"cfg_scale_txt": 2.0}))).unwrap_err().to_string();
+        assert!(err.contains("cfg_scale_txt"), "{err}");
+        let err = apply_sampling(&mut req, &map(json!({"cfg_guidance_mode": "both"}))).unwrap_err().to_string();
+        assert!(err.contains("independent"), "{err}");
         let err = apply_sampling(&mut req, &map(json!({"duration_scale": "fast"}))).unwrap_err().to_string();
         assert!(err.contains("duration_scale"), "{err}");
     }
@@ -582,9 +868,10 @@ mod tests {
                 SamplingKind::Int => json!(7),
                 SamplingKind::Float => json!(1.5),
                 SamplingKind::Bool => json!(!f.default.as_bool().unwrap()),
+                SamplingKind::Choice(names) => json!(names[names.len() - 1]),
             };
             apply_sampling(&mut req, &map(json!({ f.key: value }))).unwrap_or_else(|e| panic!("{}: {e}", f.key));
-            if f.null_label.is_some() {
+            if f.null_label.is_some() || f.default.is_null() {
                 apply_sampling(&mut req, &map(json!({ f.key: null }))).unwrap_or_else(|e| panic!("{}: {e}", f.key));
             }
             assert!(!RESERVED_SAMPLING_KEYS.contains(&f.key), "{}", f.key);

@@ -21,6 +21,23 @@ pub fn refs() -> Option<Weights> {
     p.is_file().then(|| Weights::open(p).ok()).flatten()
 }
 
+/// RF(v4.1 Small)の参照出力のディレクトリ(`IRODORI_RF_REF_DIR` か `target/irodori-ref-rf`)
+pub fn rf_ref_dir() -> PathBuf {
+    if let Some(d) = std::env::var_os("IRODORI_RF_REF_DIR") {
+        return PathBuf::from(d);
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/irodori-ref-rf")
+}
+
+/// RF の参照テンソル。無ければ None。生成: `uv run python dump_irodori_ref.py --rf`
+pub fn rf_refs() -> Option<Weights> {
+    let p = rf_ref_dir().join("refs.safetensors");
+    p.is_file().then(|| Weights::open(p).ok()).flatten()
+}
+
+/// RF の参照を作ったモデル
+pub const RF_MODEL_REPO: &str = "Aratako/Irodori-TTS-v4.1-Small";
+
 /// HF キャッシュ内のスナップショット(`org/name`。最新)
 pub fn hf_snapshot(repo: &str) -> Option<PathBuf> {
     crate::hub::find_snapshot(repo, &[])

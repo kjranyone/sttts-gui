@@ -19,7 +19,7 @@ pub const SECTIONS: [&str; 5] = ["tts", "asr", "audio", "voice", "pipeline"];
 pub fn default_config() -> Value {
     json!({
         "tts": {
-            "model": "v4.1-small-mf",
+            "model": crate::tts::DEFAULT_TTS_MODEL,
             // None で checkpoint 既定(MeanFlow: 4)
             "num_steps": null,
             // 起動後(初回 configure 時)にモデルをロードして短文を数回合成しておく

@@ -1,6 +1,6 @@
 # Irodori-TTS 純 Rust 実装(crates/irodori)
 
-PyTorch / Python に依存しない Irodori-TTS(v4.1 Small MF)の推論。**目標: 純 Rust で、PyTorch 実装と数値が一致し(高精度)、Intel Arc を含む GPU で速い(高速)。**
+PyTorch / Python に依存しない Irodori-TTS(v4.1 Small MF と v4.1 Small RF)の推論。**目標: 純 Rust で、PyTorch 実装と数値が一致し(高精度)、Intel Arc を含む GPU で速い(高速)。**
 
 ## 方針
 
@@ -10,12 +10,14 @@ PyTorch / Python に依存しない Irodori-TTS(v4.1 Small MF)の推論。**目�
 - **モデルは自前の構造体**で持つ(burn の `Module` derive は使わない)。重みは `Weights::tensor::<D>(name, &device)` で名前から取り出す。
 - **精度**: 各段階を PyTorch の CPU fp32 と突き合わせる。目標は最大絶対誤差 ≤ 1e-4 × 参照の最大絶対値(`testing::assert_close(.., 1e-4)`)。ModernBERT や DiT のように深い段は 1e-3 まで許容してよいが、理由を残す。
 - **速度は後段**: まず一致、次に GPU、最後に最適化。最初から最適化しない(実際、最適化の中身は下の「GPU で分かったこと」のとおり、演算の速さよりメモリと形状の扱いだった)。
-- **PyTorch 実装が正**。原典は `tools/reference/.venv/Lib/site-packages/irodori_tts/`(`uv sync` で作る参照用環境)(`model.py` / `inference_runtime.py` / `meanflow.py` / `codec.py` / `duration.py` / `text_normalization.py` / `attention.py`)。挙動に迷ったら原典を読み、参照出力で確かめる。
-- MeanFlow(`flow_parameterization == "meanflow"`)のみ対象。RF(CFG あり)は対象外。
+- **PyTorch 実装が正**。原典は `tools/reference/.venv/Lib/site-packages/irodori_tts/`(`uv sync` で作る参照用環境)(`model.py` / `inference_runtime.py` / `meanflow.py` / `rf.py` / `codec.py` / `duration.py` / `text_normalization.py` / `attention.py`)。挙動に迷ったら原典を読み、参照出力で確かめる。
+- 対象は MeanFlow(`flow_parameterization == "meanflow"`、4 ステップ)と RF(`rf_velocity`、40 ステップ + CFG)。両者の重みの違いは MeanFlow の区間長埋め込み(`delta_cond_module`)の有無だけで、DiT・条件エンコーダ・長さ予測は共通。
+  RF のサンプラ(`sampler::sample_euler_rf_cfg_padded`)は原典 `sample_euler_rf_cfg` の全オプション(CFG の 3 方式、CFG をかける時刻範囲、truncation、score rescale、話者 K/V の強調、話者なし側の mask / noise、linear / sway)を持つ。
+  Large(T5Gemma 2 のテキストエンコーダ)と torchao の量子化版は未対応。
 
 ## 状態
 
-**実装済み・検証済み**: テキスト → 音声の全工程(正規化、トークナイザ、ModernBERT、条件エンコーダ、長さ予測、MeanFlow DiT と話者エンコーダ、サンプラ、DACVAE のデコード/エンコード、SilentCipher 透かし)。
+**実装済み・検証済み**: テキスト → 音声の全工程(正規化、トークナイザ、ModernBERT、条件エンコーダ、長さ予測、DiT と話者エンコーダ、MeanFlow / RF + CFG のサンプラ、DACVAE のデコード/エンコード、SilentCipher 透かし)。
 各段階とエンドツーエンドが、PyTorch(CPU, fp32)の参照と **CPU(flex)でも GPU(wgpu / Vulkan)でも一致**する(`cargo test -p irodori --release`、GPU は `--features gpu` と `IRODORI_DEVICE=gpu`)。
 
 | 段階 | 最大絶対誤差(参照の最大値に対する比) |
@@ -28,6 +30,9 @@ PyTorch / Python に依存しない Irodori-TTS(v4.1 Small MF)の推論。**目�
 | DACVAE デコード / エンコード | 1e-5 |
 | 透かし(差分の相関 / SDR) | 0.999999 / 0.00 dB |
 | 最終音声(ケース A〜D) | 8e-5 〜 4e-3(相対 1e-4 〜 4e-3。最大は GPU のケース A) |
+
+RF(v4.1 Small、CPU)は `tests/rf.rs` で、ケース RA〜RE(text CFG のみ / caption / 参照音声 / alternating・sway・話者 K/V 強調・rescale・truncation / joint)を確かめた。
+DiT 1 回(CFG のバッチ 1〜3)は相対 2e-6、ステップ数 6〜8 の最終潜在は相対 4e-6 〜 6e-4、最終音声は相対 1e-5 〜 6e-4。RF の GPU での一致と速度は未確認。
 
 乱数だけは PyTorch と同じ列にならない(`rand` の標準正規。seed を渡せば再現はする)。参照との比較では初期ノイズを注入している。
 
@@ -48,6 +53,7 @@ PyTorch / Python に依存しない Irodori-TTS(v4.1 Small MF)の推論。**目�
 ```
 # 参照出力(PyTorch, CPU のみ。約 1 分)
 cd tools/reference && uv run python dump_irodori_ref.py
+cd tools/reference && uv run python dump_irodori_ref.py --rf     # RF(v4.1 Small)→ target/irodori-ref-rf
 
 # テスト(CPU)/ GPU
 cargo test -p irodori --release
@@ -113,7 +119,7 @@ cd tools/reference && uv run python dump_irodori_ref.py     # → target/irodori
 | `condition` | `PretrainedConditionProjector`(residual_mlp)と `encode_text/caption` | `encode_conditions.out0,4` |
 | `dit` | 話者エンコーダ(`ReferenceLatentEncoder`)、`encode_conditions` の話者側、`forward_with_encoded_conditions`、`build_context_kv_cache`、JointAttention / LowRankAdaLN / SwiGLU / RoPE | `encode_conditions.out2`, `dit.out.*`(入力は `dit.in.*` を注入) |
 | `duration` | `DurationPredictor`(`token_sum_dual_adarn_zero_no_aux`) | `duration.out.0` |
-| `sampler` | `sample_euler_meanflow`(4 ステップ、`linspace(1,0)`)、`unpatchify`、`find_flattening_point`(末尾トリム) | `dit.*` 全 4 ステップと最終潜在 |
+| `sampler` | `sample_euler_meanflow`(4 ステップ、`linspace(1,0)`)、`sample_euler_rf_cfg_padded`(RF + CFG)、`unpatchify`、`find_flattening_point`(末尾トリム) | `dit.*` 全 4 ステップと最終潜在 |
 | `pth` | PyTorch `.pth` / `.ckpt`(zip + pickle)の読み取り(依存なしの最小実装。透かしの ckpt も読む) | DACVAE `weights.pth` |
 | `codec` | DACVAE のデコーダ(と参照音声用エンコーダ、ラウドネス正規化)。透かし枝は `forward_no_conv` のみ | `codec_decode`, `codec_encode` |
 | `watermark` | SilentCipher 44.1k(`sony/silentcipher` の ckpt)。`encode_batch` | `watermark.out0` |

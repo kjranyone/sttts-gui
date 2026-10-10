@@ -8,6 +8,9 @@ use crate::weights::Weights;
 /// `config_json`。使うものだけを定義し、未知の項目は無視する。
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelConfig {
+    /// `rf_velocity`(40 ステップ前後 + CFG)か `meanflow`(数ステップ、CFG は蒸留で織り込み済み)。
+    /// RF のチェックポイントは項目自体を持たない(原典の既定値)。
+    #[serde(default = "rf_velocity")]
     pub flow_parameterization: String,
     pub latent_dim: usize,
     pub latent_patch_size: usize,
@@ -72,6 +75,10 @@ pub struct ModelConfig {
     pub ref_max_seconds: Option<f64>,
 }
 
+fn rf_velocity() -> String {
+    "rf_velocity".into()
+}
+
 impl ModelConfig {
     pub fn from_weights(w: &Weights) -> Result<Self> {
         let json = w.metadata("config_json").context("config_json metadata missing")?;
@@ -85,5 +92,10 @@ impl ModelConfig {
 
     pub fn is_meanflow(&self) -> bool {
         self.flow_parameterization.eq_ignore_ascii_case("meanflow")
+    }
+
+    /// サンプラの既定のステップ数(原典 `InferenceRuntime.synthesize` と同じ: MeanFlow 4、RF 40)
+    pub fn default_num_steps(&self) -> usize {
+        if self.is_meanflow() { 4 } else { 40 }
     }
 }

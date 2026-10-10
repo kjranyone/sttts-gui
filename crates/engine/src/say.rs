@@ -259,8 +259,9 @@ pub fn resolve(cfg: &Value, root: &Path, line: &Line) -> Result<Spec> {
     voice_sampling.extend(line.sampling.clone());
     let mut sampling = get(cfg, "tts", "sampling").as_object().cloned().unwrap_or_default();
     sampling.extend(voice_sampling.clone());
-    // 予約キー・未知のキー・型の誤りを合成前に検出する
+    // 予約キー・未知のキー・型の誤り、未知のモデルを合成前に検出する
     apply_sampling(&mut irodori::pipeline::SamplingRequest::default(), &sampling)?;
+    let model = crate::tts::tts_model(current_model(cfg))?;
 
     Ok(Spec {
         text,
@@ -272,9 +273,50 @@ pub fn resolve(cfg: &Value, root: &Path, line: &Line) -> Result<Spec> {
         seed: line.seed.or(voice.file.seed),
         voice_sampling,
         sampling,
-        model: get(cfg, "tts", "model").as_str().unwrap_or("v4.1-small-mf").to_string(),
+        model: model.alias.to_string(),
         num_steps: get(cfg, "tts", "num_steps").clone(),
     })
+}
+
+/// 設定(backend.json の `tts.model`)で選ばれているモデルの別名
+pub fn current_model(cfg: &Value) -> &str {
+    get(cfg, "tts", "model").as_str().unwrap_or(crate::tts::DEFAULT_TTS_MODEL)
+}
+
+/// 選べるモデルの一覧(`sttts-say model list`)。`current` は設定で選ばれているもの、
+/// `downloaded` は重みが HF キャッシュにあるか(無ければ最初の合成で取得する)。
+pub fn list_models(cfg: &Value) -> Vec<Value> {
+    let current = current_model(cfg);
+    crate::tts::tts_models()
+        .into_iter()
+        .map(|m| {
+            json!({
+                "model": m.alias,
+                "repo": m.repo,
+                "current": m.alias == current,
+                "method": if m.meanflow { "meanflow" } else { "rf" },
+                "default_steps": m.default_steps(),
+                "download_mb": m.download_mb,
+                "downloaded": irodori::hub::find_snapshot(m.repo, &irodori::pipeline::MODEL_FILES).is_some(),
+                "summary": m.summary,
+            })
+        })
+        .collect()
+}
+
+/// 合成に使うモデルを backend.json の `tts.model` に記録する(`sttts-say model use`)。以後の合成はこのモデルで行い、
+/// 台本の行は指定が変わったものとして撮り直しになる。GUI は自分の選択(詳細設定)を使うので影響しない。
+pub fn use_model(root: &Path, cfg: &Value, alias: &str) -> Result<Value> {
+    let model = crate::tts::tts_model(alias)?;
+    let previous = current_model(cfg).to_string();
+    let path = crate::config::default_user_config_path(root);
+    crate::config::set_user_config_value(&path, "tts", "model", Value::from(model.alias))?;
+    Ok(json!({
+        "model": model.alias,
+        "previous": previous,
+        "config": path,
+        "downloaded": irodori::hub::find_snapshot(model.repo, &irodori::pipeline::MODEL_FILES).is_some(),
+    }))
 }
 
 /// 台本(JSONL)を読む。空行は飛ばす。id の省略は行番号、重複はエラー。

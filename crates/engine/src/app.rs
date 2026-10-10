@@ -66,17 +66,18 @@ fn device_stopped() -> &'static str {
 
 /// GUI のモデル選択に出すカタログ
 pub fn model_catalog() -> Vec<ModelInfo> {
-    vec![ModelInfo {
-        id: "v4.1-small-mf".into(),
-        label: tr!(
-            "Irodori v4.1 Small MeanFlow (fast, for conversation)",
-            "Irodori v4.1 Small MeanFlow(高速・会話向け)",
-            "Irodori v4.1 Small MeanFlow(高速、适合对话)"
-        )
-        .into(),
-        size: Some(tr!("about 766M / 4 steps", "約766M / 4steps", "约 766M / 4 步").into()),
-        note: Some(tr!("Default for streaming conversation", "ストリーミング会話の既定", "流式对话的默认模型").into()),
-    }]
+    crate::tts::tts_models()
+        .into_iter()
+        .map(|m| {
+            let (mb, steps) = (m.download_mb, m.default_steps());
+            ModelInfo {
+                id: m.alias.into(),
+                label: m.label.into(),
+                size: Some(trf!("{mb} MB / {steps} steps", "{mb} MB / {steps} ステップ", "{mb} MB / {steps} 步")),
+                note: Some(m.summary.into()),
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------- 外界(注入)
@@ -1215,7 +1216,7 @@ impl Inner {
             }
         }
         let cfg = self.cfg();
-        let model = get(&cfg, "tts", "model").as_str().unwrap_or("v4.1-small-mf").to_string();
+        let model = get(&cfg, "tts", "model").as_str().unwrap_or(crate::tts::DEFAULT_TTS_MODEL).to_string();
         {
             let ready = {
                 let st = lock(&self.state);
