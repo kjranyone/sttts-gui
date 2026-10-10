@@ -483,6 +483,22 @@ fn final_rewriting_spoken_prefix_does_not_repeat_it() {
 }
 
 #[test]
+fn partial_rewriting_spoken_prefix_keeps_speaking_while_talking() {
+    // Gemini の途中経過は既読部分に空白を出し入れする。確定を待たずに読み上げを続ける
+    let (h, eng) = gate_harness();
+    partial(&h, 1, &format!("{S1}二"));
+    partial(&h, 1, &format!("{S1}二文"));
+    assert!(wait3(|| eng.texts().concat() == S1));
+    partial(&h, 1, &format!("一文目を 話しています。{S2}三"));
+    partial(&h, 1, &format!("一文目を 話しています。{S2}三文"));
+    assert!(wait3(|| eng.texts().concat() == format!("{S1}{S2}")));
+    assert!(h.done().is_empty());
+    final_(&h, 1, &format!("一文目を 話しています。{S2}三文目。"));
+    assert!(wait3(|| h.done().len() == 1));
+    assert_eq!(h.rec.texts_of("tts_chunk_start", "text").concat(), format!("{S1}{S2}三文目。"));
+}
+
+#[test]
 fn auto_speak_off_does_not_speak_while_talking() {
     let (h, eng) = gate_harness();
     h.set("pipeline", "auto_speak", json!(false));
@@ -662,7 +678,7 @@ fn auto_speak_sends_separate_delivery_to_irodori() {
     h.set("voice", "ref_wavs", json!(["target.wav"]));
     h.set("pipeline", "performance_wait_ms", json!(0));
     // 解析済みの結果(活動音声で、間は無い)を仕込む。感情は Rust 版では未対応なので話速のみ。
-    let obs = AcousticObservation { audio_ms: 1200, active_ms: 1100, pause_ms: 450, rms: 0.08, mora_per_s: None };
+    let obs = AcousticObservation { audio_ms: 3500, active_ms: 2600, pause_ms: 700, rms: 0.08, mora_per_s: None };
     lock(&h.app.perf_pending).insert(7, perf_slot(obs));
     final_(&h, 7, "こんにちは。");
     let fin = h.rec.of_type("asr_final").pop().unwrap();

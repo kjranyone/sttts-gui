@@ -22,6 +22,9 @@ fn emotion_style(emotion: &str) -> Option<(&'static str, &'static str)> {
     EMOTION_STYLE.iter().find(|(name, _, _)| *name == emotion).map(|(_, emoji, style)| (*emoji, *style))
 }
 
+/// 「間」とみなす切れ目の最短フレーム数(40ms 単位。8 = 320ms)
+const LONG_PAUSE_FRAMES: u64 = 8;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AcousticObservation {
     pub audio_ms: u64,
@@ -130,14 +133,18 @@ pub fn observe(audio: &[f32], text: &str, sample_rate: u32) -> AcousticObservati
     let threshold = 0.004f64.max(0.035f64.min(percentile(&sorted, 80.0) * 0.28));
     let active: Vec<bool> = levels.iter().map(|&l| l >= threshold).collect();
     let active_ms = audio_ms.min(active.iter().filter(|&&a| a).count() as u64 * 40);
-    // 120ms 未満の小さな切れ目は無音として数えない。
+    // 有音に挟まれた LONG_PAUSE_FRAMES 以上の切れ目だけを間として数える。文節の切れ目や
+    // 子音の閉鎖(〜250ms)は普通の話し方でも頻繁に出るので数えない。先頭(VAD のプリロール)と
+    // 末尾(終了判定待ち)の無音も話し方ではないので除く。
     let mut pause_ms = 0u64;
     let mut run = 0u64;
+    let mut seen_active = false;
     for &is_active in &active {
         if is_active {
-            if run >= 3 {
+            if seen_active && run >= LONG_PAUSE_FRAMES {
                 pause_ms += run * 40;
             }
+            seen_active = true;
             run = 0;
         } else {
             run += 1;
@@ -156,7 +163,8 @@ pub fn plan_delivery(obs: &AcousticObservation, emotion: Option<&str>, baseline_
         Some((e, s)) => (e.to_string(), Some(s.to_string())),
         None => (String::new(), None),
     };
-    if obs.pause_ms >= 400 && obs.pause_ms as f64 >= obs.active_ms as f64 * 0.2 {
+    // 長い発話で、長い間が複数回(または非常に長い間が)あるときだけ。
+    if obs.active_ms >= 1500 && obs.pause_ms >= 600 && obs.pause_ms as f64 >= obs.active_ms as f64 * 0.2 {
         style = Some(match style {
             Some(s) => format!("{s}、間を取りながら"),
             None => "間を取りながら".to_string(),
@@ -197,11 +205,11 @@ mod tests {
     #[test]
     fn acoustic_observation_and_conservative_delivery() {
         let mut audio = vec![0.08f32; 16000];
-        audio.extend(vec![0.0; 4000]);
+        audio.extend(vec![0.0; 8000]);
         audio.extend(vec![0.08f32; 16000]);
         let obs = observe(&audio, "おはようございます", 16000);
-        assert_eq!(obs.audio_ms, 2250);
-        assert!(obs.pause_ms >= 200);
+        assert_eq!(obs.audio_ms, 2500);
+        assert!(obs.pause_ms >= 400);
         assert!(obs.active_ms >= 1900);
         assert_eq!(plan_delivery(&obs, None, None).emoji, "");
         assert_eq!(plan_delivery(&obs, Some("neutral"), None).emoji, "");
@@ -209,6 +217,23 @@ mod tests {
         let slow = AcousticObservation { audio_ms: 3500, active_ms: 2600, pause_ms: 700, rms: 0.08, mora_per_s: None };
         assert_eq!(plan_delivery(&slow, None, None).style.as_deref(), Some("間を取りながら"));
         assert_eq!(plan_delivery(&slow, Some("happy"), None).style.as_deref(), Some("楽しげに、間を取りながら"));
+        // 短い発話は間が多くても指示しない
+        let short = AcousticObservation { audio_ms: 1800, active_ms: 1100, pause_ms: 650, rms: 0.08, mora_per_s: None };
+        assert_eq!(plan_delivery(&short, None, None).style, None);
+    }
+
+    #[test]
+    fn ordinary_gaps_and_edge_silence_are_not_pauses() {
+        // 先頭のプリロール・末尾の終了待ちの無音、200ms の文節の切れ目を何度入れても間にならない
+        let mut audio = vec![0.0f32; 4800];
+        for _ in 0..6 {
+            audio.extend(vec![0.08f32; 8000]);
+            audio.extend(vec![0.0; 3200]);
+        }
+        audio.extend(vec![0.0; 4800]);
+        let obs = observe(&audio, "", 16000);
+        assert_eq!(obs.pause_ms, 0, "{obs:?}");
+        assert_eq!(plan_delivery(&obs, None, None).style, None);
     }
 
     #[test]

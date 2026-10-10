@@ -171,8 +171,6 @@ struct IncrUtterance {
     committed: String,
     /// 直前の partial の未読部分(2 回連続で一致した範囲だけ読み上げる)
     prev_rest: String,
-    /// partial が既読部分と食い違った(以降は確定を待つ)
-    diverged: bool,
     open: Option<OpenRequest>,
 }
 
@@ -963,13 +961,12 @@ impl Inner {
                 return false;
             }
             let u = st.utterances.entry(utterance).or_default();
-            if u.diverged {
-                return false;
+            let rest = unread_rest(&u.committed, text);
+            if !text.starts_with(u.committed.as_str()) && !u.committed.is_empty() {
+                // ASR が既読部分を書き換えた(空白の出入り・漢字の変更など)。文字数で位置を合わせて続ける。
+                // 確定まで待つと、話し続けている間ずっと読み上げが止まる
+                self.sink.debug(format!("incremental TTS: partial rewrote spoken prefix {:?}; continuing at {rest:?}", u.committed));
             }
-            let Some(rest) = text.strip_prefix(u.committed.as_str()) else {
-                u.diverged = true; // ASR が既読部分を書き換えた: 以降は確定を待つ
-                return false;
-            };
             let agreed = common_prefix_len(rest, &u.prev_rest);
             let cut = settled_prefix_len(rest, agreed, max_chars);
             u.prev_rest = rest[cut.unwrap_or(0)..].to_string();
@@ -1686,9 +1683,22 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
     a.char_indices().zip(b.chars()).find(|&((_, x), y)| x != y).map_or_else(|| a.len().min(b.len()), |((i, _), _)| i)
 }
 
-/// 確定文のうち、まだ読み上げていない部分。ASR が既読部分を書き換えていたら文字数で読み飛ばす。
+/// 認識文のうち、まだ読み上げていない部分。ASR が既読部分を書き換えていたら、
+/// 空白を除いた文字数で読み飛ばす(Gemini は断片の間に空白を出し入れする)。
 fn unread_rest<'a>(committed: &str, text: &'a str) -> &'a str {
-    text.strip_prefix(committed).unwrap_or_else(|| text.char_indices().nth(committed.chars().count()).map_or("", |(i, _)| &text[i..]))
+    if let Some(rest) = text.strip_prefix(committed) {
+        return rest;
+    }
+    let mut skip = committed.chars().filter(|c| !c.is_whitespace()).count();
+    for (i, c) in text.char_indices() {
+        if skip == 0 {
+            return text[i..].trim_start();
+        }
+        if !c.is_whitespace() {
+            skip -= 1;
+        }
+    }
+    ""
 }
 
 /// `speak` の引数(GUI からの手動発話と、ASR 確定からの自動発話で共通)
