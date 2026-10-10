@@ -77,14 +77,16 @@ fn final_job(utt: u64, tag: i32) -> FinalJob {
 type Partials = Arc<Mutex<Vec<(u64, String)>>>;
 type Finals = Arc<Mutex<Vec<(u64, String)>>>;
 
+/// 破棄は確定と同じ列に `(発話, "<discarded>")` として記録する(順序を見るため)
 fn worker_with(asr: Arc<dyn AsrEngine>) -> (Arc<AsrWorker>, Partials, Finals) {
     let partials: Partials = Arc::default();
     let finals: Finals = Arc::default();
-    let (p, f) = (Arc::clone(&partials), Arc::clone(&finals));
+    let (p, f, d) = (Arc::clone(&partials), Arc::clone(&finals), Arc::clone(&finals));
     let w = AsrWorker::new(
         asr,
         Arc::new(move |u, t, _| p.lock().unwrap().push((u, t.to_string()))),
         Arc::new(move |j, t, _| f.lock().unwrap().push((j.utterance, t.to_string()))),
+        Arc::new(move |u| d.lock().unwrap().push((u, "<discarded>".to_string()))),
         None,
     );
     w.start();
@@ -135,6 +137,27 @@ fn finals_are_never_dropped_and_keep_order() {
     assert!(wait_until(Duration::from_secs(3), || finals.lock().unwrap().len() >= 7));
     w.stop(Duration::from_secs(2));
     assert_eq!(finals.lock().unwrap().iter().map(|f| f.0).collect::<Vec<_>>(), (1..8).collect::<Vec<_>>());
+}
+
+#[test]
+fn discard_drops_partials_and_keeps_order_with_finals() {
+    let asr = GateAsr::new(true);
+    let (w, partials, finals) = worker_with(asr.clone());
+    w.submit_final(final_job(1, 1));
+    assert!(asr.wait_entered(Duration::from_secs(2))); // 1 の確定を処理中
+    w.submit_partial(PartialJob { utterance: 2, audio: audio(2) });
+    w.submit_discard(2); // 2 は短すぎて確定しない → 待機中 partial も捨てる
+    w.stream_partial(2, "遅れた途中経過"); // ストリーミングの遅着も捨てる
+    w.submit_final(final_job(3, 3));
+    asr.open();
+    assert!(wait_until(Duration::from_secs(3), || finals.lock().unwrap().len() >= 3));
+    w.stop(Duration::from_secs(2));
+    assert_eq!(
+        *finals.lock().unwrap(),
+        [(1, "final:1".to_string()), (2, "<discarded>".to_string()), (3, "final:3".to_string())]
+    );
+    assert!(partials.lock().unwrap().is_empty());
+    assert_eq!(asr.calls(), [("final", 1), ("final", 3)]); // 破棄はデコードしない
 }
 
 #[test]
@@ -208,6 +231,9 @@ impl JobSink for RecSink {
     fn submit_final(&self, job: FinalJob) {
         self.0.events.lock().unwrap().push(format!("final {}", job.utterance));
         self.0.finals.lock().unwrap().push(job);
+    }
+    fn submit_discard(&self, utterance: u64) {
+        self.0.events.lock().unwrap().push(format!("discard {utterance}"));
     }
     fn stream_partial_cb(&self) -> crate::asr::StreamCb {
         Arc::new(|_, _| {})
@@ -304,6 +330,21 @@ fn segmenter_stream_includes_audio_before_vad_start() {
 }
 
 #[test]
+fn segmenter_discards_too_short_utterance() {
+    // 開始から 3 フレーム(< MIN_UTTERANCE_SECONDS)で終了 → 確定せず破棄を知らせ、次の発話は別 id
+    let (vad, _) = ScriptVad::boxed(&[
+        ((0, 0), VadEvent::Start(0)),
+        ((0, 2), VadEvent::End(f(1) as i64)),
+        ((1, 0), VadEvent::Start(0)),
+        ((1, 20), VadEvent::End(f(15) as i64)),
+    ]);
+    let rec = Arc::new(Recorder::default());
+    let mut seg = VadSegmenter::new(vad, Box::new(RecSink(rec.clone())), 0.0).with_clock(|| 0.0);
+    seg.feed(&vec![0.0; f(24)], None);
+    assert_eq!(*rec.events.lock().unwrap(), ["discard 1", "final 2"]);
+}
+
+#[test]
 fn segmenter_speech_end_after_reset_uses_absolute_position() {
     let (vad, _) = ScriptVad::boxed(&[
         ((0, 0), VadEvent::Start(0)),
@@ -390,6 +431,9 @@ impl SessionHost for HostLog {
     fn on_asr_final(&self, u: u64, t: &str, timing: Timing) {
         *self.timing.lock().unwrap() = Some(timing);
         self.events.lock().unwrap().push(("final".into(), format!("{u}:{t}")));
+    }
+    fn on_asr_discarded(&self, u: u64) {
+        self.events.lock().unwrap().push(("discarded".into(), u.to_string()));
     }
 }
 

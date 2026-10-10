@@ -1802,6 +1802,15 @@ impl SessionHost for Inner {
             self.discard_specs();
         }
     }
+
+    fn on_asr_discarded(&self, utterance: u64) {
+        self.sink.send(BackendMessage::AsrDiscarded { utterance });
+        // 逐次読み上げで開いたリクエストは、読み上げ済みの分だけで閉じる
+        if self.finalize_incremental(utterance).is_some() {
+            self.close_incremental(utterance);
+        }
+        self.discard_specs();
+    }
 }
 
 #[cfg(test)]

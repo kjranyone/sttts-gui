@@ -108,6 +108,10 @@ pub enum BackendMessage {
         #[serde(default)]
         pause_ms: Option<u64>,
     },
+    /// 発話が短すぎて確定しなかった。この発話の途中経過(asr_partial)は取り消す。
+    AsrDiscarded {
+        utterance: u64,
+    },
     SpeakAccepted {
         request: u64,
         /// "manual" | "auto"
@@ -383,6 +387,7 @@ impl AnyMessage {
                 BackendMessage::MicLevel { .. } => "mic_level",
                 BackendMessage::AsrPartial { .. } => "asr_partial",
                 BackendMessage::AsrFinal { .. } => "asr_final",
+                BackendMessage::AsrDiscarded { .. } => "asr_discarded",
                 BackendMessage::SpeakAccepted { .. } => "speak_accepted",
                 BackendMessage::TtsChunkStart { .. } => "tts_chunk_start",
                 BackendMessage::TtsAudio { .. } => "tts_audio",

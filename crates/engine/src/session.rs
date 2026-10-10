@@ -10,6 +10,8 @@
 //! - ASR ワーカー(`asr-worker`): デコード専用。確定(final)ジョブを最優先で FIFO 処理し、
 //!   部分(partial)ジョブは「最新の1件」だけを保持(古いものは上書き=合体)。
 //!   確定が投入された発話の partial は、待機中のものも処理中のものも結果を破棄する。
+//!   短すぎて確定しない発話は「破棄」として確定と同じ列に積み、途中経過を出した発話が
+//!   宙に浮かないよう `on_asr_discarded` で知らせる(確定と同じ順序で届く)。
 //!
 //! 発話終了時刻(`speech_end`)は VAD の end サンプル位置とブロック到着時刻から逆算する
 //! (min_silence の待ち時間も含めた「ユーザーが話し終えた瞬間」を基準に計測するため)。
@@ -98,12 +100,16 @@ pub trait SessionHost: Send + Sync {
     fn on_utterance_audio(&self, _utterance: u64, _audio: &[f32]) {}
     fn on_asr_partial(&self, utterance: u64, text: &str, asr_ms: Option<u64>);
     fn on_asr_final(&self, utterance: u64, text: &str, timing: Timing);
+    /// 発話が短すぎて確定しなかった(それまでの途中経過を取り消す)
+    fn on_asr_discarded(&self, utterance: u64);
 }
 
 /// VadSegmenter がジョブを投げる先
 pub trait JobSink {
     fn submit_partial(&self, job: PartialJob);
     fn submit_final(&self, job: FinalJob);
+    /// 確定せずに終わった発話(短すぎる等)
+    fn submit_discard(&self, utterance: u64);
     /// ストリーミング ASR の途中結果の受け口
     fn stream_partial_cb(&self) -> StreamCb;
 }
@@ -112,6 +118,7 @@ pub trait JobSink {
 
 type OnPartial = Arc<dyn Fn(u64, &str, u64) + Send + Sync>;
 type OnFinal = Arc<dyn Fn(&FinalJob, &str, u64) + Send + Sync>;
+type OnDiscard = Arc<dyn Fn(u64) + Send + Sync>;
 type OnError = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -123,7 +130,8 @@ pub struct WorkerStats {
 
 #[derive(Default)]
 struct WState {
-    finals: VecDeque<FinalJob>,
+    /// 確定と破棄(発話を閉じるジョブ)。投入順に処理する
+    finals: VecDeque<Job>,
     partial: Option<PartialJob>,
     finalized_upto: u64,
     busy: bool,
@@ -136,6 +144,7 @@ pub struct AsrWorker {
     asr: Arc<dyn AsrEngine>,
     on_partial: OnPartial,
     on_final: OnFinal,
+    on_discard: OnDiscard,
     on_error: Option<OnError>,
     st: Mutex<WState>,
     cv: Condvar,
@@ -144,15 +153,17 @@ pub struct AsrWorker {
 
 enum Job {
     Final(FinalJob),
+    Discard(u64),
     Partial(PartialJob),
 }
 
 impl AsrWorker {
-    pub fn new(asr: Arc<dyn AsrEngine>, on_partial: OnPartial, on_final: OnFinal, on_error: Option<OnError>) -> Arc<Self> {
+    pub fn new(asr: Arc<dyn AsrEngine>, on_partial: OnPartial, on_final: OnFinal, on_discard: OnDiscard, on_error: Option<OnError>) -> Arc<Self> {
         Arc::new(Self {
             asr,
             on_partial,
             on_final,
+            on_discard,
             on_error,
             st: Mutex::new(WState::default()),
             cv: Condvar::new(),
@@ -192,8 +203,18 @@ impl AsrWorker {
     }
 
     pub fn submit_final(&self, job: FinalJob) {
+        let utterance = job.utterance;
+        self.close(utterance, Job::Final(job));
+    }
+
+    pub fn submit_discard(&self, utterance: u64) {
+        self.close(utterance, Job::Discard(utterance));
+    }
+
+    /// 発話を閉じるジョブを積む。以後この発話の partial は捨てる。
+    fn close(&self, utterance: u64, job: Job) {
         let mut st = lock(&self.st);
-        st.finalized_upto = st.finalized_upto.max(job.utterance);
+        st.finalized_upto = st.finalized_upto.max(utterance);
         st.finals.push_back(job);
         let upto = st.finalized_upto;
         if st.partial.as_ref().is_some_and(|p| p.utterance <= upto) {
@@ -238,7 +259,7 @@ impl AsrWorker {
         }
         if let Some(j) = st.finals.pop_front() {
             st.busy = true;
-            return Some(Job::Final(j));
+            return Some(j);
         }
         if st.stop {
             return None;
@@ -261,6 +282,10 @@ impl AsrWorker {
     }
 
     fn process(&self, job: Job) {
+        if let Job::Discard(utterance) = job {
+            (self.on_discard)(utterance);
+            return;
+        }
         let t0 = Instant::now();
         let result = match &job {
             Job::Final(j) => {
@@ -271,6 +296,7 @@ impl AsrWorker {
                 }
             }
             Job::Partial(j) => self.asr.transcribe_partial(&j.audio),
+            Job::Discard(_) => unreachable!("handled above"),
         };
         let asr_ms = t0.elapsed().as_millis() as u64;
         match (job, result) {
@@ -305,6 +331,7 @@ impl AsrWorker {
                     cb(&decode_failed(&e));
                 }
             }
+            (Job::Discard(_), _) => unreachable!("handled above"),
         }
     }
 }
@@ -318,6 +345,9 @@ impl JobSink for ArcWorker {
     }
     fn submit_final(&self, job: FinalJob) {
         self.0.submit_final(job);
+    }
+    fn submit_discard(&self, utterance: u64) {
+        self.0.submit_discard(utterance);
     }
     fn stream_partial_cb(&self) -> StreamCb {
         let w = Arc::clone(&self.0);
@@ -495,6 +525,8 @@ impl VadSegmenter {
             }
             let audio_ms = (audio.len() as f64 / SAMPLE_RATE as f64 * 1000.0) as u64;
             self.sink.submit_final(FinalJob { utterance: self.utterance_id, audio, speech_end, vad_end: now, audio_ms: Some(audio_ms) });
+        } else {
+            self.sink.submit_discard(self.utterance_id);
         }
         self.utterance_id += 1;
         self.vad.reset();
@@ -749,11 +781,15 @@ fn run_session_inner(p: SessionParts) {
                             )
                         })
                     };
+                    let on_discard: OnDiscard = {
+                        let host = Arc::clone(&host);
+                        Arc::new(move |u| host.on_asr_discarded(u))
+                    };
                     let on_error: OnError = {
                         let host = Arc::clone(&host);
                         Arc::new(move |m| host.on_asr_error(m))
                     };
-                    let w = AsrWorker::new(Arc::clone(&engine), on_partial, on_final, Some(on_error));
+                    let w = AsrWorker::new(Arc::clone(&engine), on_partial, on_final, on_discard, Some(on_error));
                     w.start();
                     *lock(&worker) = Some(Arc::clone(&w));
                     let vad = match vad_factory.take().map(|f| f()) {

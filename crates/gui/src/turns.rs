@@ -1,7 +1,7 @@
 //! 発話ターン: 「話した内容」と「届けた声」の対応。
 //!
 //! 1ターン = 入力1件(マイクの1発話 or テキスト入力1件)と、それを合成・再生した結果。
-//! backend のイベント(asr_partial / asr_final / speak_accepted / tts_chunk_start /
+//! backend のイベント(asr_partial / asr_final / asr_discarded / speak_accepted / tts_chunk_start /
 //! tts_audio / speak_done)をターンへ集約する。対応付けは
 //! - マイク発話: asr_* の `utterance` と speak_accepted の `utterance`
 //! - GUI から送った発話: Speak の `tag`(= [`tag_for`])と speak_accepted の `tag`
@@ -14,6 +14,8 @@ use sttts_protocol::DeliveryInfo;
 
 /// 保持するターン数の上限(古いものから捨てる)
 const MAX_TURNS: usize = 300;
+/// 破棄された発話 id を覚えておく数(遅れて届く partial でカードを作り直さないため)
+const MAX_DISCARDED: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnSource {
@@ -23,8 +25,10 @@ pub enum TurnSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnStatus {
-    /// 認識の途中経過を受信中
+    /// 認識の途中経過を受信中(話している最中)
     Listening,
+    /// 話し終えて確定待ち(後続の発話が始まった)
+    Transcribing,
     /// 確定済み。自動再生 OFF のため、利用者の操作待ち
     AwaitingConfirm,
     /// 発話を依頼済み(自動発話 or 送信)、backend の受付待ち
@@ -81,6 +85,11 @@ pub struct Turn {
 }
 
 impl Turn {
+    /// 認識が確定していない(途中経過の表示中)
+    pub fn is_unconfirmed(&self) -> bool {
+        matches!(self.status, TurnStatus::Listening | TurnStatus::Transcribing)
+    }
+
     /// 作成からの経過秒(整数)
     pub fn waited_secs(&self) -> u64 {
         self.created_at.elapsed().as_secs()
@@ -108,6 +117,8 @@ fn id_from_tag(tag: &str) -> Option<u64> {
 pub struct Turns {
     items: VecDeque<Turn>,
     next_id: u64,
+    /// 確定せずに破棄された発話(新しい順に最大 [`MAX_DISCARDED`] 件)
+    discarded: VecDeque<u64>,
 }
 
 impl Turns {
@@ -174,14 +185,33 @@ impl Turns {
 
     /// 認識の途中経過。同じ発話のターンがあれば更新、無ければ作る。
     pub fn asr_partial(&mut self, utterance: u64, text: String) {
+        if self.discarded.contains(&utterance) {
+            return;
+        }
         match self.by_utterance(utterance) {
             // 確定後に遅れて届いた partial で確定文を戻さない
-            Some(t) if t.status == TurnStatus::Listening => t.text = text,
+            Some(t) if t.is_unconfirmed() => t.text = text,
             Some(_) => {}
             None => {
+                // 新しい発話が始まった = それより前の発話は話し終えている
+                for t in self.items.iter_mut() {
+                    if t.status == TurnStatus::Listening && matches!(t.source, TurnSource::Mic { utterance: u } if u < utterance) {
+                        t.status = TurnStatus::Transcribing;
+                    }
+                }
                 self.push(TurnSource::Mic { utterance }, text, TurnStatus::Listening);
             }
         }
+    }
+
+    /// 発話が短すぎて確定しなかった。途中経過のターンを取り除く。
+    pub fn asr_discarded(&mut self, utterance: u64) {
+        if self.discarded.len() == MAX_DISCARDED {
+            self.discarded.pop_front();
+        }
+        self.discarded.push_back(utterance);
+        // 逐次読み上げで発話済みのターンは残す
+        self.items.retain(|t| !(t.source == TurnSource::Mic { utterance } && t.is_unconfirmed()));
     }
 
     /// 認識の確定。`auto_speak` なら backend が自動で発話するので受付待ちにする。
@@ -335,14 +365,14 @@ impl Turns {
     /// backend の(再)接続。request id は振り直されるので、進行中のターンを切り離す。
     /// ライブが止まった。確定前の途中経過は確定しないので閉じる。
     pub fn mic_stopped(&mut self) {
-        for t in self.items.iter_mut().filter(|t| t.status == TurnStatus::Listening) {
+        for t in self.items.iter_mut().filter(|t| t.is_unconfirmed()) {
             t.status = TurnStatus::Interrupted;
         }
     }
 
     pub fn backend_restarted(&mut self) {
         for t in self.items.iter_mut() {
-            if t.status.is_active() || t.status == TurnStatus::Listening {
+            if t.status.is_active() || t.is_unconfirmed() {
                 t.status = TurnStatus::Failed;
             }
             t.request = None;
@@ -454,6 +484,41 @@ mod tests {
         t.mic_stopped();
         let statuses: Vec<_> = t.iter().map(|x| x.status).collect();
         assert_eq!(statuses, vec![TurnStatus::Queued, TurnStatus::Interrupted]);
+    }
+
+    #[test]
+    fn earlier_listening_turn_becomes_transcribing_when_next_utterance_starts() {
+        let mut t = Turns::default();
+        t.asr_partial(1, "声が安定".into());
+        t.asr_partial(2, "で".into());
+        let statuses: Vec<_> = t.iter().map(|x| x.status).collect();
+        assert_eq!(statuses, vec![TurnStatus::Transcribing, TurnStatus::Listening]);
+        // 確定待ち中に届いた partial も反映し、確定で閉じる
+        t.asr_partial(1, "声が安定して".into());
+        t.asr_final(1, "声が安定して。".into(), None, true);
+        assert_eq!(t.iter().next().unwrap().text, "声が安定して。");
+        assert_eq!(t.iter().next().unwrap().status, TurnStatus::Queued);
+    }
+
+    #[test]
+    fn discarded_utterance_removes_partial_and_ignores_late_partials() {
+        let mut t = Turns::default();
+        t.asr_final(1, "確定".into(), None, true);
+        t.asr_partial(2, "で".into());
+        t.asr_discarded(2);
+        assert_eq!(t.len(), 1);
+        t.asr_partial(2, "でも".into());
+        assert_eq!(t.len(), 1);
+        assert_eq!(t.iter().next().unwrap().text, "確定");
+    }
+
+    #[test]
+    fn discard_keeps_turn_already_spoken_incrementally() {
+        let mut t = Turns::default();
+        t.asr_partial(3, "こんにちは。".into());
+        t.speak_accepted(1, None, Some(3), None);
+        t.asr_discarded(3);
+        assert_eq!(t.iter().next().unwrap().status, TurnStatus::Speaking);
     }
 
     #[test]

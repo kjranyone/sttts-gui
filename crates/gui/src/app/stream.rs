@@ -117,6 +117,7 @@ fn status_label(turn: &Turn, tts_ready: bool, playing: Option<u32>) -> (String, 
     let secs = turn.waited_secs();
     match turn.status {
         TurnStatus::Listening => (tr!("Listening…", "聞き取り中…", "正在聆听…").into(), theme::INPUT),
+        TurnStatus::Transcribing => (tr!("Transcribing…", "文字起こし中…", "正在转写…").into(), theme::TEXT_MUTED),
         TurnStatus::AwaitingConfirm => (tr!("Awaiting confirmation", "確認待ち", "等待确认").into(), theme::WARN),
         TurnStatus::Queued if !tts_ready => (
             trf!("Waiting for TTS · {secs}s", "音声合成の準備待ち · {secs}秒", "等待语音合成就绪 · {secs}秒"),
@@ -252,7 +253,7 @@ impl StttsApp {
                     .text_base()
                     .line_height(rems(1.6))
                     .text_color(c(match turn.status {
-                        TurnStatus::Listening => theme::TEXT_MUTED,
+                        TurnStatus::Listening | TurnStatus::Transcribing => theme::TEXT_MUTED,
                         _ if quiet => theme::TEXT_FAINT,
                         _ => theme::TEXT,
                     }))

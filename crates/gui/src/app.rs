@@ -677,6 +677,9 @@ impl StttsApp {
                 self.turns.set_delivery(utterance, delivery);
                 self.stream_scroll.scroll_to_bottom();
             }
+            BackendMessage::AsrDiscarded { utterance } => {
+                self.turns.asr_discarded(utterance);
+            }
             BackendMessage::SpeakAccepted { request, origin, tag, utterance, .. } => {
                 self.last_accepted_request = self.last_accepted_request.max(request);
                 self.turns.speak_accepted(request, tag.as_deref(), utterance, self.selected_voice_name.clone());
