@@ -346,24 +346,6 @@ impl Conditions {
         self.text_state.dims()[0]
     }
 
-    /// バッチ方向に連結する(CFG で条件あり・なしを 1 回の forward にまとめる)。話者・キャプションの有無はそろっていること
-    pub fn cat(parts: &[Conditions]) -> Result<Conditions> {
-        ensure!(!parts.is_empty(), "no conditions to concatenate");
-        fn opt<const D: usize>(items: Vec<Option<Tensor<D>>>, what: &str) -> Result<Option<Tensor<D>>> {
-            let n = items.iter().filter(|x| x.is_some()).count();
-            ensure!(n == 0 || n == items.len(), "cannot concatenate {what} with mixed presence");
-            Ok((n > 0).then(|| Tensor::cat(items.into_iter().flatten().collect(), 0)))
-        }
-        Ok(Conditions {
-            text_state: Tensor::cat(parts.iter().map(|c| c.text_state.clone()).collect(), 0),
-            text_mask: Tensor::cat(parts.iter().map(|c| c.text_mask.clone()).collect(), 0),
-            speaker_state: opt(parts.iter().map(|c| c.speaker_state.clone()).collect(), "speaker_state")?,
-            speaker_mask: opt(parts.iter().map(|c| c.speaker_mask.clone()).collect(), "speaker_mask")?,
-            caption_state: opt(parts.iter().map(|c| c.caption_state.clone()).collect(), "caption_state")?,
-            caption_mask: opt(parts.iter().map(|c| c.caption_mask.clone()).collect(), "caption_mask")?,
-        })
-    }
-
     /// K/V の連結順(text, speaker, caption)と同じ順のキーマスク `[B, Sctx]`
     fn context_mask(&self) -> Tensor<2> {
         let mut parts = vec![self.text_mask.clone()];

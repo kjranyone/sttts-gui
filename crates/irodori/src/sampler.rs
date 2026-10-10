@@ -358,43 +358,41 @@ pub fn sample_euler_rf_cfg_padded(
         Ok(p)
     };
     let mut cond_p = prep(cond)?;
-    // CFG 用(independent はまとめた 1 バッチ、joint は全部外した版、alternating は外す条件ごと)
+    // CFG 用(joint は全部外した版、independent と alternating は外す条件ごと)。原典の independent は条件あり・なしを
+    // 1 バッチにまとめるが、burn-wgpu ではバッチ 2〜3 の forward がバッチ 1 の 5〜7 倍かかったので、バッチ 1 を本数ぶん回す
+    // (各サンプルは独立に計算されるので結果は同じ)
     let mut guided_p: Vec<Prepared> = Vec::new();
     if !guided.is_empty() {
         match opts.mode {
-            CfgGuidanceMode::Independent => {
-                let mut parts = vec![drop_condition(cond, &[], &speaker_uncond)];
-                parts.extend(guided.iter().map(|(g, _)| drop_condition(cond, &[*g], &speaker_uncond)));
-                guided_p.push(prep(&Conditions::cat(&parts)?)?);
+            CfgGuidanceMode::Independent | CfgGuidanceMode::Alternating => {
+                for (g, _) in &guided {
+                    guided_p.push(prep(&drop_condition(cond, &[*g], &speaker_uncond))?);
+                }
             }
             CfgGuidanceMode::Joint => {
                 let all: Vec<Guided> = guided.iter().map(|(g, _)| *g).collect();
                 guided_p.push(prep(&drop_condition(cond, &all, &speaker_uncond))?);
             }
-            CfgGuidanceMode::Alternating => {
-                for (g, _) in &guided {
-                    guided_p.push(prep(&drop_condition(cond, &[*g], &speaker_uncond))?);
-                }
-            }
         }
     }
     let mut speaker_kv_active = opts.speaker_kv.is_some();
 
+    // IRODORI_TRACE: ステップごとの時間(読み戻して実行を完了させるので、計測時だけ)
+    let trace = std::env::var_os("IRODORI_TRACE").is_some();
     for i in 0..opts.steps {
         let (t, next) = (sched[i], sched[i + 1]);
         let use_cfg = !guided.is_empty() && (opts.cfg_min_t..=opts.cfg_max_t).contains(&f64::from(t));
+        let t_step = std::time::Instant::now();
         let mut v = if !use_cfg {
             dit.forward_prepared(x.clone(), &vec![t; batch], None, &cond_p)?
         } else {
             match opts.mode {
                 CfgGuidanceMode::Independent => {
-                    let mult = 1 + guided.len();
-                    let x_cfg = Tensor::cat(vec![x.clone(); mult], 0);
-                    let out = dit.forward_prepared(x_cfg, &vec![t; batch * mult], None, &guided_p[0])?;
-                    let chunks = out.chunk(mult, 0);
-                    let mut v = chunks[0].clone();
-                    for ((_, scale), chunk) in guided.iter().zip(&chunks[1..]) {
-                        v = v.add(chunks[0].clone().sub(chunk.clone()).mul_scalar(*scale));
+                    let v_cond = dit.forward_prepared(x.clone(), &vec![t; batch], None, &cond_p)?;
+                    let mut v = v_cond.clone();
+                    for ((_, scale), p) in guided.iter().zip(&guided_p) {
+                        let v_g = dit.forward_prepared(x.clone(), &vec![t; batch], None, p)?;
+                        v = v.add(v_cond.clone().sub(v_g).mul_scalar(*scale));
                     }
                     v
                 }
@@ -426,6 +424,10 @@ pub fn sample_euler_rf_cfg_padded(
             speaker_kv_active = false;
         }
         x = x.add(v.mul_scalar(next - t));
+        if trace {
+            let _ = x.clone().slice([0..1, 0..1, 0..1]).into_data();
+            eprintln!("[irodori]   rf step {i}: {:.1}ms (cfg {use_cfg})", t_step.elapsed().as_secs_f64() * 1000.0);
+        }
     }
     Ok(x)
 }
