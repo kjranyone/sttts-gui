@@ -248,13 +248,7 @@ impl StttsApp {
             ));
         }
         self.sampling.values = next;
-        self.send(GuiMessage::Configure {
-            tts: Some(TtsConfig { sampling: Some(self.sampling.values.clone()), ..Default::default() }),
-            asr: None,
-            audio: None,
-            voice: None,
-            pipeline: None,
-        });
+        self.send(GuiMessage::configure_tts(TtsConfig { sampling: Some(self.sampling.values.clone()), ..Default::default() }));
         let values = Value::Object(self.sampling.values.clone());
         self.push_log(trf!("Synthesis parameters: {values}", "合成パラメータ: {values}", "合成参数:{values}"));
         cx.notify();

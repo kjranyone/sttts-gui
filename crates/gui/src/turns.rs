@@ -234,10 +234,10 @@ impl Turns {
 
     /// 確認待ちのターンを発話せずに閉じる。
     pub fn dismiss(&mut self, id: u64) {
-        if let Some(t) = self.get_mut(id) {
-            if t.status == TurnStatus::AwaitingConfirm {
-                t.status = TurnStatus::Skipped;
-            }
+        if let Some(t) = self.get_mut(id)
+            && t.status == TurnStatus::AwaitingConfirm
+        {
+            t.status = TurnStatus::Skipped;
         }
     }
 

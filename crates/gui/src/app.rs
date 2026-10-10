@@ -15,14 +15,15 @@ mod chrome;
 mod devices;
 mod help;
 mod kit;
+mod log;
 mod rail;
 mod sampling;
 mod sheet;
 mod stream;
 mod title_bar;
+mod voice_bank;
 
 use std::collections::VecDeque;
-use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -33,7 +34,7 @@ use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::component::IndexPath;
 use gpui_kit::*;
 use sttts_protocol::{
-    AnyMessage, BackendMessage, EngineState, GuiMessage, ModelInfo,
+    AnyMessage, AsrConfig, BackendMessage, EngineState, GuiMessage, ModelInfo,
     PipelineConfig, TtsConfig, VoiceConfig,
 };
 
@@ -43,11 +44,10 @@ use crate::turns::{Playback, Turns, tag_for};
 use crate::device_picker::Dir;
 use crate::locale::Lang;
 use crate::{audio, backend, locale, secret, settings, sysmon};
-
-/// 声の選択欄で「声の見本を使わない」を表す項目
-pub(crate) fn default_voice_label() -> &'static str {
-    tr!("Default voice", "既定の声", "默认声音")
-}
+use log::open_log_file;
+pub(crate) use log::is_error_line;
+use voice_bank::{default_voice_label, scan_voice_bank};
+pub(crate) use voice_bank::voice_phrase;
 
 /// ASR プロバイダ選択(表示名, asr.engine 値)。ローカルとクラウドを選べる。
 pub(crate) fn asr_providers() -> [(&'static str, &'static str); 3] {
@@ -57,6 +57,10 @@ pub(crate) fn asr_providers() -> [(&'static str, &'static str); 3] {
         (tr!("Local (kotoba)", "ローカル(kotoba)", "本地(kotoba)"), "kotoba"),
     ]
 }
+
+/// 文字列を項目に持つ選択欄(声・認識・言語・デバイス)
+pub(crate) type TextSelect = SelectState<Vec<String>>;
+type TextSelectEvent = SelectEvent<Vec<String>>;
 
 /// Gemini API キーの発行ページ(Google AI Studio)
 pub(crate) const GEMINI_KEY_URL: &str = "https://aistudio.google.com/apikey";
@@ -112,12 +116,12 @@ pub struct StttsApp {
     tts_loading_since: Option<Instant>,
     asr_loading_since: Option<Instant>,
     selected_voice_name: Option<String>,
-    voice_select: Entity<SelectState<Vec<String>>>,
+    voice_select: Entity<TextSelect>,
     /// 話し方の指示(Irodori の caption)
     caption_input: Entity<InputState>,
 
     // ---- 認識
-    asr_select: Entity<SelectState<Vec<String>>>,
+    asr_select: Entity<TextSelect>,
     selected_asr_engine: String,
     /// Gemini API キー入力欄(伏せ字)。確定は Enter / フォーカスアウト / 入力が止まって少し経ったとき
     gemini_key_input: Entity<InputState>,
@@ -132,7 +136,7 @@ pub struct StttsApp {
     settings_open: bool,
     /// 利用者が選んだ表示言語(None = OS の表示言語に従う。保存もしない)
     language: Option<Lang>,
-    language_select: Entity<SelectState<Vec<String>>>,
+    language_select: Entity<TextSelect>,
     /// 「?」から開いている解説
     help_topic: Option<help::HelpTopic>,
     /// 入力デバイス(ドライバ → デバイス / ASIO チャンネル)。一覧はエンジンから届く
@@ -353,8 +357,7 @@ impl StttsApp {
                     "[warn] Could not decrypt the saved Gemini API key (it was saved on another PC or user). Please enter it again",
                     "[warn] 保存済みの Gemini API キーを復号できませんでした(別のPC/ユーザーで保存されたもの)。再入力してください",
                     "[warn] 无法解密已保存的 Gemini API 密钥(它是在其他电脑或用户下保存的)。请重新输入"
-                )
-                .into(),
+                ),
             );
         }
         app.start_backend(cx);
@@ -376,7 +379,7 @@ impl StttsApp {
                 model: Some(app.selected_model_id.clone()),
                 ..Default::default()
             }),
-            asr: Some(sttts_protocol::AsrConfig {
+            asr: Some(AsrConfig {
                 engine: Some(app.selected_asr_engine.clone()),
                 gemini_api_key: (!app.gemini_api_key.is_empty()).then(|| app.gemini_api_key.clone()),
                 ..Default::default()
@@ -397,7 +400,7 @@ impl StttsApp {
         fn on_confirm(
             app: WeakEntity<StttsApp>,
             f: impl Fn(&mut StttsApp, String, &mut Window, &mut Context<StttsApp>) + 'static,
-        ) -> impl FnMut(Entity<SelectState<Vec<String>>>, &SelectEvent<Vec<String>>, &mut Window, &mut App)
+        ) -> impl FnMut(Entity<TextSelect>, &TextSelectEvent, &mut Window, &mut App)
         + 'static {
             move |_, event, window, cx| {
                 if let SelectEvent::Confirm(Some(name)) = event {
@@ -565,8 +568,7 @@ impl StttsApp {
                         "[error:backend] Lost connection to the backend",
                         "[error:backend] バックエンドとの接続が切れました",
                         "[error:backend] 与后端的连接已断开"
-                    )
-                    .into(),
+                    ),
                 );
                 app.status_hint = tr!("Backend stopped", "バックエンド停止", "后端已停止").into();
                 app.connected = false;
@@ -583,7 +585,7 @@ impl StttsApp {
         if let Some(b) = &self.backend {
             b.send(&msg);
         } else {
-            self.push_log(tr!("[error:backend] Backend not connected", "[error:backend] バックエンド未接続", "[error:backend] 后端未连接").into());
+            self.push_log(tr!("[error:backend] Backend not connected", "[error:backend] バックエンド未接続", "[error:backend] 后端未连接"));
         }
     }
 
@@ -619,13 +621,7 @@ impl StttsApp {
                         "语音合成模型 {old} 不可用,已切换为 {new}"
                     ));
                     self.selected_model_id.clone_from(&first.id);
-                    self.send(GuiMessage::Configure {
-                        tts: Some(TtsConfig { model: Some(first.id), ..Default::default() }),
-                        asr: None,
-                        audio: None,
-                        voice: None,
-                        pipeline: None,
-                    });
+                    self.send(GuiMessage::configure_tts(TtsConfig { model: Some(first.id), ..Default::default() }));
                 }
                 // backend(再)起動で request id は 1 から振り直される
                 self.last_accepted_request = 0;
@@ -803,7 +799,7 @@ impl StttsApp {
             let _ = this.update(cx, |app, cx| {
                 if app.mic_transition != MicTransition::None && started_at.elapsed() >= MIC_TRANSITION_TIMEOUT {
                     app.mic_transition = MicTransition::None;
-                    app.push_log(timeout_log.into());
+                    app.push_log(timeout_log);
                     cx.notify();
                 }
             });
@@ -897,8 +893,7 @@ impl StttsApp {
             turn.chunks.iter().filter_map(|c| Some((c.index, c.path.clone()?))).collect();
         let Some(audio) = &self.audio else {
             self.push_log(
-                tr!("[error:audio] The output device is not open", "[error:audio] 出力デバイスが開かれていません", "[error:audio] 输出设备未打开")
-                    .into(),
+                tr!("[error:audio] The output device is not open", "[error:audio] 出力デバイスが開かれていません", "[error:audio] 输出设备未打开"),
             );
             return;
         };
@@ -944,16 +939,7 @@ impl StttsApp {
             return;
         }
         self.auto_speak = on;
-        self.send(GuiMessage::Configure {
-            tts: None,
-            asr: None,
-            audio: None,
-            voice: None,
-            pipeline: Some(PipelineConfig {
-                auto_speak: Some(on),
-                ..Default::default()
-            }),
-        });
+        self.send(GuiMessage::configure_pipeline(PipelineConfig { auto_speak: Some(on), ..Default::default() }));
         self.persist_settings(cx);
         cx.notify();
     }
@@ -963,16 +949,7 @@ impl StttsApp {
             return;
         }
         self.performance_enabled = on;
-        self.send(GuiMessage::Configure {
-            tts: None,
-            asr: None,
-            audio: None,
-            voice: None,
-            pipeline: Some(PipelineConfig {
-                performance_enabled: Some(on),
-                ..Default::default()
-            }),
-        });
+        self.send(GuiMessage::configure_pipeline(PipelineConfig { performance_enabled: Some(on), ..Default::default() }));
         self.persist_settings(cx);
         cx.notify();
     }
@@ -1004,141 +981,7 @@ impl StttsApp {
 
     fn send_voice_config(&mut self, cx: &App) {
         let voice = self.voice_config(cx);
-        self.send(GuiMessage::Configure { tts: None, asr: None, audio: None, voice: Some(voice), pipeline: None });
-    }
-
-    /// 声バンクの選択適用。参照音声が変わるとウォームアップもやり直される。
-    fn apply_voice(&mut self, name: String, cx: &mut Context<Self>) {
-        self.selected_voice_name = (name != default_voice_label()).then_some(name);
-        self.send_voice_config(cx);
-        match &self.selected_voice_name {
-            Some(n) => self.push_log(trf!(
-                "Voice: {n} (synthesizing from the reference audio)",
-                "声を切替: {n}(参照音声で合成します)",
-                "已切换声音:{n}(使用参考音频合成)"
-            )),
-            None => self.push_log(
-                tr!(
-                    "Back to the default voice (synthesizing from the style prompt / automatic voice)",
-                    "声を既定に戻しました(話し方の指示/自動音質で合成)",
-                    "已恢复默认声音(按说话方式提示/自动音色合成)"
-                )
-                .into(),
-            ),
-        }
-        self.persist_settings(cx);
-    }
-
-    /// 声ライブラリへ取り込む(ドロップ/ファイル選択の共通入口)。
-    /// 音声(wav/flac)は data/voices へコピーして選択し、画像は選択中の声のアイコンにする。
-    /// 音声を先に処理するので、音声と画像を同時に渡せば新しい声に画像が付く。
-    fn import_voice_files(&mut self, paths: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
-        let dir = self.root.join("data").join("voices");
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            self.push_log(trf!(
-                "[error:voice] Cannot create the voice folder: {e}",
-                "[error:voice] 声フォルダを作れません: {e}",
-                "[error:voice] 无法创建声音文件夹:{e}"
-            ));
-            return;
-        }
-        let (audio, rest): (Vec<_>, Vec<_>) = paths.iter().partition(|p| is_voice_audio(p));
-        let mut imported = None;
-        for src in audio {
-            match copy_into_voice_bank(src, &dir) {
-                Ok(name) => {
-                    self.push_log(trf!("Voice added: {name}", "声を追加: {name}", "已添加声音:{name}"));
-                    imported = Some(name);
-                }
-                Err(e) => self.push_log(format!("[error:voice] {}: {e}", src.display())),
-            }
-        }
-        self.refresh_voices(imported.as_deref(), window, cx);
-        if let Some(name) = imported {
-            self.apply_voice(name, cx);
-        }
-        for src in rest {
-            if !is_voice_image(src) {
-                let file = src.display();
-                self.push_log(trf!(
-                    "[error:voice] Unsupported file: {file}",
-                    "[error:voice] 非対応のファイル: {file}",
-                    "[error:voice] 不支持的文件:{file}"
-                ));
-                continue;
-            }
-            let Some(name) = self.selected_voice_name.clone() else {
-                self.push_log(
-                    tr!(
-                        "[error:voice] Select a voice before adding an image",
-                        "[error:voice] 画像は声を選んでから追加してください",
-                        "[error:voice] 请先选择声音再添加图片"
-                    )
-                    .into(),
-                );
-                continue;
-            };
-            match set_voice_image(src, &dir, &name) {
-                Ok(()) => self.push_log(trf!("Voice icon set: {name}", "声のアイコンを設定: {name}", "已设置声音图标:{name}")),
-                Err(e) => self.push_log(format!("[error:voice] {}: {e}", src.display())),
-            }
-        }
-        cx.notify();
-    }
-
-    /// ファイル選択ダイアログから声を追加する。
-    fn pick_voice_files(&mut self, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: true,
-            prompt: None,
-        });
-        cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = rx.await {
-                let _ = this.update(cx, |this, cx| {
-                    // Window が要るので、取り込みは次の render で実行する
-                    this.pending_voice_import = Some(paths);
-                    cx.notify();
-                });
-            }
-        })
-        .detach();
-    }
-
-    /// 選択中の声をライブラリから削除し、既定の声に戻す。
-    fn delete_selected_voice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(name) = self.selected_voice_name.clone() else { return };
-        let dir = self.root.join("data").join("voices");
-        if let Some((_, path)) = self.voices.iter().find(|(n, _)| *n == name) {
-            let _ = std::fs::remove_file(path);
-        }
-        remove_voice_images(&dir, &name);
-        self.push_log(trf!("Voice deleted: {name}", "声を削除: {name}", "已删除声音:{name}"));
-        self.refresh_voices(None, window, cx);
-        self.apply_voice(default_voice_label().to_string(), cx);
-        cx.notify();
-    }
-
-    /// data/voices を再スキャンして選択肢を更新する(`select` が None なら現在の選択を維持)。
-    fn refresh_voices(&mut self, select: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
-        self.voices = scan_voice_bank(&self.root);
-        let mut items = vec![default_voice_label().to_string()];
-        items.extend(self.voices.iter().map(|(n, _)| n.clone()));
-        let selected = select
-            .map(str::to_string)
-            .or_else(|| self.selected_voice_name.clone())
-            .filter(|n| self.voices.iter().any(|(vn, _)| vn == n))
-            .unwrap_or_else(|| default_voice_label().to_string());
-        self.voice_select.update(cx, |s, cx| {
-            s.set_items(items, window, cx);
-            s.set_selected_value(&selected, window, cx);
-        });
-    }
-
-    /// 声のアイコン画像(あれば)。
-    pub(super) fn voice_image(&self, name: &str) -> Option<PathBuf> {
-        find_voice_image(&self.root.join("data").join("voices"), name)
+        self.send(GuiMessage::configure_voice(voice));
     }
 
     /// ASR プロバイダの選択適用(ローカル/クラウド)。次回のライブ開始から新エンジンで動く
@@ -1148,16 +991,7 @@ impl StttsApp {
             return;
         };
         self.selected_asr_engine = engine.to_string();
-        self.send(GuiMessage::Configure {
-            tts: None,
-            asr: Some(sttts_protocol::AsrConfig {
-                engine: Some(engine.to_string()),
-                ..Default::default()
-            }),
-            audio: None,
-            voice: None,
-            pipeline: None,
-        });
+        self.send(GuiMessage::configure_asr(AsrConfig { engine: Some(engine.to_string()), ..Default::default() }));
         self.push_log(if engine == "gemini" {
             tr!(
                 "Recognition switched to the cloud (Gemini Live API). Each utterance is sent to the cloud",
@@ -1205,31 +1039,23 @@ impl StttsApp {
                     "[warn] Could not save the Gemini API key encrypted (valid only until the app exits)",
                     "[warn] Gemini API キーを暗号化保存できませんでした(この起動中のみ有効)",
                     "[warn] 无法加密保存 Gemini API 密钥(仅在本次运行中有效)"
-                )
-                .into(),
+                ),
             );
         }
         self.gemini_api_key = key;
         // 空文字 = GUI では未設定(backend は環境変数にフォールバック)
-        self.send(GuiMessage::Configure {
-            tts: None,
-            asr: Some(sttts_protocol::AsrConfig {
-                gemini_api_key: Some(self.gemini_api_key.clone()),
-                ..Default::default()
-            }),
-            audio: None,
-            voice: None,
-            pipeline: None,
-        });
+        self.send(GuiMessage::configure_asr(AsrConfig {
+            gemini_api_key: Some(self.gemini_api_key.clone()),
+            ..Default::default()
+        }));
         self.push_log(if self.gemini_api_key.is_empty() {
-            tr!("Gemini API key removed", "Gemini API キーを削除しました", "已删除 Gemini API 密钥").into()
+            tr!("Gemini API key removed", "Gemini API キーを削除しました", "已删除 Gemini API 密钥")
         } else {
             tr!(
                 "Gemini API key saved (encrypted so only this user on this PC can decrypt it)",
                 "Gemini API キーを保存しました(このPCのユーザーでのみ復号できる形で暗号化)",
                 "已保存 Gemini API 密钥(已加密,仅本电脑的当前用户可解密)"
             )
-            .into()
         });
         self.persist_settings(cx);
         cx.notify();
@@ -1241,16 +1067,7 @@ impl StttsApp {
         let Some(model) = self.models.get(index) else { return };
         let (model_id, label) = (model.id.clone(), model.label.clone());
         self.selected_model_id.clone_from(&model_id);
-        self.send(GuiMessage::Configure {
-            tts: Some(TtsConfig {
-                model: Some(model_id),
-                ..Default::default()
-            }),
-            asr: None,
-            audio: None,
-            voice: None,
-            pipeline: None,
-        });
+        self.send(GuiMessage::configure_tts(TtsConfig { model: Some(model_id), ..Default::default() }));
         self.push_log(trf!("Model: {label}", "モデル切替: {label}", "已切换模型:{label}"));
         self.persist_settings(cx);
         cx.notify();
@@ -1303,29 +1120,6 @@ impl StttsApp {
     }
 
     // ---------- 診断・永続化 ----------
-
-    fn push_log(&mut self, line: String) {
-        if let Some(f) = self.log_file.as_mut() {
-            let _ = writeln!(f, "{line}");
-        }
-        if !self.log_open && is_error_line(&line) {
-            self.unread_errors += 1;
-        }
-        self.logs.push_back(line);
-        while self.logs.len() > 300 {
-            self.logs.pop_front();
-        }
-        self.log_scroll.scroll_to_bottom();
-    }
-
-    fn toggle_log(&mut self, cx: &mut Context<Self>) {
-        self.log_open = !self.log_open;
-        if self.log_open {
-            self.unread_errors = 0;
-            self.log_scroll.scroll_to_bottom();
-        }
-        cx.notify();
-    }
 
     fn persist_settings(&self, cx: &App) {
         let caption = self.caption_input.read(cx).value().to_string();
@@ -1393,25 +1187,6 @@ fn idle_state() -> EngineState {
     }
 }
 
-/// 声の表示名(None = 既定の声)。「〜で届けます」等に続けて使う
-pub(crate) fn voice_phrase(name: Option<&str>) -> String {
-    match name {
-        Some(n) => trf!("Voice: {n}", "{n} の声", "{n} 的声音"),
-        None => default_voice_label().to_string(),
-    }
-}
-
-/// エラー表示(赤字・未読バッジ)の対象行。GUI が出す行は `[error:…]` / `[warn]` を付ける。
-/// 下位クレートのエラー文(日本語)が info で届くこともあるので、その語も見る。
-pub(crate) fn is_error_line(line: &str) -> bool {
-    let head = line.get(..6).unwrap_or(line).to_ascii_lowercase();
-    head.starts_with("[error")
-        || head.starts_with("[warn")
-        || line.contains("エラー")
-        || line.contains("失敗")
-        || line.contains("切れました")
-}
-
 /// エンジン状態の短い表示(固定語のみ。detail のような長い文字列はログで確認する)
 pub(crate) fn phase_label(state: &EngineState) -> &'static str {
     match state.phase.as_str() {
@@ -1420,97 +1195,6 @@ pub(crate) fn phase_label(state: &EngineState) -> &'static str {
         "error" => tr!("Error", "エラー", "错误"),
         _ => tr!("Not loaded", "未読み込み", "未加载"),
     }
-}
-
-/// 起動時に data/gui.log を空にして開く(古いログは残さない)。
-fn open_log_file(root: &std::path::Path) -> Option<std::fs::File> {
-    let dir = root.join("data");
-    std::fs::create_dir_all(&dir).ok()?;
-    std::fs::File::create(dir.join("gui.log")).ok()
-}
-
-const VOICE_AUDIO_EXT: &[&str] = &["wav", "flac"];
-const VOICE_IMAGE_EXT: &[&str] = &["png", "jpg", "jpeg", "webp"];
-
-fn has_ext(p: &std::path::Path, exts: &[&str]) -> bool {
-    p.extension()
-        .and_then(|x| x.to_str())
-        .is_some_and(|x| exts.iter().any(|e| x.eq_ignore_ascii_case(e)))
-}
-
-fn is_voice_audio(p: &std::path::Path) -> bool {
-    has_ext(p, VOICE_AUDIO_EXT)
-}
-
-fn is_voice_image(p: &std::path::Path) -> bool {
-    has_ext(p, VOICE_IMAGE_EXT)
-}
-
-/// data/voices の音声(wav/flac)を声バンクとして読み込む(ファイル名=話者名)。
-fn scan_voice_bank(root: &std::path::Path) -> Vec<(String, PathBuf)> {
-    let dir = root.join("data").join("voices");
-    let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for e in entries.flatten() {
-            let p = e.path();
-            if is_voice_audio(&p) {
-                if let Some(name) = p.file_stem().and_then(|s| s.to_str()).filter(|n| !n.is_empty()) {
-                    out.push((name.to_string(), p.clone()));
-                }
-            }
-        }
-    }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
-}
-
-fn find_voice_image(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
-    VOICE_IMAGE_EXT
-        .iter()
-        .map(|e| dir.join(format!("{name}.{e}")))
-        .find(|p| p.is_file())
-}
-
-fn remove_voice_images(dir: &std::path::Path, name: &str) {
-    for e in VOICE_IMAGE_EXT {
-        let _ = std::fs::remove_file(dir.join(format!("{name}.{e}")));
-    }
-}
-
-/// 音声を声バンクへコピーし、声の名前(拡張子なし)を返す。同名があれば連番を付ける。
-fn copy_into_voice_bank(src: &std::path::Path, dir: &std::path::Path) -> std::io::Result<String> {
-    let stem = src
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map(|s| s.trim().replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_"))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "voice".to_string());
-    let ext = src
-        .extension()
-        .and_then(|x| x.to_str())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_else(|| "wav".to_string());
-    let taken = |n: &str| VOICE_AUDIO_EXT.iter().any(|e| dir.join(format!("{n}.{e}")).exists());
-    let mut name = stem.clone();
-    let mut i = 2;
-    while taken(&name) {
-        name = format!("{stem} ({i})");
-        i += 1;
-    }
-    std::fs::copy(src, dir.join(format!("{name}.{ext}")))?;
-    Ok(name)
-}
-
-/// 画像を声のアイコンとして data/voices/<name>.<ext> へコピーする(既存のアイコンは置換)。
-fn set_voice_image(src: &std::path::Path, dir: &std::path::Path, name: &str) -> std::io::Result<()> {
-    let ext = src
-        .extension()
-        .and_then(|x| x.to_str())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_else(|| "png".to_string());
-    remove_voice_images(dir, name);
-    std::fs::copy(src, dir.join(format!("{name}.{ext}")))?;
-    Ok(())
 }
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;

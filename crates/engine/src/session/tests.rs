@@ -351,8 +351,7 @@ fn segmenter_partial_window_is_per_engine() {
             *t.lock().unwrap() = i as f64;
             seg.feed(&vec![1.0; 16000], None); // 1 秒ずつ
         }
-        let longest = rec.partials.lock().unwrap().iter().map(|p| p.1).max().unwrap();
-        longest
+        rec.partials.lock().unwrap().iter().map(|p| p.1).max().unwrap()
     };
     assert_eq!(run(Some(12.0)), 12 * 16000); // 末尾 12 秒だけ
     assert!(run(None) > 18 * 16000); // 発話の先頭から全部(partial の文字列が先頭から伸びる)

@@ -451,7 +451,7 @@ fn continuous_speech_starts_speaking_before_final() {
 fn single_unconfirmed_partial_is_not_spoken() {
     let (h, eng) = gate_harness();
     partial(&h, 1, &format!("{S1}二文"));
-    partial(&h, 1, &format!("一文目を離しています。二文目")); // 前回と食い違う
+    partial(&h, 1, "一文目を離しています。二文目"); // 前回と食い違う
     std::thread::sleep(Duration::from_millis(200));
     assert!(eng.texts().is_empty());
     assert!(h.rec.of_type("speak_accepted").is_empty());
@@ -677,7 +677,7 @@ fn auto_speak_sends_separate_delivery_to_irodori() {
 }
 
 fn configure_voice(h: &Harness, voice: sttts_protocol::VoiceConfig) {
-    h.app.dispatch(GuiMessage::Configure { tts: None, asr: None, audio: None, voice: Some(voice), pipeline: None });
+    h.app.dispatch(GuiMessage::configure_voice(voice));
 }
 
 /// GUI の「声」欄(話し方・seed・声)の変更が、次の自動発話にそのまま効く
@@ -912,7 +912,7 @@ fn stale_preload_result_is_discarded() {
 fn configure_via_gui_message_reaches_config() {
     let h = Harness::new(true);
     let cfg = sttts_protocol::PipelineConfig { auto_speak: Some(false), ..Default::default() };
-    h.app.dispatch(GuiMessage::Configure { tts: None, asr: None, audio: None, voice: None, pipeline: Some(cfg) });
+    h.app.dispatch(GuiMessage::configure_pipeline(cfg));
     assert_eq!(get(&h.app.cfg(), "pipeline", "auto_speak"), &json!(false));
     assert_eq!(get(&h.app.cfg(), "pipeline", "chunk_min_chars"), &json!(16)); // 他キーは保持
     // auto_speak 無効なら確定しても発話しない
@@ -926,7 +926,7 @@ fn configure_replaces_tts_sampling_as_a_whole() {
     let h = Harness::new(true);
     let send = |sampling: Value| {
         let tts = sttts_protocol::TtsConfig { sampling: sampling.as_object().cloned(), ..Default::default() };
-        h.app.dispatch(GuiMessage::Configure { tts: Some(tts), asr: None, audio: None, voice: None, pipeline: None });
+        h.app.dispatch(GuiMessage::configure_tts(tts));
     };
     send(json!({"duration_scale": 1.2, "trim_tail": false}));
     assert_eq!(get(&h.app.cfg(), "tts", "sampling"), &json!({"duration_scale": 1.2, "trim_tail": false}));

@@ -236,6 +236,29 @@ pub enum GuiMessage {
     Shutdown,
 }
 
+/// 1 セクションだけを変える `Configure`(他のセクションは None = 変更しない)。
+impl GuiMessage {
+    pub fn configure_tts(tts: TtsConfig) -> Self {
+        Self::Configure { tts: Some(tts), asr: None, audio: None, voice: None, pipeline: None }
+    }
+
+    pub fn configure_asr(asr: AsrConfig) -> Self {
+        Self::Configure { tts: None, asr: Some(asr), audio: None, voice: None, pipeline: None }
+    }
+
+    pub fn configure_audio(audio: AudioConfig) -> Self {
+        Self::Configure { tts: None, asr: None, audio: Some(audio), voice: None, pipeline: None }
+    }
+
+    pub fn configure_voice(voice: VoiceConfig) -> Self {
+        Self::Configure { tts: None, asr: None, audio: None, voice: Some(voice), pipeline: None }
+    }
+
+    pub fn configure_pipeline(pipeline: PipelineConfig) -> Self {
+        Self::Configure { tts: None, asr: None, audio: None, voice: None, pipeline: Some(pipeline) }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TtsConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]

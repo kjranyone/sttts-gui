@@ -160,25 +160,25 @@ mod imp {
         loop {
             let (ram_used, ram_total) = ram();
             let mut sample = SysSample { ram_used, ram_total, ..Default::default() };
-            if let (Some((prefix, total)), Some(q)) = (&adapter, &query) {
-                if q.collect() {
-                    sample.vram_total = *total;
-                    sample.vram_used = Query::read(q.adapter)
-                        .iter()
-                        .filter(|(n, _)| n.to_ascii_lowercase().starts_with(prefix.as_str()))
-                        .map(|(_, v)| (*v).max(0) as u64)
-                        .sum();
-                    let pid = backend_pid.load(Ordering::Relaxed);
-                    if pid != 0 {
-                        let key = format!("pid_{pid}_{prefix}");
-                        sample.app_vram = Some(
-                            Query::read(q.process)
-                                .iter()
-                                .filter(|(n, _)| n.to_ascii_lowercase().starts_with(&key))
-                                .map(|(_, v)| (*v).max(0) as u64)
-                                .sum(),
-                        );
-                    }
+            if let (Some((prefix, total)), Some(q)) = (&adapter, &query)
+                && q.collect()
+            {
+                sample.vram_total = *total;
+                sample.vram_used = Query::read(q.adapter)
+                    .iter()
+                    .filter(|(n, _)| n.to_ascii_lowercase().starts_with(prefix.as_str()))
+                    .map(|(_, v)| (*v).max(0) as u64)
+                    .sum();
+                let pid = backend_pid.load(Ordering::Relaxed);
+                if pid != 0 {
+                    let key = format!("pid_{pid}_{prefix}");
+                    sample.app_vram = Some(
+                        Query::read(q.process)
+                            .iter()
+                            .filter(|(n, _)| n.to_ascii_lowercase().starts_with(&key))
+                            .map(|(_, v)| (*v).max(0) as u64)
+                            .sum(),
+                    );
                 }
             }
             if tx.send_blocking(sample).is_err() {

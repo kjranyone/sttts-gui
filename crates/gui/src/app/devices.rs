@@ -9,15 +9,15 @@ use gpui_kit::*;
 use sttts_i18n::{tr, trf};
 use sttts_protocol::{AudioConfig, AudioDeviceInfo, GuiMessage};
 
-use super::{MicTransition, StttsApp};
+use super::{MicTransition, StttsApp, TextSelect};
 use crate::audio;
 use crate::device_picker::{Choice, DevicePicker, Dir, WASAPI_DRIVER};
 
 /// 1 方向(入力 or 出力)のドライバ Select と候補 Select。
 pub(super) struct DeviceSelect {
     pub picker: DevicePicker,
-    pub driver_select: Entity<SelectState<Vec<String>>>,
-    pub choice_select: Entity<SelectState<Vec<String>>>,
+    pub driver_select: Entity<TextSelect>,
+    pub choice_select: Entity<TextSelect>,
     pub driver: String,
     pub choice: Choice,
     /// Select の項目更新は window が要るため、render で反映する(`sync`)
@@ -179,13 +179,7 @@ impl StttsApp {
 
     fn send_input_config(&mut self) {
         let c = self.input_dev.choice.clone();
-        self.send(GuiMessage::Configure {
-            tts: None,
-            asr: None,
-            audio: Some(AudioConfig { input_device: c.device_id, input_channels: c.channels }),
-            voice: None,
-            pipeline: None,
-        });
+        self.send(GuiMessage::configure_audio(AudioConfig { input_device: c.device_id, input_channels: c.channels }));
     }
 
     /// 入力選択の適用。ライブ中は停止して、再開は利用者に任せる。
@@ -202,8 +196,7 @@ impl StttsApp {
                     "Live stopped because the input device changed. Press \"Start live\" to use the new device",
                     "入力デバイスを変更したためライブを停止しました。新しいデバイスで「ライブ開始」を押してください",
                     "输入设备已更改,直播已停止。请按「开始直播」使用新设备"
-                )
-                .into(),
+                ),
             );
         }
         self.persist_settings(cx);
