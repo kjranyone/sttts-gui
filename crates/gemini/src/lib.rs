@@ -42,6 +42,9 @@ const CHUNK_INTERVAL: Duration = Duration::from_millis(100);
 /// 受信が空のときの待ち。送信キューの排出・中断の応答性を決める。
 const READ_POLL: Duration = Duration::from_millis(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// activityEnd 後、サーバが黙ったままこれだけ経ったら、受信済みのテキストで確定する。
+/// 実 API は確定・完了シグナルを返さないことがあり、`timeout_s` まで待つと後続の発話の確定も詰まる。
+const SETTLE_AFTER_END: Duration = Duration::from_millis(2500);
 
 /// Python と同じ文言(GUI にそのまま出る)。
 const NO_KEY_MESSAGE: &str = "Gemini API キーがありません。GUI の「キー」欄に AI Studio で発行したキーを\
@@ -304,7 +307,27 @@ struct Queue {
 struct Outcome {
     done: bool,
     text: String,
+    /// 最後の途中経過。確定テキストが来なかったときの代わりに使う
+    interim: String,
     error: Option<String>,
+}
+
+impl Outcome {
+    /// 確定テキスト、無ければ最後の途中経過
+    fn best_text(&self) -> String {
+        let text = self.text.trim();
+        if text.is_empty() { self.interim.trim() } else { text }.to_owned()
+    }
+
+    /// 完了シグナル無しで確定してよいか: 確定テキストが途中経過に追いついている
+    /// (短いうちは、サーバがまだ確定テキストを送っている途中とみなす)。確定テキストが無ければ途中経過で確定する。
+    fn settled(&self) -> bool {
+        let (text, interim) = (self.text.trim(), self.interim.trim());
+        if text.is_empty() {
+            return !interim.is_empty();
+        }
+        text.chars().filter(|c| !c.is_whitespace()).count() >= interim.chars().filter(|c| !c.is_whitespace()).count()
+    }
 }
 
 struct Utterance {
@@ -381,9 +404,9 @@ impl Utterance {
         };
         if !finished {
             self.abort();
-            let text = lock(&self.outcome).text.trim().to_owned();
+            let text = lock(&self.outcome).best_text();
             if !text.is_empty() {
-                // 確定シグナルは来なかったが確定テキストは受け取っている。捨てずに使う
+                // 確定シグナルは来なかったが、受信済みのテキストがある。捨てずに使う
                 return Ok(text);
             }
             bail!("Gemini Live transcription timed out");
@@ -393,7 +416,7 @@ impl Utterance {
         if let Some(e) = &o.error {
             bail!("Gemini Live transcription failed: {e}");
         }
-        Ok(o.text.trim().to_owned())
+        Ok(o.best_text())
     }
 
     fn finish(&self, error: Option<String>) {
@@ -449,6 +472,8 @@ impl Utterance {
         let mut pending: Vec<u8> = Vec::new();
         let mut last_send = Instant::now();
         let mut sender_done = false;
+        // activityEnd 送信後、最後にサーバから何か届いた(または activityEnd を送った)時刻
+        let mut quiet_since = Instant::now();
 
         let result = (|| -> Result<()> {
             loop {
@@ -478,6 +503,7 @@ impl Utterance {
                                 }
                                 send_json(&mut ws, &json!({"realtime_input": {"activityEnd": {}}}))?;
                                 sender_done = true;
+                                quiet_since = Instant::now();
                                 break;
                             }
                         }
@@ -492,13 +518,19 @@ impl Utterance {
                 match ws.read() {
                     Ok(Message::Close(frame)) => bail!("{}", close_reason(frame.as_ref())),
                     Ok(m) if m.is_text() || m.is_binary() => {
+                        quiet_since = Instant::now();
                         let complete = self.handle_server(&parse_message(&m)?)?;
                         if complete && sender_done {
                             return Ok(());
                         }
                     }
                     Ok(_) => {}
-                    Err(e) if would_block(&e) => idle(&mut ws)?,
+                    Err(e) if would_block(&e) => {
+                        if sender_done && quiet_since.elapsed() >= SETTLE_AFTER_END && lock(&self.outcome).settled() {
+                            return Ok(()); // 完了シグナル待ちで詰まらない
+                        }
+                        idle(&mut ws)?;
+                    }
                     Err(e) => return Err(ws_err(e)),
                 }
             }
@@ -518,6 +550,7 @@ impl Utterance {
         let Some(sc) = msg.get("serverContent") else { return Ok(false) };
         let interim = sc.pointer("/interimInputTranscription/text").and_then(Value::as_str);
         if let Some(text) = interim.filter(|t| !t.is_empty()) {
+            lock(&self.outcome).interim = text.to_owned();
             let cb = self.on_partial.clone();
             let id = self.id;
             if catch_unwind(AssertUnwindSafe(|| cb(id, text))).is_err() {

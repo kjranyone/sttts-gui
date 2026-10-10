@@ -248,8 +248,45 @@ fn stream_keeps_final_text_without_completion_signal() {
 }
 
 #[test]
-fn stream_times_out_without_any_final() {
+fn stream_falls_back_to_interim_without_final() {
+    // 確定も完了シグナルも来ない(実 API で起きる): 途中経過を確定として返し、timeout_s まで待たない
     let srv = FakeServer::start(Script { finals: vec![], complete: false, ..Default::default() });
+    let g = client(&srv.endpoint, 20.0);
+    g.begin_stream(1, no_partial()).unwrap();
+    g.feed_stream(1, &block());
+    wait_until("途中経過が届く", || !lock(&g.get(1).unwrap().outcome).interim.is_empty());
+    let t0 = Instant::now();
+    assert_eq!(g.finish_stream(1, &block()).unwrap(), "こん");
+    assert!(t0.elapsed() < SETTLE_AFTER_END + Duration::from_secs(2), "{:?}", t0.elapsed());
+}
+
+#[test]
+fn stream_settles_on_final_text_without_completion_signal() {
+    let srv = FakeServer::start(Script { complete: false, ..Default::default() });
+    let g = client(&srv.endpoint, 20.0);
+    g.begin_stream(1, no_partial()).unwrap();
+    g.feed_stream(1, &block());
+    let t0 = Instant::now();
+    assert_eq!(g.finish_stream(1, &block()).unwrap(), "こんにちは");
+    assert!(t0.elapsed() < SETTLE_AFTER_END + Duration::from_secs(2), "{:?}", t0.elapsed());
+}
+
+#[test]
+fn stream_waits_while_final_text_is_shorter_than_interim() {
+    // 確定テキストが途中経過より短い = まだ届いている途中。無音でも打ち切らず、時間切れまで待つ
+    let srv = FakeServer::start(Script { interim: Some("こんにちは、今日は"), finals: vec!["こんにちは、"], complete: false, ..Default::default() });
+    let g = client(&srv.endpoint, 0.4);
+    g.begin_stream(1, no_partial()).unwrap();
+    g.feed_stream(1, &block());
+    wait_until("途中経過が届く", || !lock(&g.get(1).unwrap().outcome).interim.is_empty());
+    let o = Outcome { text: "こんにちは、".into(), interim: "こんにちは、今日は".into(), ..Default::default() };
+    assert!(!o.settled());
+    assert_eq!(g.finish_stream(1, &block()).unwrap(), "こんにちは、");
+}
+
+#[test]
+fn stream_times_out_without_any_final() {
+    let srv = FakeServer::start(Script { interim: None, finals: vec![], complete: false, ..Default::default() });
     let g = client(&srv.endpoint, 0.5);
     g.begin_stream(1, no_partial()).unwrap();
     g.feed_stream(1, &block());

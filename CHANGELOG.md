@@ -28,5 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - An utterance too short to be recognized no longer leaves a card stuck in "Listening…"; it is removed.
+- Gemini: when the server sends no final transcript or completion signal after an utterance, the text received so far is used 2.5 s later instead of waiting 20 s and failing with "transcription timed out". The following utterances are no longer held up behind it.
+- When reading aloud starts while you are still talking (long utterances), the card's text keeps growing with the recognition instead of freezing at the point reading started.
 
 [Unreleased]: https://github.com/kjranyone/sttts-gui/commits/main

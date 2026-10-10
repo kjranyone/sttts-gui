@@ -69,6 +69,9 @@ pub struct Turn {
     pub source: TurnSource,
     /// 話した内容(認識文 or 入力文)
     pub text: String,
+    /// 認識が確定した(以後 partial で本文を書き換えない)。逐次読み上げで発話が先に
+    /// 始まっても、確定までは partial で本文を伸ばし続けるため、状態とは別に持つ。
+    recognized: bool,
     pub status: TurnStatus,
     /// 発話した声の表示名(受付時点の選択。None = 既定の声)
     pub voice: Option<String>,
@@ -168,6 +171,7 @@ impl Turns {
             id,
             source,
             text,
+            recognized: !matches!(status, TurnStatus::Listening),
             status,
             voice: None,
             request: None,
@@ -190,7 +194,7 @@ impl Turns {
         }
         match self.by_utterance(utterance) {
             // 確定後に遅れて届いた partial で確定文を戻さない
-            Some(t) if t.is_unconfirmed() => t.text = text,
+            Some(t) if !t.recognized => t.text = text,
             Some(_) => {}
             None => {
                 // 新しい発話が始まった = それより前の発話は話し終えている
@@ -230,7 +234,11 @@ impl Turns {
                 self.get_mut(id).expect("just pushed")
             }
         };
-        turn.text = text;
+        // 逐次読み上げ済みで確定が空(認識失敗)なら、表示中の途中経過を残す
+        if !(text.trim().is_empty() && turn.status == TurnStatus::Speaking) {
+            turn.text = text;
+        }
+        turn.recognized = true;
         turn.asr_ms = asr_ms;
         // speak_accepted が先に届いていた場合(投機的 TTS 等)は Speaking を保つ
         if turn.status != TurnStatus::Speaking {
@@ -519,6 +527,20 @@ mod tests {
         t.speak_accepted(1, None, Some(3), None);
         t.asr_discarded(3);
         assert_eq!(t.iter().next().unwrap().status, TurnStatus::Speaking);
+    }
+
+    #[test]
+    fn partials_keep_extending_text_after_incremental_speech_starts() {
+        let mut t = Turns::default();
+        t.asr_partial(4, "一文目。".into());
+        t.speak_accepted(1, None, Some(4), None); // 逐次読み上げで先に発話が始まる
+        t.asr_partial(4, "一文目。二文目も話している".into());
+        assert_eq!(t.iter().next().unwrap().text, "一文目。二文目も話している");
+        t.asr_final(4, "一文目。二文目も話している。".into(), None, true);
+        t.asr_partial(4, "遅着".into());
+        let turn = t.iter().next().unwrap();
+        assert_eq!(turn.text, "一文目。二文目も話している。");
+        assert_eq!(turn.status, TurnStatus::Speaking);
     }
 
     #[test]
