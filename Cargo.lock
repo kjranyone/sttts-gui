@@ -9950,6 +9950,7 @@ dependencies = [
  "sttts-protocol",
  "sttts-whisper",
  "tempfile",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -10026,6 +10027,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "embed-resource",
+ "serde",
  "serde_json",
  "sttts-engine",
  "sttts-i18n",

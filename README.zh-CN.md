@@ -136,7 +136,7 @@ sttts-say model use v4.1-small      # 切换到高质量的 RF 模型(较慢;选
 
 CLI 无需实时,因此适合较慢但更准确的模型。所选模型记录在 `data/backend.json` 的 `tts.model` 中(GUI 使用其详细设置中的选择)。v4 Large 的文本编码器源自 T5Gemma 2,须遵守 [Gemma 使用条款](https://ai.google.dev/gemma/terms)。
 
-预构建版本见 [Releases](https://github.com/kjranyone/sttts-gui/releases)(另有仅含 CLI 的 zip)。也提供 macOS(Apple Silicon)与 Linux x64 版的 `sttts-say`,但属于实验版:仅在 CI 中构建和测试,尚未在真机上验证。macOS 使用 Metal;Linux 需要 Vulkan 驱动和 OpenSSL 3。macOS 因未签名而拦截时,请运行 `xattr -d com.apple.quarantine sttts-say`。从源码构建请运行 `cargo build --release -p sttts-say`。同一时间只有一个进程使用 GPU(GUI 打开期间会报错停止)。设计见 [sttts-say](docs/sttts-say.md)(日语),Skill 见 [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md)。
+预构建版本见 [Releases](https://github.com/kjranyone/sttts-gui/releases)(另有仅含 CLI 的 zip)。也提供 macOS(Apple Silicon)与 Linux x64 版的 `sttts-say`,但属于实验版:仅在 CI 中构建和测试,尚未在真机上验证。macOS 使用 Metal;Linux 需要 Vulkan 驱动和 OpenSSL 3。macOS 因未签名而拦截时,请运行 `xattr -d com.apple.quarantine sttts-say`。从源码构建请运行 `cargo build --release -p sttts-say`。同一时间只有一个进程使用 GPU(GUI 正在合成时会报错停止)。`speak` / `render` / `audition` 由保持模型加载的 `sttts-say` 常驻进程合成,因此第二次起可省去模型加载(默认模型合成一句短句约从 6 秒降到 1 秒)。常驻进程会自动启动,10 分钟无请求或执行 `sttts-say stop` 后退出;空闲时启动 GUI 会把 GPU 让给 GUI 并退出。设计见 [sttts-say](docs/sttts-say.md)(日语),Skill 见 [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md)。
 
 ## 模型
 

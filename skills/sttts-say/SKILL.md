@@ -23,8 +23,8 @@ On Windows the app root is next to the executable when that folder is writable (
 
 ## Rules that keep the machine safe
 
-- **Only one GPU user at a time.** If the sttts-gui window is open, `sttts-say` stops with "Another sttts process … is using the GPU". Ask the user to close the GUI; do not retry in a loop, and do not run several `sttts-say` processes in parallel. Put many lines in one script and run `render` once instead.
-- The first run downloads the model and compiles GPU kernels (can take minutes). Later runs load in seconds; each process loads the model once, so batch work into one `render`.
+- **Only one GPU user at a time.** If sttts-gui is using the GPU, `sttts-say` stops with "Another sttts process … is using the GPU". Ask the user to close the GUI; do not retry in a loop, and do not run several `sttts-say` processes in parallel (they queue behind each other anyway).
+- The very first run downloads the model and compiles GPU kernels (can take minutes). After that, `speak` / `render` / `audition` are handled by a background `sttts-say` process that keeps the model loaded, so one-line calls are cheap (about 1 s with the default model) and you can work line by line. It exits by itself after 10 minutes without requests; run `sttts-say stop` when you are done if the user wants the GPU back sooner. Many lines are still best put in one script for `render` (incremental, one manifest).
 - You cannot hear the audio. When quality matters (choosing a voice, judging a delivery), give the user the file paths and let them choose.
 
 ## Concepts
@@ -66,6 +66,9 @@ sttts-say voice show mio
 # Models
 sttts-say model list
 sttts-say model use v4.1-small
+
+# Release the GPU now (ends the background process that keeps the model loaded)
+sttts-say stop
 ```
 
 Script (`ep1.jsonl`):

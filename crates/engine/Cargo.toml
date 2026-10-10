@@ -30,3 +30,7 @@ rand = "0.9"
 
 [dev-dependencies]
 tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+# sttts-say の常駐プロセスに、呼び出し元の標準入出力を継がせない(SetHandleInformation)
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Console"] }

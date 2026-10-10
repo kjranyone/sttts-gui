@@ -16,6 +16,7 @@ pub mod presets;
 pub mod real;
 pub mod root;
 pub mod say;
+pub mod say_server;
 pub mod session;
 pub mod sink;
 pub mod tts;

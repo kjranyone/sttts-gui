@@ -170,7 +170,7 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
 }
 
 /// 書き出しは一時ファイル → 置き換え(途中で止まっても壊れたテイクを残さない)
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes).with_context(|| tmp.display().to_string())?;
     std::fs::rename(&tmp, path).with_context(|| path.display().to_string())

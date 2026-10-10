@@ -3,15 +3,23 @@
 //! 本体は `sttts_engine::say`。ここは引数の解釈と、結果 JSON の標準出力だけを持つ。
 //! 進捗とエラーは標準エラーへ(表示言語は GUI と同じ規則)。マイクは開かない。GPU は
 //! GUI と同時に使わない(プロセス間ロック。GUI が起動中ならエラーで止まる)。
+//!
+//! 合成(`speak` / `render` / `audition`)は常駐プロセス(`sttts_engine::say_server`)に頼む。常駐プロセスは
+//! モデルを読み込んだまま待つので、2 回目以降の呼び出しはモデルの読み込みとカーネルのコンパイルを省ける。
+//! 最初の呼び出しで自動的に起動し、10 分使われなければ終わる。使えないときはこのプロセスで合成する。
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use serde_json::{Map, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 use sttts_engine::config::{default_config, default_user_config_path, load_user_config, merge_config};
 use sttts_engine::say::{Line, Studio, line_like, list_models, list_voices, load_voice, read_take, use_model};
 use sttts_engine::config::get;
+use sttts_engine::say_server::{self, EngineCache, RunRequest, ServerPaths};
 use sttts_engine::tts::{IrodoriTts, TtsEngine};
 
 const USAGE: &str = "\
@@ -28,6 +36,7 @@ USAGE
   sttts-say voice save NAME --from TAKE
   sttts-say model list
   sttts-say model use NAME
+  sttts-say stop
 
   --voice    a voice in data/voices (reference audio NAME.wav and/or settings NAME.json)
   --style    how this line is delivered; appended to the voice's caption
@@ -40,9 +49,14 @@ USAGE
 
 Results are JSON on stdout; progress and errors go to stderr.
 Settings come from data/backend.json (tts.sampling etc.), the same as the GUI.
+
+speak / render / audition run in a background sttts-say process that keeps the model
+loaded, so later calls skip loading it. It starts by itself, exits after 10 minutes
+without requests, and gives the GPU to sttts-gui when the GUI starts while it is idle.
+`stop` ends it now.
 ";
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 enum Command {
     Help,
     Speak { line: Line, like: Option<PathBuf>, reseed: bool, out: Option<PathBuf> },
@@ -53,6 +67,9 @@ enum Command {
     VoiceSave { name: String, from: PathBuf },
     ModelList,
     ModelUse { name: String },
+    Stop,
+    /// 常駐プロセスとして依頼を待つ(`speak` などが自動で起動する。利用者が直接使うものではない)
+    Serve,
 }
 
 fn parse(args: &[String]) -> Result<Command> {
@@ -126,6 +143,11 @@ fn parse(args: &[String]) -> Result<Command> {
             [sub, name] if sub == "use" => Command::ModelUse { name: name.clone() },
             _ => bail!("model needs list | use NAME"),
         },
+        "stop" => {
+            no_positional(&positional)?;
+            Command::Stop
+        }
+        "serve" => Command::Serve,
         other => bail!("unknown command {other} (see sttts-say help)"),
     };
     Ok(cmd)
@@ -146,49 +168,89 @@ fn merge_like(base: Line, given: Line, reseed: bool) -> Line {
     }
 }
 
-fn run(cmd: Command) -> Result<Option<Value>> {
-    let root = sttts_engine::root::app_root();
-    let warn = |m: &str| eprintln!("[warn] {m}");
-    if let Err(err) = sttts_engine::presets::install_presets(&root) {
-        warn(&sttts_i18n::trf!(
-            "Could not install the bundled voice presets: {err:#}",
-            "同梱の声プリセットを書き出せませんでした: {err:#}",
-            "无法写出内置的声音预设:{err:#}"
-        ));
-    }
-    let cfg = merge_config(&default_config(), &load_user_config(&default_user_config_path(&root), &warn));
-    let (loader_cfg, model_cfg) = (cfg.clone(), cfg.clone());
+/// 読み込んだ TTS の指定(モデルとステップ数)。常駐プロセスはこれが変わったら読み込み直す
+fn engine_key(cfg: &Value) -> (String, Option<usize>) {
+    let model = get(cfg, "tts", "model").as_str().unwrap_or(sttts_engine::tts::DEFAULT_TTS_MODEL).to_string();
+    let steps = get(cfg, "tts", "num_steps").as_u64().map(|n| n as usize);
+    (model, steps)
+}
+
+/// 合成のコマンドを実行する(このプロセスでも常駐プロセスでも同じ)。TTS は `cache` から使い回す
+fn synthesize(cmd: Command, root: PathBuf, cfg: Value, cache: Rc<RefCell<EngineCache>>, log: Rc<dyn Fn(&str)>) -> Result<Value> {
+    let loader_cfg = cfg.clone();
+    let loader_log = Rc::clone(&log);
     let studio = Studio::new(
-        root.clone(),
+        root,
         cfg,
         move || {
-            let progress = |m: &str| eprintln!("{m}");
-            let model = get(&loader_cfg, "tts", "model").as_str().unwrap_or(sttts_engine::tts::DEFAULT_TTS_MODEL);
-            let steps = get(&loader_cfg, "tts", "num_steps").as_u64().map(|n| n as usize);
-            let engine: Arc<dyn TtsEngine> = Arc::new(IrodoriTts::load(model, steps, &progress)?);
-            Ok(engine)
+            let (model, steps) = engine_key(&loader_cfg);
+            let progress = |m: &str| loader_log(m);
+            cache.borrow_mut().get_or_load(&format!("{model}/{steps:?}"), || {
+                Ok(Arc::new(IrodoriTts::load(&model, steps, &progress)?) as Arc<dyn TtsEngine>)
+            })
         },
-        |m| eprintln!("{m}"),
+        move |m| log(m),
     );
-    let value = match cmd {
-        Command::Help => {
-            print!("{USAGE}");
-            return Ok(None);
-        }
+    match cmd {
         Command::Speak { line, like, reseed, out } => {
             let line = match like {
                 Some(take) => merge_like(line_like(&read_take(&take)?), line, reseed),
                 None => line,
             };
-            studio.speak(&line, out.as_deref())?
+            studio.speak(&line, out.as_deref())
         }
-        Command::Render { script, out_dir } => studio.render(&script, out_dir.as_deref())?,
-        Command::Audition { line, count, out_dir } => studio.audition(&line, count, out_dir.as_deref())?,
+        Command::Render { script, out_dir } => studio.render(&script, out_dir.as_deref()),
+        Command::Audition { line, count, out_dir } => studio.audition(&line, count, out_dir.as_deref()),
+        other => bail!("not a synthesis command: {other:?}"),
+    }
+}
+
+/// 常駐プロセス: 依頼を順番に処理する。モデルは依頼をまたいで使い回す
+fn serve() -> Result<()> {
+    let cache = Rc::new(RefCell::new(EngineCache::default()));
+    say_server::serve(&ServerPaths::default(), say_server::IDLE_EXIT, |req, log| {
+        let cmd: Command = serde_json::from_value(req.command.clone())?;
+        synthesize(cmd, req.root.clone(), req.cfg.clone(), Rc::clone(&cache), log)
+    })
+}
+
+fn run(cmd: Command) -> Result<Option<Value>> {
+    let root = sttts_engine::root::app_root();
+    let warn = |m: &str| eprintln!("[warn] {m}");
+    let cfg = merge_config(&default_config(), &load_user_config(&default_user_config_path(&root), &warn));
+    let value = match cmd {
+        Command::Help => {
+            print!("{USAGE}");
+            return Ok(None);
+        }
+        Command::Serve => {
+            serve()?;
+            return Ok(None);
+        }
+        Command::Stop => json!({ "stopped": say_server::stop(&ServerPaths::default())? }),
         Command::VoiceList => serde_json::to_value(list_voices(&root)?)?,
         Command::VoiceShow { name } => serde_json::to_value(load_voice(&root, &name)?)?,
-        Command::VoiceSave { name, from } => studio.save_voice(&name, &from)?,
-        Command::ModelList => Value::from(list_models(&model_cfg)),
-        Command::ModelUse { name } => use_model(&root, &model_cfg, &name)?,
+        Command::VoiceSave { name, from } => {
+            let studio = Studio::new(root.clone(), cfg, || bail!("voice save does not synthesize"), |m| eprintln!("{m}"));
+            studio.save_voice(&name, &from)?
+        }
+        Command::ModelList => Value::from(list_models(&cfg)),
+        Command::ModelUse { name } => use_model(&root, &cfg, &name)?,
+        synth => {
+            let req = RunRequest {
+                cwd: std::env::current_dir()?,
+                root: root.clone(),
+                cfg: cfg.clone(),
+                lang: sttts_i18n::lang().code().to_string(),
+                command: serde_json::to_value(&synth)?,
+            };
+            let spawn = || say_server::spawn_detached(&std::env::current_exe()?, &["serve"]);
+            match say_server::run_remote(&ServerPaths::default(), &req, spawn, &|m| eprintln!("{m}"))? {
+                Some(v) => v,
+                // 常駐プロセスを使えないときは、このプロセスで合成する
+                None => synthesize(synth, root, cfg, Rc::new(RefCell::new(EngineCache::default())), Rc::new(|m: &str| eprintln!("{m}")))?,
+            }
+        }
     };
     Ok(Some(value))
 }
@@ -260,9 +322,29 @@ mod tests {
         assert_eq!(parse(&args(&["render", "s.jsonl", "--out-dir", "o"])).unwrap(), Command::Render { script: "s.jsonl".into(), out_dir: Some("o".into()) });
         assert_eq!(parse(&args(&["voice", "list"])).unwrap(), Command::VoiceList);
         assert_eq!(parse(&args(&["model", "list"])).unwrap(), Command::ModelList);
+        assert_eq!(parse(&args(&["stop"])).unwrap(), Command::Stop);
         assert_eq!(parse(&args(&["model", "use", "v4.1-small"])).unwrap(), Command::ModelUse { name: "v4.1-small".into() });
         assert_eq!(parse(&args(&["voice", "save", "mio", "--from", "t.wav"])).unwrap(), Command::VoiceSave { name: "mio".into(), from: "t.wav".into() });
         let Command::Audition { count, .. } = parse(&args(&["audition", "--text", "a", "--count", "6"])).unwrap() else { panic!() };
         assert_eq!(count, 6);
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+
+    /// 常駐プロセスへはコマンドを JSON で渡す。往復しても同じコマンドに戻る
+    #[test]
+    fn commands_survive_the_trip_to_the_background_process() {
+        let args: Vec<String> = ["speak", "--text", "やあ", "--voice", "aoi", "--seed", "3", "--sampling", "{\"duration_scale\":1.1}", "--out", "o.wav"]
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+        let cmd = parse(&args).unwrap();
+        let back: Command = serde_json::from_value(serde_json::to_value(&cmd).unwrap()).unwrap();
+        assert_eq!(back, cmd);
+        let render = Command::Render { script: "ep.jsonl".into(), out_dir: None };
+        assert_eq!(serde_json::from_value::<Command>(serde_json::to_value(&render).unwrap()).unwrap(), render);
     }
 }

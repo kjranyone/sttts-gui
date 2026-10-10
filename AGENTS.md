@@ -9,6 +9,7 @@ Python は使わない。ターゲット環境は Windows + Intel Arc GPU(Vulkan
 
 - `crates/gui` — GPUI クライアント(`backend.rs` がエンジンをプロセス内で起動する)
 - `crates/say` — CLI `sttts-say`(GUI なしの合成。本体は `crates/engine/src/say.rs`、設計は `docs/sttts-say.md`、Skill は `skills/sttts-say/`)
+  - 合成はモデルを読み込んだまま待つ常駐プロセス(`crates/engine/src/say_server.rs`)が行う。呼び出し元より長く生きるのは意図どおりで、10 分使われないか `sttts-say stop` で必ず終わる。検証で起動したら最後に `sttts-say stop` で止める
 - `crates/engine` — バックエンド本体(設定・チャンク分割・TTS ワーカー・セッション・投機的 TTS)。外界は `Platform` トレイトで注入(テストは偽物)
 - `crates/irodori` — Irodori-TTS の純 Rust 推論(burn)
 - `crates/whisper` / `crates/nemotron` / `crates/gemini` — ASR エンジン

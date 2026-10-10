@@ -48,11 +48,22 @@ pub fn gpu_lock_path() -> std::path::PathBuf {
 
 /// GPU のプロセス間ロックを取り、プロセスの終了まで持ち続ける(2 回目以降は何もしない)。
 /// 別のプロセスが持っていればエラー(待たない。誰が持っているかを利用者に伝えて止める)。
+/// ただし持ち主が待機中の `sttts-say` 常駐プロセスなら、終わってもらってから取る(合成中なら止めずにエラー)。
 pub fn hold_gpu_process_lock() -> anyhow::Result<()> {
     static HELD: Mutex<Option<std::fs::File>> = Mutex::new(None);
     let mut held = lock(&HELD);
     if held.is_none() {
-        *held = Some(try_lock_file(&gpu_lock_path())?);
+        let path = gpu_lock_path();
+        let file = match try_lock_file(&path) {
+            Ok(f) => f,
+            Err(e) => {
+                if !crate::say_server::stop_if_idle(&crate::say_server::ServerPaths::default()) {
+                    return Err(e);
+                }
+                try_lock_file(&path)?
+            }
+        };
+        *held = Some(file);
     }
     Ok(())
 }

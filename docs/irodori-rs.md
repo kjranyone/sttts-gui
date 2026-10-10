@@ -38,10 +38,14 @@ PyTorch / Python に依存しない Irodori-TTS(v4.1 Small MF / RF、v4 Large、
 | 最終音声(ケース A〜D) | 8e-5 〜 4e-3(相対 1e-4 〜 4e-3。最大は GPU のケース A) |
 
 RF(v4.1 Small、CPU)は `tests/rf.rs` で、ケース RA〜RE(text CFG のみ / caption / 参照音声 / alternating・sway・話者 K/V 強調・rescale・truncation / joint)を確かめた。
-DiT 1 回(CFG のバッチ 1〜3)は相対 2e-6、ステップ数 6〜8 の最終潜在は相対 4e-6 〜 6e-4、最終音声は相対 1e-5 〜 6e-4。RF の GPU での一致と速度は未確認。
+DiT 1 回(CFG のバッチ 1〜3)は相対 2e-6、ステップ数 6〜8 の最終潜在は相対 4e-6 〜 6e-4、最終音声は相対 1e-5 〜 6e-4。GPU(Arc B580 / wgpu)でも同じテストが通る(最終潜在は相対 2e-3 以内)。
 
 int8(v4.1 Small、`tests/int8.rs`)は、int8 の重みを fp32 に戻して PyTorch(CPU, fp32)で動かした参照と比べる(ケース QA / QC)。
-テキスト条件は相対 1e-6、最終潜在は相対 3e-5 〜 3e-4、最終音声は相対 1e-4 〜 7e-4。v4 Large は `tests/large.rs`(LA / LC と、int8 の QA / QC)。
+テキスト条件は相対 1e-6、最終潜在は相対 3e-5 〜 3e-4、最終音声は相対 1e-4 〜 7e-4。v4 Large は `tests/large.rs`(LA / LC と、int8 の QA / QC)。T5Gemma 2 単体は 256 / 512 トークンで相対 4e-7 / 8e-7、
+最終潜在は相対 1e-5 〜 6e-4(int8 は 7e-5 〜 6e-4)、最終音声は相対 4e-5 〜 1.6e-3。
+GPU(Arc B580 / wgpu、12GB)では int8 の重みを量子化テンソルのまま置いて v4.1 Small int8 と v4 Large int8 の一致を確かめた
+(最終潜在は相対 1.3e-3 以内)。短い文(約 2 秒)の 6 ステップのサンプリングは v4.1 Small int8 で 1.2〜2.0 秒、v4 Large int8 で 2.7〜3.6 秒。
+v4 Large(fp32、13GB)は 12GB の GPU に載らないので GPU では未確認。
 
 乱数だけは PyTorch と同じ列にならない(`rand` の標準正規。seed を渡せば再現はする)。参照との比較では初期ノイズを注入している。
 

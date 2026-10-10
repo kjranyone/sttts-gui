@@ -133,7 +133,7 @@ sttts-say model use v4.1-small      # 高品質な RF のモデルに切り替�
 
 CLI はリアルタイムでなくてよいので、遅くても正確なモデルが向いています。選んだモデルは `data/backend.json` の `tts.model` に記録されます(GUI は詳細設定での自分の選択を使います)。v4 Large はテキストエンコーダが T5Gemma 2 由来のため、[Gemma の利用規約](https://ai.google.dev/gemma/terms)に従います。
 
-ビルド済みのものは [Releases](https://github.com/kjranyone/sttts-gui/releases) にあります(CLI だけの zip もあります)。macOS(Apple Silicon)と Linux x64 向けの `sttts-say` も置いていますが、CI でのビルドとテストのみで、実機では未検証の実験版です。macOS は Metal、Linux は Vulkan ドライバと OpenSSL 3 が必要です。macOS で未署名のためブロックされたら `xattr -d com.apple.quarantine sttts-say` を実行してください。ソースからは `cargo build --release -p sttts-say` でビルドできます。GPU を使うのは同時に 1 プロセスだけです(GUI を開いている間はエラーで止まります)。仕組みは [sttts-say](docs/sttts-say.md)、Skill は [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md) にあります。
+ビルド済みのものは [Releases](https://github.com/kjranyone/sttts-gui/releases) にあります(CLI だけの zip もあります)。macOS(Apple Silicon)と Linux x64 向けの `sttts-say` も置いていますが、CI でのビルドとテストのみで、実機では未検証の実験版です。macOS は Metal、Linux は Vulkan ドライバと OpenSSL 3 が必要です。macOS で未署名のためブロックされたら `xattr -d com.apple.quarantine sttts-say` を実行してください。ソースからは `cargo build --release -p sttts-say` でビルドできます。GPU を使うのは同時に 1 プロセスだけです(GUI が合成している間はエラーで止まります)。`speak` / `render` / `audition` はモデルを読み込んだまま待つ `sttts-say` の常駐プロセスで合成するので、2 回目以降はモデルの読み込みを省けます(既定のモデルで短い 1 行なら約 6 秒が約 1 秒に)。常駐プロセスは自動で起動し、10 分使われないか `sttts-say stop` で終わります。待機中に GUI を起動すると、GPU を GUI に譲って終わります。仕組みは [sttts-say](docs/sttts-say.md)、Skill は [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md) にあります。
 
 ## モデル
 
