@@ -11,10 +11,15 @@ Results are JSON on stdout; progress and errors go to stderr; exit code 1 on err
 ## Find the executable
 
 1. `sttts-say` on `PATH`.
-2. Otherwise download `sttts-say-vX.Y.Z-x86_64-pc-windows-msvc.zip` from https://github.com/kjranyone/sttts-gui/releases (verify it with `SHA256SUMS.txt`), unzip it to a writable folder, and use that `sttts-say.exe` (ask the user before downloading). Windows x64 only; it needs the Visual C++ Redistributable and a DirectX 12 / Vulkan GPU driver.
-3. From source: `cargo build --release -p sttts-say` in the repo, then `target/release/sttts-say.exe`.
+2. Otherwise download the archive for this machine from https://github.com/kjranyone/sttts-gui/releases (ask the user before downloading) and verify it against `SHA256SUMS.txt`:
+   - Windows x64: `sttts-say-vX.Y.Z-x86_64-pc-windows-msvc.zip` — needs the Visual C++ Redistributable and a DirectX 12 / Vulkan GPU driver.
+   - macOS Apple Silicon: `sttts-say-vX.Y.Z-aarch64-apple-darwin.tar.gz` — **experimental**. The binary is unsigned; if macOS blocks it, run `xattr -d com.apple.quarantine sttts-say`.
+   - Linux x64: `sttts-say-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` — **experimental**. Needs a Vulkan driver and OpenSSL 3 (glibc 2.35 or newer).
+   The macOS / Linux builds pass CI but have not been verified on real hardware yet; if the audio sounds wrong, tell the user rather than retrying.
+3. From source: `cargo build --release -p sttts-say` in the repo, then `target/release/sttts-say(.exe)`.
 
 Data lives in the app root shared with the GUI: `data/voices/` (voices), `data/backend.json` (synthesis settings), `output/say/` (default output).
+On Windows the app root is next to the executable when that folder is writable (else `%LOCALAPPDATA%\sttts-gui`); on macOS it is `~/Library/Application Support/sttts-gui`, on Linux `~/.local/share/sttts-gui` (or `$XDG_DATA_HOME/sttts-gui`). `STTTS_ROOT` overrides it.
 
 ## Rules that keep the machine safe
 

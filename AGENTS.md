@@ -5,7 +5,7 @@ sttts-gui で作業するエージェントへの指示。人間のコントリ�
 ## プロジェクト概要
 
 音声対話 GUI。Rust(GPUI / gpui-kit)の 1 プロセスで、マイク → Silero VAD → ASR(Nemotron / kotoba-whisper / Gemini)→ Irodori-TTS を動かす。
-Python は使わない。ターゲット環境は Windows + Intel Arc GPU(Vulkan / wgpu)。詳細は `README.ja.md`(英語版 `README.md`・中国語版 `README.zh-CN.md`)と `docs/irodori-rs.md` を参照。
+Python は使わない。ターゲット環境は Windows + Intel Arc GPU(Vulkan / wgpu)。macOS / Linux は `sttts-say`(CLI)だけを実験的に配布している(CI でのビルドとテストのみで実機未検証。データの置き場は `crates/engine/src/root.rs`)。詳細は `README.ja.md`(英語版 `README.md`・中国語版 `README.zh-CN.md`)と `docs/irodori-rs.md` を参照。
 
 - `crates/gui` — GPUI クライアント(`backend.rs` がエンジンをプロセス内で起動する)
 - `crates/say` — CLI `sttts-say`(GUI なしの合成。本体は `crates/engine/src/say.rs`、設計は `docs/sttts-say.md`、Skill は `skills/sttts-say/`)

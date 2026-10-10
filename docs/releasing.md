@@ -10,7 +10,7 @@ sttts-gui のバージョンの付け方と、GitHub Releases へ配布物を出
 | バージョン | [SemVer](https://semver.org/lang/ja/)。ワークスペース共通で `Cargo.toml` の `[workspace.package] version` の 1 か所 |
 | タグ | `vX.Y.Z`。プレリリースは `vX.Y.Z-rc.1` など(`-` を含むタグは Releases でプレリリース扱いになる) |
 | 変更履歴 | `CHANGELOG.md`([Keep a Changelog](https://keepachangelog.com/ja/1.1.0/))。普段の変更は `[Unreleased]` に書きためる |
-| 配布物 | Windows x64 のみ。zip 2 種と `SHA256SUMS.txt`(下記) |
+| 配布物 | Windows x64(GUI+CLI と CLI のみ)、macOS・Linux 向けの CLI(実験的)、`SHA256SUMS.txt`(下記) |
 | モデル | 同梱しない。初回実行時に HuggingFace から取得される |
 
 ### バージョンの上げ方(0.x の間)
@@ -76,24 +76,28 @@ git push origin vX.Y.Z
 gh run watch     # 実行中のワークフローを選んで経過を見る
 ```
 
-ワークフローは順に次を行う。どこかで失敗すると Releases には何も出ない。
+ワークフローは次のジョブからなる。どれかが失敗すると Releases には何も出ない。
 
-1. タグと `Cargo.toml` の version が一致するか、`CHANGELOG.md` に `## [X.Y.Z]` の節があるかを確かめる
-2. テスト
-3. `sttts-gui` と `sttts-say` を **別々の cargo 呼び出しで** リリースビルドする
+1. **meta**: タグと `Cargo.toml` の version が一致するか、`CHANGELOG.md` に `## [X.Y.Z]` の節があるかを確かめ、リリースノートを作る
+2. **windows**: テスト → `sttts-gui` と `sttts-say` を **別々の cargo 呼び出しで** リリースビルド → zip 2 種
    (一緒にビルドすると features が統合され、`sttts-say` にマイク・ASR が入るため)
-4. zip を作り、`SHA256SUMS.txt` を書く
-5. CHANGELOG の節をリリースノートにして GitHub Release を作る
+3. **unix**(macOS Apple Silicon / Linux x64): テスト → `sttts-say` だけをリリースビルド → tar.gz。Linux は glibc を古めにするため ubuntu-22.04 でビルドする
+4. **publish**: 全部の配布物の `SHA256SUMS.txt` を書き、GitHub Release を作る
 
 ### 5. 配布物を確かめる
 
-[Releases](https://github.com/kjranyone/sttts-gui/releases) に次の 3 つがあること。
+[Releases](https://github.com/kjranyone/sttts-gui/releases) に次の 5 つがあること。
 
 | ファイル | 中身 |
 |---|---|
-| `sttts-gui-vX.Y.Z-x86_64-pc-windows-msvc.zip` | `sttts-gui.exe`、`sttts-say.exe`、`skills/sttts-say/`、README 3 言語、LICENSE、CHANGELOG |
-| `sttts-say-vX.Y.Z-x86_64-pc-windows-msvc.zip` | `sttts-say.exe`(マイク・ASR なし)、`skills/sttts-say/`、README 3 言語、LICENSE、CHANGELOG |
-| `SHA256SUMS.txt` | 上の 2 つの zip の SHA-256 |
+| `sttts-gui-vX.Y.Z-x86_64-pc-windows-msvc.zip` | `sttts-gui.exe`、`sttts-say.exe`、`skills/sttts-say/`、README 3 言語、LICENSE、PRIVACY、CHANGELOG |
+| `sttts-say-vX.Y.Z-x86_64-pc-windows-msvc.zip` | `sttts-say.exe`(マイク・ASR なし)、`skills/sttts-say/`、README 3 言語、LICENSE、PRIVACY、CHANGELOG |
+| `sttts-say-vX.Y.Z-aarch64-apple-darwin.tar.gz` | macOS 版 `sttts-say`(実験的)と同じ文書一式 |
+| `sttts-say-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` | Linux 版 `sttts-say`(実験的)と同じ文書一式 |
+| `SHA256SUMS.txt` | 上の 4 つの SHA-256 |
+
+macOS / Linux 版は実機で未検証の実験版で、リリースノートにもそう書かれる。実機で音声が正しく出ることを確かめたら、
+README とリリースノートの「experimental」を外す(ワークフローの meta ジョブの文言)。
 
 ダウンロードして確かめる:
 

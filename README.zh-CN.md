@@ -63,6 +63,8 @@ cd sttts-gui
 2. exe 所在文件夹可写时,保存在 exe 的文件夹(放在 U 盘等处的便携用法)
 3. 不可写时(Program Files 等),保存在 `%LOCALAPPDATA%\sttts-gui`
 
+macOS / Linux 版(仅 `sttts-say`,实验性)不会写到可执行文件旁边:未设置 `STTTS_ROOT` 时,macOS 保存在 `~/Library/Application Support/sttts-gui`,Linux 保存在 `$XDG_DATA_HOME/sttts-gui`(未设置时为 `~/.local/share/sttts-gui`)。
+
 分发目标需要 [Visual C++ 可再发行组件](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)(x64),以及支持 DirectX 12 / Vulkan 的 GPU 驱动。
 
 > [!IMPORTANT]
@@ -119,7 +121,7 @@ sttts-say audition --text "はじめまして" --caption "明るい少女の声"
 sttts-say voice save mio --from <选中的录音>.wav   # 以该录音作为参考音频固定角色
 ```
 
-预构建版本见 [Releases](https://github.com/kjranyone/sttts-gui/releases)(另有仅含 CLI 的 zip);从源码构建请运行 `cargo build --release -p sttts-say`。同一时间只有一个进程使用 GPU(GUI 打开期间会报错停止)。设计见 [sttts-say](docs/sttts-say.md)(日语),Skill 见 [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md)。
+预构建版本见 [Releases](https://github.com/kjranyone/sttts-gui/releases)(另有仅含 CLI 的 zip)。也提供 macOS(Apple Silicon)与 Linux x64 版的 `sttts-say`,但属于实验版:仅在 CI 中构建和测试,尚未在真机上验证。macOS 使用 Metal;Linux 需要 Vulkan 驱动和 OpenSSL 3。macOS 因未签名而拦截时,请运行 `xattr -d com.apple.quarantine sttts-say`。从源码构建请运行 `cargo build --release -p sttts-say`。同一时间只有一个进程使用 GPU(GUI 打开期间会报错停止)。设计见 [sttts-say](docs/sttts-say.md)(日语),Skill 见 [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md)。
 
 ## 模型
 

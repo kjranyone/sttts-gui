@@ -14,21 +14,44 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # cpal の ASIO 対応(asio-sys の bindgen)が libclang を使う。ランナーには LLVM が入っている
-  LIBCLANG_PATH: C:\Program Files\LLVM\bin
 
 jobs:
-  check:
+  windows:
     # 実モデル・実デバイス・GPU は使わない(テストは偽の Platform / TTS で完結する)
     runs-on: windows-latest
+    env:
+      # cpal の ASIO 対応(asio-sys の bindgen)が libclang を使う。ランナーには LLVM が入っている
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain
         run: rustup update stable --no-self-update && rustup default stable && rustup component add clippy
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
-        run: cargo clippy -p sttts-engine -p sttts-say -p sttts-gui -p sttts-i18n -p sttts-protocol --all-targets -- -D warnings
+        run: cargo clippy -p sttts-engine -p sttts-say -p sttts-gui -p sttts-i18n -p sttts-protocol -p sttts-hub --all-targets -- -D warnings
       - name: Clippy (sttts-engine without the live feature, as sttts-say builds it)
         run: cargo clippy -p sttts-engine --no-default-features --features gpu --all-targets -- -D warnings
       - name: Test
-        run: cargo test -p sttts-engine -p sttts-say -p sttts-i18n -p sttts-protocol
+        run: cargo test -p sttts-engine -p sttts-say -p sttts-i18n -p sttts-protocol -p sttts-hub
+
+  unix:
+    # macOS / Linux は sttts-say(実験的配布)とエンジンだけを確かめる。GUI は未対応
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libasound2-dev
+      - name: Rust toolchain
+        run: rustup update stable --no-self-update && rustup default stable && rustup component add clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy -p sttts-engine -p sttts-say -p sttts-i18n -p sttts-protocol -p sttts-hub --all-targets -- -D warnings
+      - name: Clippy (sttts-engine without the live feature, as sttts-say builds it)
+        run: cargo clippy -p sttts-engine --no-default-features --features gpu --all-targets -- -D warnings
+      - name: Test
+        run: cargo test -p sttts-engine -p sttts-say -p sttts-i18n -p sttts-protocol -p sttts-hub

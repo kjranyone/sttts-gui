@@ -60,6 +60,8 @@ cd sttts-gui
 2. exe の隣に書き込めれば exe のフォルダ(USB メモリ等に置くポータブル運用)
 3. 書き込めない場所(Program Files 等)なら `%LOCALAPPDATA%\sttts-gui`
 
+macOS / Linux 版(`sttts-say` のみ・実験的)は実行ファイルの隣には書き込みません。`STTTS_ROOT` が無ければ、macOS は `~/Library/Application Support/sttts-gui`、Linux は `$XDG_DATA_HOME/sttts-gui`(無ければ `~/.local/share/sttts-gui`)に保存します。
+
 配布先には [Visual C++ 再頒布可能パッケージ](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)(x64)と、DirectX 12 / Vulkan に対応した GPU ドライバが必要です。
 
 > [!IMPORTANT]
@@ -116,7 +118,7 @@ sttts-say audition --text "はじめまして" --caption "明るい少女の声"
 sttts-say voice save mio --from <選んだテイク>.wav   # テイクを参照音声にしてキャラクターを固定
 ```
 
-ビルド済みのものは [Releases](https://github.com/kjranyone/sttts-gui/releases) にあります(CLI だけの zip もあります)。ソースからは `cargo build --release -p sttts-say` でビルドできます。GPU を使うのは同時に 1 プロセスだけです(GUI を開いている間はエラーで止まります)。仕組みは [sttts-say](docs/sttts-say.md)、Skill は [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md) にあります。
+ビルド済みのものは [Releases](https://github.com/kjranyone/sttts-gui/releases) にあります(CLI だけの zip もあります)。macOS(Apple Silicon)と Linux x64 向けの `sttts-say` も置いていますが、CI でのビルドとテストのみで、実機では未検証の実験版です。macOS は Metal、Linux は Vulkan ドライバと OpenSSL 3 が必要です。macOS で未署名のためブロックされたら `xattr -d com.apple.quarantine sttts-say` を実行してください。ソースからは `cargo build --release -p sttts-say` でビルドできます。GPU を使うのは同時に 1 プロセスだけです(GUI を開いている間はエラーで止まります)。仕組みは [sttts-say](docs/sttts-say.md)、Skill は [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md) にあります。
 
 ## モデル
 

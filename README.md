@@ -63,6 +63,8 @@ Models take Irodori-TTS ≈3GB + codec ≈0.4GB + the ASR you choose. The Huggin
 2. The exe's folder, if it is writable next to the exe (portable use, e.g. on a USB drive)
 3. `%LOCALAPPDATA%\sttts-gui`, if it is not writable (Program Files, etc.)
 
+The macOS / Linux builds (`sttts-say` only, experimental) never write next to the executable: without `STTTS_ROOT` they use `~/Library/Application Support/sttts-gui` (macOS) or `$XDG_DATA_HOME/sttts-gui`, falling back to `~/.local/share/sttts-gui` (Linux).
+
 The target machine needs the [Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64) and a GPU driver with DirectX 12 / Vulkan support.
 
 > [!IMPORTANT]
@@ -119,7 +121,7 @@ sttts-say audition --text "はじめまして" --caption "明るい少女の声"
 sttts-say voice save mio --from <chosen take>.wav   # pin the character with the take as reference audio
 ```
 
-Prebuilt binaries are on [Releases](https://github.com/kjranyone/sttts-gui/releases) (including a CLI-only zip); to build from source, run `cargo build --release -p sttts-say`. Only one process uses the GPU at a time (it stops with an error while the GUI is open). See [sttts-say](docs/sttts-say.md) (in Japanese) for the design and [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md) for the Skill.
+Prebuilt binaries are on [Releases](https://github.com/kjranyone/sttts-gui/releases) (including a CLI-only zip). Builds of `sttts-say` for macOS (Apple Silicon) and Linux x64 are there too, but they are experimental: built and tested in CI, not yet verified on real hardware (macOS uses Metal; Linux needs a Vulkan driver and OpenSSL 3; if macOS blocks the unsigned binary, run `xattr -d com.apple.quarantine sttts-say`). To build from source, run `cargo build --release -p sttts-say`. Only one process uses the GPU at a time (it stops with an error while the GUI is open). See [sttts-say](docs/sttts-say.md) (in Japanese) for the design and [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md) for the Skill.
 
 ## Models
 

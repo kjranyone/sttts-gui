@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HF_HUB_OFFLINE=1` disables model downloads (only models already in the cache are used).
 - Windows version information (product name `sttts-gui`, version from `Cargo.toml`) in both executables.
 - Privacy policy (`PRIVACY.md`) and code signing policy (README).
+- Experimental `sttts-say` builds for macOS (Apple Silicon) and Linux x64. They are built and unit-tested in CI but not yet verified on real hardware. Data goes to `~/Library/Application Support/sttts-gui` (macOS) or `~/.local/share/sttts-gui` / `$XDG_DATA_HOME/sttts-gui` (Linux).
+- CI on Windows, macOS and Linux.
 
 ### Changed
 
