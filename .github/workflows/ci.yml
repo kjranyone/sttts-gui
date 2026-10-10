@@ -53,5 +53,8 @@ jobs:
         run: cargo clippy -p sttts-engine -p sttts-say -p sttts-i18n -p sttts-protocol -p sttts-hub --all-targets -- -D warnings
       - name: Clippy (sttts-engine without the live feature, as sttts-say builds it)
         run: cargo clippy -p sttts-engine --no-default-features --features gpu --all-targets -- -D warnings
+      # 配布する構成(live なし)でテストする。live は ONNX Runtime の配布バイナリが新しい glibc を要り、ubuntu-22.04 でリンクできない
       - name: Test
-        run: cargo test -p sttts-engine -p sttts-say -p sttts-i18n -p sttts-protocol -p sttts-hub
+        run: |
+          cargo test -p sttts-engine --no-default-features --features gpu
+          cargo test -p sttts-say -p sttts-i18n -p sttts-protocol -p sttts-hub

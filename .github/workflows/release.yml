@@ -110,8 +110,11 @@ jobs:
       - name: Rust toolchain
         run: rustup update stable --no-self-update && rustup default stable
       - uses: Swatinem/rust-cache@v2
+      # 配布する構成(live なし)でテストする。live は ONNX Runtime の配布バイナリが新しい glibc を要り、ubuntu-22.04 でリンクできない
       - name: Test
-        run: cargo test -p sttts-engine -p sttts-say -p sttts-i18n -p sttts-protocol -p sttts-hub
+        run: |
+          cargo test -p sttts-engine --no-default-features --features gpu
+          cargo test -p sttts-say -p sttts-i18n -p sttts-protocol -p sttts-hub
       - name: Build sttts-say
         run: cargo build --release --locked -p sttts-say
       - name: Package
