@@ -155,16 +155,19 @@ impl HelpTopic {
                     "The value that decides the variation in synthesis.",
                     "Random: the same sentence is read a little differently each time.",
                     "Fixed: the same sentence with the same voice is read the same way every time.",
+                    "The seed used is shown at the bottom of each card. Click it to make it the fixed seed.",
                 ],
                 &[
                     "合成のゆらぎを決める値です。",
                     "ランダム: 同じ文でも毎回少し違う読み方になります。",
                     "固定: 同じ文・同じ声なら、毎回同じ読み方になります。",
+                    "使った seed は各カードの下段に出ます。クリックすると、その値で固定します。",
                 ],
                 &[
                     "决定合成随机变化的值。",
                     "随机:同一句话每次的读法都会略有不同。",
                     "固定:同一句话、同一个声音,每次读法都相同。",
+                    "所用的 seed 显示在每张卡片的下方。点击即可固定为该值。",
                 ],
             ),
         }

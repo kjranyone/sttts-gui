@@ -699,6 +699,7 @@ impl StttsApp {
                 wav_base64,
                 duration_ms,
                 path,
+                seed,
                 first_chunk,
                 rtf,
                 first_chunk_ms,
@@ -741,7 +742,7 @@ impl StttsApp {
                         }
                     }
                 }
-                self.turns.chunk_audio(request, chunk, path, duration_ms, total_e2e);
+                self.turns.chunk_audio(request, chunk, path, duration_ms, total_e2e, seed);
             }
             BackendMessage::TtsChunkDone { .. } => {}
             BackendMessage::SpeakDone { request, chunks, cancelled, failed } => {
@@ -1107,6 +1108,13 @@ impl StttsApp {
                 m.clone_from(fresh);
             }
         }
+    }
+
+    /// 履歴の seed を固定 seed にする(ランダムで気に入った声を次からも使う)。
+    fn use_seed(&mut self, seed: i64, window: &mut Window, cx: &mut Context<Self>) {
+        self.seed_input.update(cx, |s, cx| s.set_value(seed.to_string(), window, cx));
+        self.push_log(trf!("Fixed seed set to {seed}", "seed を {seed} に固定", "已将 seed 固定为 {seed}"));
+        self.set_random_seed(false, cx);
     }
 
     fn set_random_seed(&mut self, on: bool, cx: &mut Context<Self>) {

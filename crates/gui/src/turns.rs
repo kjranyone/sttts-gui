@@ -83,6 +83,8 @@ pub struct Turn {
     pub asr_ms: Option<u64>,
     /// 元音声から推定した表現。転写文とは別に保持する。
     pub delivery: Option<DeliveryInfo>,
+    /// 合成に使った seed(リクエスト内の全チャンクで共通)。ランダム時に気に入った声を固定するため
+    pub seed: Option<i64>,
     /// ターンを作った時刻(待ち時間の表示用)
     pub created_at: std::time::Instant,
 }
@@ -179,6 +181,7 @@ impl Turns {
             e2e_ms: None,
             asr_ms: None,
             delivery: None,
+            seed: None,
             created_at: std::time::Instant::now(),
         });
         while self.items.len() > MAX_TURNS {
@@ -328,10 +331,14 @@ impl Turns {
         path: Option<String>,
         duration_ms: u64,
         e2e_ms: Option<u64>,
+        seed: Option<i64>,
     ) {
         if let Some(t) = self.by_request(request) {
             if let Some(ms) = e2e_ms {
                 t.e2e_ms = Some(ms);
+            }
+            if seed.is_some() {
+                t.seed = seed;
             }
             match t.chunks.iter_mut().find(|c| c.index == index) {
                 Some(c) => {
@@ -472,12 +479,13 @@ mod tests {
 
         t.speak_accepted(3, None, Some(7), Some("さくら".into()));
         t.chunk_start(3, 0, "こんにちは。".into());
-        t.chunk_audio(3, 0, Some("out/a.wav".into()), 900, Some(820));
+        t.chunk_audio(3, 0, Some("out/a.wav".into()), 900, Some(820), Some(42));
         let turn = t.iter().next().unwrap();
         assert_eq!(turn.status, TurnStatus::Speaking);
         assert_eq!(turn.voice.as_deref(), Some("さくら"));
         assert_eq!(turn.ready_chunks(), 1);
         assert_eq!(turn.e2e_ms, Some(820));
+        assert_eq!(turn.seed, Some(42));
         assert_eq!(turn.audio_paths(), vec!["out/a.wav"]);
 
         t.speak_done(3, false, false);
@@ -571,8 +579,8 @@ mod tests {
         t.speak_accepted(5, Some(&tag_for(id)), None, None);
         t.chunk_start(5, 0, "一。".into());
         t.chunk_start(5, 1, "二。".into());
-        t.chunk_audio(5, 1, None, 500, None);
-        t.chunk_audio(5, 0, None, 500, None);
+        t.chunk_audio(5, 1, None, 500, None, None);
+        t.chunk_audio(5, 0, None, 500, None, None);
         let turn = t.get(id).unwrap();
         assert_eq!(turn.chunks.iter().map(|c| c.index).collect::<Vec<_>>(), vec![0, 1]);
         assert_eq!(turn.ready_chunks(), 2);
@@ -611,7 +619,7 @@ mod tests {
         t.backend_restarted();
         assert_eq!(t.get(c).unwrap().status, TurnStatus::Failed);
         // 再接続後の request=2 は別の発話。古いターンに紐付かない
-        t.chunk_audio(2, 0, None, 100, None);
+        t.chunk_audio(2, 0, None, 100, None, None);
         assert!(t.get(c).unwrap().chunks.is_empty());
     }
 

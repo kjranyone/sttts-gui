@@ -369,6 +369,20 @@ impl StttsApp {
                             .child(trf!("Latency {ms}ms", "応答 {ms}ms", "响应 {ms}ms")),
                     )
                 })
+                .when_some(turn.seed, |row, seed| {
+                    row.child(
+                        div()
+                            .id(SharedString::from(format!("seed-{id}")))
+                            .flex_shrink_0()
+                            .whitespace_nowrap()
+                            .text_xs()
+                            .text_color(c(theme::TEXT_FAINT))
+                            .cursor_pointer()
+                            .hover(|s| s.text_color(c(theme::VOICE)))
+                            .child(format!("seed {seed}"))
+                            .on_click(cx.listener(move |this, _, window, cx| this.use_seed(seed, window, cx))),
+                    )
+                })
                 .child(div().flex_1())
                 .when(speaking, |row| {
                     row.child(
