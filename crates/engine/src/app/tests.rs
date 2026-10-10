@@ -786,6 +786,45 @@ fn utterance_audio_is_analysed_in_background() {
     assert!(fin["pause_ms"].as_u64().unwrap() >= 400, "{fin}");
 }
 
+// ---------------------------------------------------------------- TTS ウォームアップ
+
+/// ウォームアップをゲートで止められる TTS
+struct SlowWarmupTts {
+    inner: MockTts,
+    release: (Mutex<bool>, Condvar),
+}
+
+impl TtsEngine for SlowWarmupTts {
+    fn model_id(&self) -> &str {
+        "slow-warmup"
+    }
+    fn warmup(&self) -> Result<()> {
+        let g = self.release.0.lock().unwrap();
+        let _ = self.release.1.wait_timeout_while(g, Duration::from_secs(5), |r| !*r).unwrap();
+        Ok(())
+    }
+    fn synthesize(&self, req: &TtsRequest) -> Result<TtsOutput> {
+        self.inner.synthesize(req)
+    }
+}
+
+#[test]
+fn tts_stays_loading_until_warmup_finishes() {
+    // 大きなモデルはロード後のウォームアップが長い。その間も GUI に読み込み中を見せる(READY にしない)
+    let engine = Arc::new(SlowWarmupTts { inner: MockTts::new("slow-warmup", 0.0, 0.0), release: (Mutex::new(false), Condvar::new()) });
+    let h = Harness::new(true).with_engine(Arc::clone(&engine) as Arc<dyn TtsEngine>);
+    h.app.maybe_schedule_warmup();
+    assert!(wait3(|| lock(&h.app.state).tts_phase == LOADING), "warm-up should show as loading");
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(lock(&h.app.state).tts_phase, LOADING);
+    *engine.release.0.lock().unwrap() = true;
+    engine.release.1.notify_all();
+    assert!(wait3(|| lock(&h.app.state).tts_phase == READY));
+    let states = h.rec.of_type("state");
+    let last = states.last().unwrap();
+    assert_eq!(last["tts"]["phase"], READY);
+}
+
 // ---------------------------------------------------------------- ASR 事前ロード
 
 /// 設定ごとに作ったエンジンを記録する偽ファクトリ

@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `tts.num_steps` and `tts.sampling.num_steps` default to the model's own step count (4 for MeanFlow, 40 for RF) when unset.
 
+### Fixed
+
+- The "loading" bar for speech synthesis disappeared once the model was loaded, although the warm-up synthesis that follows was still running (about a minute with v4 Large), so the app looked unresponsive. The bar now stays until the warm-up is done.
+
 ## [0.1.0] - 2026-10-10
 
 ### Added

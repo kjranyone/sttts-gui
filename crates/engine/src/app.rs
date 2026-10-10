@@ -1373,7 +1373,22 @@ impl Inner {
 
     fn run_warmup(&self) {
         let t0 = Instant::now();
-        let result = self.ensure_engine().and_then(|e| e.warmup().map(|()| e));
+        // ウォームアップ(短文の合成)が終わるまでは読み込み中として見せる。大きなモデルではロードより長く、
+        // READY のまま待たせると GUI のバーが消えて応答が無いように見える
+        let result = self.ensure_engine().and_then(|e| {
+            let model = e.model_id().to_string();
+            self.set_tts(
+                LOADING,
+                Some(trf!("Warming up {model}", "ウォームアップ中: {model}", "正在预热:{model}")),
+                false,
+            );
+            let r = e.warmup();
+            // ロードは済んでいるので成否に関わらず使える状態へ戻す(その間に ERROR になっていれば触らない)
+            if lock(&self.state).tts_phase == LOADING {
+                self.set_tts(READY, None, false);
+            }
+            r.map(|()| e)
+        });
         match result {
             Ok(_) => {
                 let ms = t0.elapsed().as_millis();
