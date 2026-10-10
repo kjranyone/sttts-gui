@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-10
+
 ### Added
 
 - `sttts-say`: a command-line tool that synthesizes lines with Irodori-TTS without the GUI, for agents (Agent Skills) and video workflows.
@@ -33,4 +35,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Gemini: when the server sends no final transcript or completion signal after an utterance, the text received so far is used 2.5 s later instead of waiting 20 s and failing with "transcription timed out". The following utterances are no longer held up behind it.
 - When reading aloud starts while you are still talking (long utterances), the card's text keeps growing with the recognition instead of freezing at the point reading started.
 
-[Unreleased]: https://github.com/kjranyone/sttts-gui/commits/main
+[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/kjranyone/sttts-gui/releases/tag/v0.1.0
