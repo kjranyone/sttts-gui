@@ -11,11 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Each card shows the seed its voice was synthesized with. Click it to make it the fixed seed, so a voice you liked while on random can be used again.
 
-### Fixed
-
-- Expression: "pausing as it goes" (間を取りながら) is no longer added to almost every utterance. Only gaps of 320 ms or more between speech count as pauses (ordinary breaks between phrases and the silence before/after the utterance no longer do), and only longer utterances (1.5 s or more of speech) get it.
-- Reading aloud while you are still talking no longer stops for the rest of a long utterance when the recognizer revises text it has already read (e.g. Gemini adding spaces); it carries on from the same position.
-
 ## [0.1.0] - 2026-10-10
 
 ### Added
@@ -43,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An utterance too short to be recognized no longer leaves a card stuck in "Listening…"; it is removed.
 - Gemini: when the server sends no final transcript or completion signal after an utterance, the text received so far is used 2.5 s later instead of waiting 20 s and failing with "transcription timed out". The following utterances are no longer held up behind it.
 - When reading aloud starts while you are still talking (long utterances), the card's text keeps growing with the recognition instead of freezing at the point reading started.
+- Reading aloud while you are still talking no longer stops for the rest of a long utterance when the recognizer revises text it has already read (e.g. Gemini adding spaces); it carries on from the same position.
+- Expression: "pausing as it goes" (間を取りながら) is no longer added to almost every utterance. Only gaps of 320 ms or more between speech count as pauses (ordinary breaks between phrases and the silence before/after the utterance no longer do), and only longer utterances (1.5 s or more of speech) get it.
 
 [Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/kjranyone/sttts-gui/releases/tag/v0.1.0
