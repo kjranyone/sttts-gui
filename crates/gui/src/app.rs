@@ -217,7 +217,8 @@ impl StttsApp {
             cx,
         );
 
-        // --- 声バンク(data/voices の wav を参照音声として選択できる)
+        // --- 声バンク(data/voices の wav を参照音声として選択できる)。同梱プリセットは未導入の分だけ先に書き出す
+        let preset_error = sttts_engine::presets::install_presets(&root).err();
         let voices = scan_voice_bank(&root);
         let saved_voice = saved
             .voice
@@ -349,6 +350,13 @@ impl StttsApp {
                 "[error:audio] Could not open the output device: {err}",
                 "[error:audio] 出力デバイスを開けませんでした: {err}",
                 "[error:audio] 无法打开输出设备:{err}"
+            ));
+        }
+        if let Some(err) = preset_error {
+            app.push_log(trf!(
+                "[warn] Could not install the bundled voice presets: {err:#}",
+                "[warn] 同梱の声プリセットを書き出せませんでした: {err:#}",
+                "[warn] 无法写出内置的声音预设:{err:#}"
             ));
         }
         if gemini_key_unreadable {

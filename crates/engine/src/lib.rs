@@ -11,6 +11,7 @@ pub mod config;
 pub mod engines;
 pub mod mock;
 pub mod performance;
+pub mod presets;
 #[cfg(feature = "live")]
 pub mod real;
 pub mod root;

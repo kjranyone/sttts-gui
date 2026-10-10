@@ -104,6 +104,8 @@ Irodori-TTS は文単位の非ストリーミング合成です。そこで **�
 
 参照音声(wav / flac、10 秒程度)をウィンドウへドラッグ&ドロップするか、「声」の「＋」から選びます。取り込んだ音声は `data/voices/` に入り、そのまま選択されます。画像(png / jpg / webp)を落とすと、選択中の声のアイコンになります。
 
+声のプリセットを 8 つ同梱しています(`genki` `kuudere` `narrator` `ojisan` `oneesan` `seinen` `shounen` `tsundere`)。初回起動時に `data/voices/` へ書き出され、自分で取り込んだ声と同じように使ったり消したりできます。消したプリセットは復活せず、同じ名前の自分の声は上書きしません。プリセットは Gemini TTS で作った合成音声で、実在の人物の録音ではありません。
+
 > [!CAUTION]
 > 参照音声には、本人の同意を得た声だけを使ってください。Irodori-TTS の各モデルカードは、実在人物のなりすましやディープフェイクへの利用を禁じています。
 
@@ -215,6 +217,7 @@ Free code signing provided by [SignPath.io](https://about.signpath.io/), certifi
 - [kotoba-whisper-v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0)(Apache-2.0)
 - Nemotron 3.5 ASR streaming(コード Apache-2.0 / 重み OpenMDW-1.1)
 - [silero-vad](https://github.com/snakers4/silero-vad)(MIT、`crates/audio/assets/LICENSE`)
+- 声のプリセット(`crates/engine/assets/voices/`、リポジトリと同じ MIT): Google Gemini TTS で生成(`tools/voice-presets/`)
 - [burn](https://burn.dev)(Apache-2.0 / MIT)、onnxruntime(MIT)、gpui-kit / Zed GPUI(Apache-2.0)
 
 ## ライセンス

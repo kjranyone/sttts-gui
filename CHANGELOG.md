@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - More models: `v4.1-small-int8` (int8 weights, about a quarter of the GPU memory for the main layers), `v4-large` (Irodori-TTS v4 Large, 3.3B parameters, T5Gemma 2 text encoder; subject to the Gemma Terms of Use) and `v4-large-int8`. Int8 weights stay int8 in GPU memory.
 - `sttts-say model list` / `model use NAME`.
 - The RF sampler options of Irodori in `tts.sampling` (and in the GUI's synthesis parameters): `cfg_scale_text`, `cfg_scale_caption`, `cfg_scale_speaker`, `cfg_scale`, `cfg_guidance_mode`, `cfg_min_t`, `cfg_max_t`, `truncation_factor`, `rescale_k`, `rescale_sigma`, `speaker_kv_scale`, `speaker_kv_min_t`, `speaker_kv_max_layers`, `speaker_uncond_mode`, `t_schedule_mode`, `sway_coeff`.
+- Eight preset voices (`genki`, `kuudere`, `narrator`, `ojisan`, `oneesan`, `seinen`, `shounen`, `tsundere`), synthetic voices made with Gemini TTS. They are written to `data/voices/` on first launch of the GUI or `sttts-say`; deleted presets are not restored and existing voices with the same name are kept.
 - Each card shows the seed its voice was synthesized with. Click it to make it the fixed seed, so a voice you liked while on random can be used again.
 
 ### Changed

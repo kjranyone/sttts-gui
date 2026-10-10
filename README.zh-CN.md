@@ -107,6 +107,8 @@ Irodori-TTS 以句子为单位合成,不支持流式。因此采用伪流式:**�
 
 将参考音频(wav / flac,约 10 秒)拖放到窗口,或在「声音」中点「＋」选择。导入的音频放在 `data/voices/`,并会立即被选中。拖放图片(png / jpg / webp)会将其设为当前所选声音的图标。
 
+内置 8 个预设声音(`genki` `kuudere` `narrator` `ojisan` `oneesan` `seinen` `shounen` `tsundere`)。首次启动时写入 `data/voices/`,可以像自己导入的声音一样使用或删除;删除的预设不会再出现,同名的自有声音也不会被覆盖。预设是用 Gemini TTS 生成的合成声音,不是真实人物的录音。
+
 > [!CAUTION]
 > 参考音频请只使用已获得本人同意的声音。Irodori-TTS 的各模型卡禁止用于冒充真实人物或制作深度伪造。
 
@@ -218,6 +220,7 @@ Free code signing provided by [SignPath.io](https://about.signpath.io/), certifi
 - [kotoba-whisper-v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0)(Apache-2.0)
 - Nemotron 3.5 ASR streaming(代码 Apache-2.0 / 权重 OpenMDW-1.1)
 - [silero-vad](https://github.com/snakers4/silero-vad)(MIT,`crates/audio/assets/LICENSE`)
+- 预设声音(`crates/engine/assets/voices/`,与本仓库相同采用 MIT):用 Google Gemini TTS 生成(`tools/voice-presets/`)
 - [burn](https://burn.dev)(Apache-2.0 / MIT)、onnxruntime(MIT)、gpui-kit / Zed GPUI(Apache-2.0)
 
 ## 许可证

@@ -149,6 +149,13 @@ fn merge_like(base: Line, given: Line, reseed: bool) -> Line {
 fn run(cmd: Command) -> Result<Option<Value>> {
     let root = sttts_engine::root::app_root();
     let warn = |m: &str| eprintln!("[warn] {m}");
+    if let Err(err) = sttts_engine::presets::install_presets(&root) {
+        warn(&sttts_i18n::trf!(
+            "Could not install the bundled voice presets: {err:#}",
+            "同梱の声プリセットを書き出せませんでした: {err:#}",
+            "无法写出内置的声音预设:{err:#}"
+        ));
+    }
     let cfg = merge_config(&default_config(), &load_user_config(&default_user_config_path(&root), &warn));
     let (loader_cfg, model_cfg) = (cfg.clone(), cfg.clone());
     let studio = Studio::new(

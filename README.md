@@ -107,6 +107,8 @@ The acting palette and emoji-based expression are described in [Expression instr
 
 Drag and drop reference audio (wav / flac, about 10 seconds) onto the window, or pick it with "+" under "Voice". Imported audio goes into `data/voices/` and is selected right away. Drop an image (png / jpg / webp) to make it the icon of the selected voice.
 
+Eight preset voices come with the app (`genki`, `kuudere`, `narrator`, `ojisan`, `oneesan`, `seinen`, `shounen`, `tsundere`). They are written to `data/voices/` on first launch and can be used or deleted like your own; a deleted preset does not come back, and a voice of yours with the same name is never overwritten. The presets are synthetic voices made with Gemini TTS, not recordings of real people.
+
 > [!CAUTION]
 > Only use reference audio from people who have given their consent. The Irodori-TTS model cards prohibit impersonating real people and creating deepfakes.
 
@@ -218,6 +220,7 @@ Privacy: see the [privacy policy](PRIVACY.md). In short, the programs send nothi
 - [kotoba-whisper-v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0) (Apache-2.0)
 - Nemotron 3.5 ASR streaming (code Apache-2.0 / weights OpenMDW-1.1)
 - [silero-vad](https://github.com/snakers4/silero-vad) (MIT, `crates/audio/assets/LICENSE`)
+- Preset voices (`crates/engine/assets/voices/`, MIT like the rest of this repository): generated with Google Gemini TTS (`tools/voice-presets/`)
 - [burn](https://burn.dev) (Apache-2.0 / MIT), onnxruntime (MIT), gpui-kit / Zed GPUI (Apache-2.0)
 
 ## License
