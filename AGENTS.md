@@ -8,6 +8,7 @@ sttts-gui で作業するエージェントへの指示。人間のコントリ�
 Python は使わない。ターゲット環境は Windows + Intel Arc GPU(Vulkan / wgpu)。詳細は `README.ja.md`(英語版 `README.md`・中国語版 `README.zh-CN.md`)と `docs/irodori-rs.md` を参照。
 
 - `crates/gui` — GPUI クライアント(`backend.rs` がエンジンをプロセス内で起動する)
+- `crates/say` — CLI `sttts-say`(GUI なしの合成。本体は `crates/engine/src/say.rs`、設計は `docs/sttts-say.md`、Skill は `skills/sttts-say/`)
 - `crates/engine` — バックエンド本体(設定・チャンク分割・TTS ワーカー・セッション・投機的 TTS)。外界は `Platform` トレイトで注入(テストは偽物)
 - `crates/irodori` — Irodori-TTS の純 Rust 推論(burn)
 - `crates/whisper` / `crates/nemotron` / `crates/gemini` — ASR エンジン
@@ -21,6 +22,15 @@ Python は使わない。ターゲット環境は Windows + Intel Arc GPU(Vulkan
 - テスト: `cargo test -p sttts-engine`(実モデル・実デバイス不要。偽物で全体を検証する設計)
 - 各クレートのパリティテスト(`crates/irodori` `crates/whisper` `crates/nemotron` `crates/audio`)は、PyTorch 等の参照データ(`tools/reference/` のスクリプトで作る)が無い環境では `eprintln!` して戻る
 - Rust: `cargo check` / `cargo build --release`(MSRV 1.95。`rust-version` 宣言済み)
+
+## リリース
+
+手順は [docs/releasing.md](docs/releasing.md)。要点:
+
+- SemVer、タグは `vX.Y.Z`。変更は `CHANGELOG.md`(Keep a Changelog)の `[Unreleased]` に書きためる(利用者から見える変更をしたら、その場で追記する)。
+- タグの push で `.github/workflows/release.yml` がビルドして GitHub Releases に置く。version を上げたら `Cargo.lock` も更新する(`--locked` でビルドするため)。
+- `sttts-say` は `-p sttts-say` 単独でビルドする(GUI と同じ cargo 呼び出しだと features が統合され、マイク・ASR が入る)。
+- `sttts-say` の引数・出力 JSON・台本の書式は外向けの仕様。非互換にするときはバージョンを上げ、CHANGELOG に BREAKING と書く。
 
 ## ハードウェア検証ポリシー(最重要)
 

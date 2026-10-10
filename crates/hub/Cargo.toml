@@ -9,4 +9,5 @@ rust-version.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 serde_json = { workspace = true }
+sttts-i18n = { path = "../i18n" }
 ureq = { version = "3", default-features = false, features = ["native-tls"] }

@@ -1,0 +1,21 @@
+[package]
+name = "sttts-say"
+description = "Headless Irodori-TTS for agents and video workflows: voices, takes and incremental scripts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "sttts-say"
+path = "src/main.rs"
+
+[dependencies]
+# 合成だけ(マイク・ASR のコードを含めない)
+sttts-engine = { path = "../engine", default-features = false, features = ["gpu"] }
+sttts-i18n = { path = "../i18n" }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+[build-dependencies]
+embed-resource = "3"

@@ -18,25 +18,6 @@ pub fn create_real_asr(engine: &str, cfg: &Value, progress: Progress) -> Result<
     }
 }
 
-/// 本番は GPU(wgpu)。CPU 推論は実装しない。
-pub fn gpu_device() -> Result<irodori::Device> {
-    #[cfg(feature = "gpu")]
-    {
-        irodori::try_gpu_device()
-    }
-    #[cfg(not(feature = "gpu"))]
-    {
-        bail!(
-            "{}",
-            tr!(
-                "Built without GPU support (the gpu feature of sttts-engine)",
-                "GPU 対応なしでビルドされています(sttts-engine の gpu feature)",
-                "构建时未启用 GPU 支持(sttts-engine 的 gpu feature)"
-            )
-        )
-    }
-}
-
 // ---------------------------------------------------------------- kotoba-whisper
 
 /// kotoba-whisper-v2.0(純 Rust / burn)。確定は beam 幅 `asr.final_beam_size`、途中経過は greedy。
@@ -53,7 +34,7 @@ impl WhisperAsr {
             repo: repo.to_string(),
             language: get_str(cfg, "asr", "language").unwrap_or("ja").to_string(),
             final_beam_size: final_beam,
-            device: gpu_device()?,
+            device: crate::tts::gpu_device()?,
         };
         progress(&trf!("Fetching the ASR model: {repo}", "ASRモデル取得中: {repo}", "正在获取 ASR 模型:{repo}"));
         let _gpu_load = crate::util::gpu_load_guard(); // TTS のロードと同時に GPU を初期化しない

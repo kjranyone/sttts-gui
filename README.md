@@ -108,6 +108,19 @@ Drag and drop reference audio (wav / flac, about 10 seconds) onto the window, or
 > [!CAUTION]
 > Only use reference audio from people who have given their consent. The Irodori-TTS model cards prohibit impersonating real people and creating deepfakes.
 
+### Synthesizing from the command line (sttts-say)
+
+`sttts-say.exe` turns lines into WAV files without opening the GUI. Agents (Agent Skills) and video workflows can use it to have a character "say this line like that".
+
+```powershell
+sttts-say speak --text "ねえ、聞いて!" --voice mio --style "興奮気味に" --out s01.wav
+sttts-say render ep1.jsonl          # a whole script (JSONL); only changed lines are re-synthesized
+sttts-say audition --text "はじめまして" --caption "明るい少女の声" --count 6
+sttts-say voice save mio --from <chosen take>.wav   # pin the character with the take as reference audio
+```
+
+Prebuilt binaries are on [Releases](https://github.com/kjranyone/sttts-gui/releases) (including a CLI-only zip); to build from source, run `cargo build --release -p sttts-say`. Only one process uses the GPU at a time (it stops with an error while the GUI is open). See [sttts-say](docs/sttts-say.md) (in Japanese) for the design and [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md) for the Skill.
+
 ## Models
 
 | Role | Model | Runs on | Notes |
@@ -123,6 +136,7 @@ Drag and drop reference audio (wav / flac, about 10 seconds) onto the window, or
 ```
 crates/
 ├── gui/        GPUI client. Starts the engine in-process
+├── say/        CLI (sttts-say): synthesize lines without the GUI
 ├── engine/     Backend: config, chunking, TTS worker, live session
 ├── protocol/   GUI ⇄ engine message types
 ├── i18n/       UI language (en / ja / zh) and inline translations
@@ -147,6 +161,8 @@ UI text is written inline with all three languages side by side (`tr!("English",
 
 Read [AGENTS.md](AGENTS.md) (Japanese) before contributing: it covers the hardware testing policy and the design principles.
 
+The release procedure is in [docs/releasing.md](docs/releasing.md) (Japanese).
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -162,6 +178,22 @@ Read [AGENTS.md](AGENTS.md) (Japanese) before contributing: it covers the hardwa
 | Recognition is slow | Choose Gemini, or locally use `asr.engine: "nemotron"` |
 
 Logs appear in the bottom panel of the GUI and in `data/gui.log` (recreated on every launch). The list of settings keys is in [docs/configuration.md](docs/configuration.md) (Japanese).
+
+## Code signing policy
+
+Windows releases on [GitHub Releases](https://github.com/kjranyone/sttts-gui/releases) are built from this repository by GitHub Actions ([release workflow](.github/workflows/release.yml)), and each release is approved manually before signing.
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+> Status: the application to SignPath Foundation is in progress. Until it is approved, releases are not signed; verify downloads with `SHA256SUMS.txt`.
+
+Team roles:
+
+- Authors (may change the source without further review): [@kjranyone](https://github.com/kjranyone)
+- Reviewers (review changes from other contributors): [@kjranyone](https://github.com/kjranyone)
+- Approvers (approve each signing request): [@kjranyone](https://github.com/kjranyone)
+
+Privacy: see the [privacy policy](PRIVACY.md). In short, the programs send nothing except model downloads from Hugging Face (can be disabled with `HF_HUB_OFFLINE=1`) and, only if you choose cloud recognition, your speech to Google Gemini.
 
 ## Credits
 

@@ -105,6 +105,19 @@ Irodori-TTS は文単位の非ストリーミング合成です。そこで **�
 > [!CAUTION]
 > 参照音声には、本人の同意を得た声だけを使ってください。Irodori-TTS の各モデルカードは、実在人物のなりすましやディープフェイクへの利用を禁じています。
 
+### コマンドラインから合成する(sttts-say)
+
+`sttts-say.exe`(`cargo build --release` で GUI と一緒にできます)は、GUI を開かずにセリフを WAV にします。エージェント(Agent Skills)や動画制作のワークフローから、キャラクターの声で「このセリフをこう喋らせる」部品として使えます。
+
+```powershell
+sttts-say speak --text "ねえ、聞いて!" --voice mio --style "興奮気味に" --out s01.wav
+sttts-say render ep1.jsonl          # 台本(JSONL)をまとめて。変えた行だけ撮り直す
+sttts-say audition --text "はじめまして" --caption "明るい少女の声" --count 6
+sttts-say voice save mio --from <選んだテイク>.wav   # テイクを参照音声にしてキャラクターを固定
+```
+
+ビルド済みのものは [Releases](https://github.com/kjranyone/sttts-gui/releases) にあります(CLI だけの zip もあります)。ソースからは `cargo build --release -p sttts-say` でビルドできます。GPU を使うのは同時に 1 プロセスだけです(GUI を開いている間はエラーで止まります)。仕組みは [sttts-say](docs/sttts-say.md)、Skill は [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md) にあります。
+
 ## モデル
 
 | 役割 | モデル | 実行環境 | 備考 |
@@ -120,6 +133,7 @@ Irodori-TTS は文単位の非ストリーミング合成です。そこで **�
 ```
 crates/
 ├── gui/        GPUI クライアント。エンジンをプロセス内で起動する
+├── say/        CLI(sttts-say):GUI なしでセリフを合成する
 ├── engine/     バックエンド本体:設定・チャンク分割・TTS ワーカー・ライブセッション
 ├── protocol/   GUI ⇄ エンジンのメッセージ型
 ├── i18n/       表示言語(en / ja / zh)と文言のインライン翻訳
@@ -144,6 +158,8 @@ UI の文言は 3 言語を呼び出し箇所に並べて書きます(`tr!("Engl
 
 コントリビュートする前に [AGENTS.md](AGENTS.md) を読んでください(ハードウェア検証のポリシーと設計の前提)。
 
+リリースの手順は [docs/releasing.md](docs/releasing.md) にあります。
+
 ## トラブルシューティング
 
 | 症状 | 対処 |
@@ -159,6 +175,22 @@ UI の文言は 3 言語を呼び出し箇所に並べて書きます(`tr!("Engl
 | 認識が遅い | Gemini を選ぶか、ローカルなら `asr.engine: "nemotron"` |
 
 ログは GUI 下段と `data/gui.log`(起動ごとに作り直し)に出ます。設定キーの一覧は [docs/configuration.md](docs/configuration.md) にあります。
+
+## Code signing policy(コード署名ポリシー)
+
+[GitHub Releases](https://github.com/kjranyone/sttts-gui/releases) の Windows 版は、このリポジトリから GitHub Actions([リリース用ワークフロー](.github/workflows/release.yml))でビルドし、リリースごとに手動で承認してから署名します。
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+> 状況: SignPath Foundation へ申請中です。承認されるまでのリリースは署名なしです。ダウンロードしたファイルは `SHA256SUMS.txt` で確かめてください。
+
+チームの役割:
+
+- Authors(レビューなしでソースを変更できる): [@kjranyone](https://github.com/kjranyone)
+- Reviewers(他の貢献者の変更をレビューする): [@kjranyone](https://github.com/kjranyone)
+- Approvers(署名の要求を 1 件ずつ承認する): [@kjranyone](https://github.com/kjranyone)
+
+プライバシー: [プライバシーポリシー](PRIVACY.md)(英語)を参照してください。要点は、Hugging Face からのモデルのダウンロード(`HF_HUB_OFFLINE=1` で無効化できます)と、クラウド認識を選んだときだけ発話を Google Gemini へ送ること以外、何も送信しないことです。
 
 ## クレジット
 

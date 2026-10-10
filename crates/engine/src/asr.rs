@@ -113,6 +113,12 @@ pub fn create_asr(cfg: &Value, progress: Progress) -> Result<Arc<dyn AsrEngine>>
                 .unwrap_or_default();
             Ok(Arc::new(MockAsr::new(get_i64(cfg, "asr", "mock_latency_ms", 0).max(0) as u64, texts)))
         }
+        #[cfg(feature = "live")]
         other => crate::engines::create_real_asr(other, cfg, progress),
+        #[cfg(not(feature = "live"))]
+        other => {
+            let _ = progress;
+            anyhow::bail!("asr.engine {other:?}: built without the live feature of sttts-engine")
+        }
     }
 }

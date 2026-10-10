@@ -231,6 +231,27 @@ fn f32_value(x: f32) -> f64 {
 
 // ---------------------------------------------------------------- Irodori
 
+/// 本番は GPU(wgpu)。CPU 推論は実装しない。
+/// TTS と kotoba-whisper が使う。GPU を初期化する前にプロセス間ロックを取る(GUI と sttts-say が同時に GPU を初期化しない)。
+pub fn gpu_device() -> Result<irodori::Device> {
+    #[cfg(feature = "gpu")]
+    {
+        crate::util::hold_gpu_process_lock()?;
+        irodori::try_gpu_device()
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        bail!(
+            "{}",
+            tr!(
+                "Built without GPU support (the gpu feature of sttts-engine)",
+                "GPU 対応なしでビルドされています(sttts-engine の gpu feature)",
+                "构建时未启用 GPU 支持(sttts-engine 的 gpu feature)"
+            )
+        )
+    }
+}
+
 /// 実エンジン
 pub struct IrodoriTts {
     model_id: String,
@@ -276,7 +297,7 @@ impl IrodoriTts {
             "正在构建 TTS 模型(首次运行需要较长时间准备 GPU 内核)"
         ));
         let _gpu_load = crate::util::gpu_load_guard(); // 重い GPU ロードは直列化する
-        let tts = irodori::pipeline::Tts::load(&paths, &crate::engines::gpu_device()?)?;
+        let tts = irodori::pipeline::Tts::load(&paths, &gpu_device()?)?;
         progress(&trf!("Loaded: {model_id}", "ロード完了: {model_id}", "加载完成:{model_id}"));
         Ok(Self { model_id: model_id.to_string(), tts, num_steps, ref_cache: Mutex::new(HashMap::new()) })
     }

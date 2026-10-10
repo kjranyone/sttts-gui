@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/i18n", "crates/gui", "crates/irodori", "crates/audio", "crates/nemotron", "crates/whisper", "crates/gemini", "crates/engine", "crates/hub"]
-# default-members は GUI(エンジン経由で burn / onnxruntime も含む)とプロトコルだけ。
+members = ["crates/protocol", "crates/i18n", "crates/gui", "crates/irodori", "crates/audio", "crates/nemotron", "crates/whisper", "crates/gemini", "crates/engine", "crates/hub", "crates/say"]
+# default-members は GUI(エンジン経由で burn / onnxruntime も含む)・CLI(sttts-say)とプロトコルだけ。
 # 個別クレートのテストは -p <crate> か --workspace で。
-default-members = ["crates/protocol", "crates/i18n", "crates/gui"]
+default-members = ["crates/protocol", "crates/i18n", "crates/gui", "crates/say"]
 
 [workspace.package]
 version = "0.1.0"

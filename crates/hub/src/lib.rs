@@ -52,9 +52,25 @@ pub fn find_snapshot(repo: &str, required: &[&str]) -> Option<PathBuf> {
     found.into_iter().next().map(|(_, p)| p)
 }
 
+/// `HF_HUB_OFFLINE`(huggingface_hub と同じ環境変数)が真ならネットワークに出ない。
+/// キャッシュにあるモデルだけで動かす(取得済みなら通常どおり動く)。
+pub fn offline() -> bool {
+    std::env::var("HF_HUB_OFFLINE").is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+}
+
 /// `snapshot_download` 相当(必要なファイルだけ)。`want` が真のファイルのみ取得し、
 /// スナップショットのディレクトリを返す。取得済みのファイルは再取得しない。
 pub fn snapshot_download(repo: &str, want: &dyn Fn(&str) -> bool, progress: &dyn Fn(&str)) -> Result<PathBuf> {
+    if offline() {
+        anyhow::bail!(
+            "{}",
+            sttts_i18n::trf!(
+                "Model {repo} is not downloaded, and downloads are disabled (HF_HUB_OFFLINE). Unset it once to download the model.",
+                "モデル {repo} が未取得で、ダウンロードは無効です(HF_HUB_OFFLINE)。一度これを外して取得してください。",
+                "模型 {repo} 尚未下载,且下载已禁用(HF_HUB_OFFLINE)。请先取消该设置下载一次。"
+            )
+        );
+    }
     let root = hub_dir().context("HF キャッシュの場所を決められません")?.join(repo_folder(repo));
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(std::time::Duration::from_secs(30)))

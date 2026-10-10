@@ -8,17 +8,19 @@ rust-version.workspace = true
 
 [features]
 # 本番構成: TTS / Whisper は GPU(wgpu)で動かす。GPU を使えない環境(テスト)では無効にできる。
-default = ["gpu"]
-gpu = ["irodori/gpu", "sttts-whisper/gpu"]
+default = ["gpu", "live"]
+gpu = ["irodori/gpu", "sttts-whisper?/gpu"]
+# ライブ対話(マイク・VAD・ASR)。sttts-say(合成だけ)はこれを外してマイクのコードを持たない
+live = ["dep:sttts-audio", "dep:sttts-whisper", "dep:sttts-gemini", "dep:sttts-nemotron"]
 
 [dependencies]
 sttts-protocol = { path = "../protocol" }
 sttts-i18n = { path = "../i18n" }
 irodori = { path = "../irodori" }
-sttts-audio = { path = "../audio" }
-sttts-whisper = { path = "../whisper" }
-sttts-gemini = { path = "../gemini" }
-sttts-nemotron = { path = "../nemotron" }
+sttts-audio = { path = "../audio", optional = true }
+sttts-whisper = { path = "../whisper", optional = true }
+sttts-gemini = { path = "../gemini", optional = true }
+sttts-nemotron = { path = "../nemotron", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

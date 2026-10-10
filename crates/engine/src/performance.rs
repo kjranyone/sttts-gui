@@ -70,13 +70,7 @@ impl Delivery {
     }
 
     pub fn caption(&self, voice_caption: Option<&str>) -> Option<String> {
-        let Some(style) = &self.style else {
-            return voice_caption.map(str::to_string);
-        };
-        match voice_caption {
-            Some(c) if !c.is_empty() => Some(format!("{c}。話し方は{style}。")),
-            _ => Some(format!("話し方は{style}。")),
-        }
+        compose_caption(voice_caption, self.style.as_deref())
     }
 
     pub fn summary(&self) -> sttts_protocol::DeliveryInfo {
@@ -87,6 +81,19 @@ impl Delivery {
             emotion: self.emotion.clone(),
             source: self.source.clone(),
         }
+    }
+}
+
+/// 声の caption(声質)に発話ごとの話し方を重ねた Irodori の caption。
+/// 自動発話(表現計画)と `sttts-say` の `style` で同じ書き方にする。
+pub fn compose_caption(voice_caption: Option<&str>, style: Option<&str>) -> Option<String> {
+    let voice_caption = voice_caption.filter(|c| !c.is_empty());
+    let Some(style) = style.filter(|s| !s.is_empty()) else {
+        return voice_caption.map(str::to_string);
+    };
+    match voice_caption {
+        Some(c) => Some(format!("{c}。話し方は{style}。")),
+        None => Some(format!("話し方は{style}。")),
     }
 }
 

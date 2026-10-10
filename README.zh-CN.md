@@ -108,6 +108,19 @@ Irodori-TTS 以句子为单位合成,不支持流式。因此采用伪流式:**�
 > [!CAUTION]
 > 参考音频请只使用已获得本人同意的声音。Irodori-TTS 的各模型卡禁止用于冒充真实人物或制作深度伪造。
 
+### 从命令行合成(sttts-say)
+
+`sttts-say.exe`(用 `cargo build --release` 与 GUI 一同生成)无需打开 GUI 即可把台词合成为 WAV。可作为智能体(Agent Skills)或视频制作流程中的组件,让角色「用某种方式说某句台词」。
+
+```powershell
+sttts-say speak --text "ねえ、聞いて!" --voice mio --style "興奮気味に" --out s01.wav
+sttts-say render ep1.jsonl          # 整份脚本(JSONL);只重新合成改动过的行
+sttts-say audition --text "はじめまして" --caption "明るい少女の声" --count 6
+sttts-say voice save mio --from <选中的录音>.wav   # 以该录音作为参考音频固定角色
+```
+
+预构建版本见 [Releases](https://github.com/kjranyone/sttts-gui/releases)(另有仅含 CLI 的 zip);从源码构建请运行 `cargo build --release -p sttts-say`。同一时间只有一个进程使用 GPU(GUI 打开期间会报错停止)。设计见 [sttts-say](docs/sttts-say.md)(日语),Skill 见 [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md)。
+
 ## 模型
 
 | 角色 | 模型 | 运行环境 | 备注 |
@@ -123,6 +136,7 @@ Irodori-TTS 以句子为单位合成,不支持流式。因此采用伪流式:**�
 ```
 crates/
 ├── gui/        GPUI 客户端。在进程内启动引擎
+├── say/        CLI(sttts-say):无需 GUI 合成台词
 ├── engine/     后端主体:设置、分块、TTS 工作线程、直播会话
 ├── protocol/   GUI ⇄ 引擎的消息类型
 ├── i18n/       显示语言(en / ja / zh)与文案的内联翻译
@@ -147,6 +161,8 @@ cargo test --workspace --release    # 所有 crate(没有参考数据的一致�
 
 参与贡献前请阅读 [AGENTS.md](AGENTS.md)(日语),其中包括硬件验证策略和设计前提。
 
+发布流程见 [docs/releasing.md](docs/releasing.md)(日语)。
+
 ## 故障排除
 
 | 症状 | 处理 |
@@ -162,6 +178,22 @@ cargo test --workspace --release    # 所有 crate(没有参考数据的一致�
 | 识别很慢 | 选择 Gemini,或在本地使用 `asr.engine: "nemotron"` |
 
 日志显示在 GUI 下方的面板和 `data/gui.log`(每次启动时重建)中。设置键的列表见 [docs/configuration.md](docs/configuration.md)(日语)。
+
+## Code signing policy(代码签名策略)
+
+[GitHub Releases](https://github.com/kjranyone/sttts-gui/releases) 上的 Windows 版本由本仓库通过 GitHub Actions([发布工作流](.github/workflows/release.yml))构建,每次发布都经手动批准后再签名。
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+> 状态:正在向 SignPath Foundation 申请。获批之前的发布未签名,请用 `SHA256SUMS.txt` 校验下载的文件。
+
+团队角色:
+
+- Authors(无需审阅即可修改源码):[@kjranyone](https://github.com/kjranyone)
+- Reviewers(审阅其他贡献者的改动):[@kjranyone](https://github.com/kjranyone)
+- Approvers(逐一批准签名请求):[@kjranyone](https://github.com/kjranyone)
+
+隐私:见[隐私政策](PRIVACY.md)(英语)。要点是:除了从 Hugging Face 下载模型(可用 `HF_HUB_OFFLINE=1` 禁用),以及仅在选择云端识别时把发话发送到 Google Gemini 之外,程序不会发送任何数据。
 
 ## 致谢
 

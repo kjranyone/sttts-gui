@@ -72,6 +72,32 @@ pub fn set_lang(lang: Lang) {
     LANG.store(v, Ordering::Relaxed);
 }
 
+/// 起動時の言語: 保存値(data/config.json の `language`)→ OS の表示言語 → 英語。
+/// GUI と CLI(`sttts-say`)で同じ規則にする。
+pub fn initial(saved: Option<&str>) -> Lang {
+    saved.and_then(Lang::from_tag).or_else(os_language).unwrap_or(Lang::En)
+}
+
+#[cfg(windows)]
+fn os_language() -> Option<Lang> {
+    // 主言語 ID(LANGID の下位 10 bit): 0x09 英語 / 0x11 日本語 / 0x04 中国語
+    let id = unsafe { windows::Win32::Globalization::GetUserDefaultUILanguage() } & 0x3ff;
+    match id {
+        0x09 => Some(Lang::En),
+        0x11 => Some(Lang::Ja),
+        0x04 => Some(Lang::Zh),
+        _ => None,
+    }
+}
+
+#[cfg(not(windows))]
+fn os_language() -> Option<Lang> {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+        .and_then(|v| Lang::from_tag(&v))
+}
+
 /// 今の言語の文言を選ぶ(書式なし)。値は 3 つとも同じ型の式なら何でもよい。
 ///
 /// ```

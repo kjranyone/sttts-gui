@@ -1,0 +1,84 @@
+name: Release
+
+# `vX.Y.Z` のタグを push すると、ビルドして GitHub Releases に置く。
+# 手順は docs/releasing.md を参照(Cargo.toml の version・Cargo.lock・CHANGELOG.md を先に更新する)。
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  LIBCLANG_PATH: C:\Program Files\LLVM\bin
+  TARGET: x86_64-pc-windows-msvc
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag against Cargo.toml and CHANGELOG.md
+        id: meta
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $version = $tag.TrimStart('v')
+          $cargo = Get-Content Cargo.toml -Raw
+          if ($cargo -notmatch '(?m)^version = "([^"]+)"') { throw 'workspace version not found in Cargo.toml' }
+          if ($Matches[1] -ne $version) { throw "tag $tag does not match Cargo.toml version $($Matches[1])" }
+          # CHANGELOG.md の "## [X.Y.Z]" 節をリリースノートにする
+          $lines = Get-Content CHANGELOG.md
+          $start = ($lines | Select-String -Pattern "^## \[$([regex]::Escape($version))\]" | Select-Object -First 1).LineNumber
+          if (-not $start) { throw "CHANGELOG.md has no section for $version" }
+          $notes = foreach ($l in $lines[$start..($lines.Count - 1)]) { if ($l -match '^## \[') { break }; $l }
+          $notes = $notes | Where-Object { $_ -notmatch '^\[[^\]]+\]: ' }  # 末尾のリンク定義は除く
+          # SignPath Foundation の条件: ダウンロードページにも "Code signing policy" を載せる
+          $policy = "[Code signing policy](https://github.com/kjranyone/sttts-gui#code-signing-policy) · [Privacy policy](https://github.com/kjranyone/sttts-gui/blob/main/PRIVACY.md)"
+          (($notes -join "`n").Trim() + "`n`n---`n`n" + $policy) | Set-Content -Encoding utf8 release-notes.md
+          "version=$version" >> $env:GITHUB_OUTPUT
+          if ($version -match '-') { "prerelease=--prerelease" >> $env:GITHUB_OUTPUT } else { "prerelease=" >> $env:GITHUB_OUTPUT }
+
+      - name: Rust toolchain
+        run: rustup update stable --no-self-update && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test -p sttts-engine -p sttts-say -p sttts-i18n -p sttts-protocol
+
+      # 別々にビルドする: 同じ cargo 呼び出しだと features が統合され、sttts-say にマイク・ASR が入ってしまう
+      - name: Build sttts-gui
+        run: cargo build --release --locked -p sttts-gui
+      - name: Build sttts-say
+        run: cargo build --release --locked -p sttts-say
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $v = '${{ steps.meta.outputs.version }}'
+          $dist = New-Item -ItemType Directory -Force dist
+          function Pack([string]$name, [string[]]$exes, [string[]]$docs) {
+            $dir = Join-Path $env:RUNNER_TEMP $name
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            foreach ($e in $exes) { Copy-Item "target/release/$e" $dir }
+            foreach ($d in $docs) { Copy-Item $d $dir }
+            New-Item -ItemType Directory -Force "$dir/skills" | Out-Null
+            Copy-Item -Recurse skills/sttts-say "$dir/skills/"
+            Compress-Archive -Path "$dir/*" -DestinationPath "$dist/$name.zip"
+          }
+          Pack "sttts-gui-v$v-$env:TARGET" @('sttts-gui.exe', 'sttts-say.exe') @('LICENSE', 'PRIVACY.md', 'README.md', 'README.ja.md', 'README.zh-CN.md', 'CHANGELOG.md')
+          Pack "sttts-say-v$v-$env:TARGET" @('sttts-say.exe') @('LICENSE', 'PRIVACY.md', 'README.md', 'README.ja.md', 'README.zh-CN.md', 'CHANGELOG.md')
+          Get-ChildItem $dist -Filter *.zip | Sort-Object Name | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content -Encoding ascii "$dist/SHA256SUMS.txt"
+          Get-Content "$dist/SHA256SUMS.txt"
+
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ github.ref_name }}' (Get-ChildItem dist).FullName `
+            --title '${{ github.ref_name }}' --notes-file release-notes.md --verify-tag ${{ steps.meta.outputs.prerelease }}

@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # cpal の ASIO 対応(asio-sys の bindgen)が libclang を使う。ランナーには LLVM が入っている
+  LIBCLANG_PATH: C:\Program Files\LLVM\bin
+
+jobs:
+  check:
+    # 実モデル・実デバイス・GPU は使わない(テストは偽の Platform / TTS で完結する)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup update stable --no-self-update && rustup default stable && rustup component add clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy -p sttts-engine -p sttts-say -p sttts-gui -p sttts-i18n -p sttts-protocol --all-targets -- -D warnings
+      - name: Clippy (sttts-engine without the live feature, as sttts-say builds it)
+        run: cargo clippy -p sttts-engine --no-default-features --features gpu --all-targets -- -D warnings
+      - name: Test
+        run: cargo test -p sttts-engine -p sttts-say -p sttts-i18n -p sttts-protocol

@@ -1,14 +1,10 @@
-//! Windows リソース(アイコンとバージョン情報)を exe に埋め込む。
+//! Windows リソース(バージョン情報)を exe に埋め込む。
 //! バージョン情報は Cargo.toml から生成する(SignPath の署名は ProductName / ProductVersion の一致を確かめる)。
 
 fn main() {
     #[cfg(target_os = "windows")]
     {
-        let manifest = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-        // canonicalize は \\?\ 付きになり rc.exe が読めないので、そのまま / 区切りにする
-        let icon = manifest.join("../../assets/app-icon.ico").display().to_string().replace('\\', "/");
-        println!("cargo:rerun-if-changed={icon}");
-        let rc = resource(&format!("1 ICON \"{icon}\"\n"), "sttts-gui", "sttts-gui: voice chat with Irodori-TTS");
+        let rc = resource("", "sttts-say", "sttts-say: Irodori-TTS lines without the GUI");
         let path = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("app.rc");
         std::fs::write(&path, rc).unwrap();
         embed_resource::compile(&path, embed_resource::NONE).manifest_optional().unwrap();
