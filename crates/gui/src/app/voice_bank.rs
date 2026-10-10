@@ -107,23 +107,150 @@ impl StttsApp {
         .detach();
     }
 
-    /// 選択中の声をライブラリから削除し、既定の声に戻す。
-    pub(super) fn delete_selected_voice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(name) = self.selected_voice_name.clone() else { return };
-        let dir = self.root.join("data").join("voices");
-        if let Some((_, path)) = self.voices.iter().find(|(n, _)| *n == name) {
-            let _ = std::fs::remove_file(path);
+    /// 声をライブラリから削除する(参照音声・アイコン・sttts-say の設定 json)。選択中なら既定の声に戻す。
+    /// 確認は呼び出し側(声のライブラリの行)で済ませておく。
+    pub(super) fn delete_voice(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = self.voices_dir();
+        if self.previewing_voice.as_deref() == Some(name) {
+            self.stop_voice_preview(cx);
         }
-        remove_voice_images(&dir, &name);
-        self.push_log(trf!("Voice deleted: {name}", "声を削除: {name}", "已删除声音:{name}"));
+        let mut failed = None;
+        if let Some((_, path)) = self.voices.iter().find(|(n, _)| n == name) {
+            failed = std::fs::remove_file(path).err();
+        }
+        if failed.is_none() {
+            remove_voice_images(&dir, name);
+            let _ = std::fs::remove_file(dir.join(format!("{name}.json")));
+            self.push_log(trf!("Voice deleted: {name}", "声を削除: {name}", "已删除声音:{name}"));
+        }
+        if let Some(e) = failed {
+            self.push_log(trf!(
+                "[error:voice] Could not delete {name}: {e}",
+                "[error:voice] {name} を削除できませんでした: {e}",
+                "[error:voice] 无法删除 {name}:{e}"
+            ));
+        }
+        let was_selected = self.selected_voice_name.as_deref() == Some(name);
         self.refresh_voices(None, window, cx);
-        self.apply_voice(default_voice_label().to_string(), cx);
+        if was_selected {
+            self.apply_voice(default_voice_label().to_string(), cx);
+        }
         cx.notify();
+    }
+
+    /// 削除した同梱の声を書き戻す(同じ名前の声があるものは上書きしない)。
+    pub(super) fn restore_preset_voices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match sttts_engine::presets::restore_presets(&self.root) {
+            Ok(names) => {
+                let names = names.join(", ");
+                self.push_log(trf!(
+                    "Restored the bundled voices: {names}",
+                    "同梱の声を戻しました: {names}",
+                    "已恢复内置声音:{names}"
+                ));
+            }
+            Err(e) => self.push_log(trf!(
+                "[error:voice] Could not restore the bundled voices: {e:#}",
+                "[error:voice] 同梱の声を戻せませんでした: {e:#}",
+                "[error:voice] 无法恢复内置声音:{e:#}"
+            )),
+        }
+        self.refresh_voices(None, window, cx);
+        cx.notify();
+    }
+
+    /// 参照音声を試聴する(合成音の再生とは別に鳴らす)。同じ声をもう一度押すと止める。
+    pub(super) fn toggle_voice_preview(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.previewing_voice.as_deref() == Some(name) {
+            self.stop_voice_preview(cx);
+            return;
+        }
+        let Some((_, path)) = self.voices.iter().find(|(n, _)| n == name) else { return };
+        let Some(audio) = &self.audio else {
+            self.push_log(tr!(
+                "[error:audio] No output device to play on",
+                "[error:audio] 再生できる出力デバイスがありません",
+                "[error:audio] 没有可用于播放的输出设备"
+            ));
+            return;
+        };
+        let played = std::fs::read(path).map_err(anyhow::Error::from).and_then(|bytes| audio.preview(bytes));
+        if let Err(e) = played {
+            self.push_log(trf!(
+                "[error:audio] Could not play {name}: {e:#}",
+                "[error:audio] {name} を再生できませんでした: {e:#}",
+                "[error:audio] 无法播放 {name}:{e:#}"
+            ));
+            return;
+        }
+        self.previewing_voice = Some(name.to_string());
+        cx.notify();
+        // 鳴り終わったら再生ボタンを戻す
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
+            let done = this.update(cx, |app, cx| {
+                let playing = app.previewing_voice.is_some() && app.audio.as_ref().is_some_and(|a| a.is_previewing());
+                if !playing {
+                    app.previewing_voice = None;
+                    cx.notify();
+                }
+                !playing
+            });
+            if done.unwrap_or(true) {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    pub(super) fn stop_voice_preview(&mut self, cx: &mut Context<Self>) {
+        if let Some(audio) = &self.audio {
+            audio.stop_preview();
+        }
+        self.previewing_voice = None;
+        cx.notify();
+    }
+
+    /// 画像を選んで、その声のアイコンにする。
+    pub(super) fn pick_voice_icon(&mut self, name: String, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: None });
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else { return };
+            let Some(src) = paths.into_iter().next() else { return };
+            let _ = this.update(cx, |this, cx| {
+                if !is_voice_image(&src) {
+                    let file = src.display();
+                    this.push_log(trf!(
+                        "[error:voice] Choose an image (png / jpg / webp): {file}",
+                        "[error:voice] 画像(png / jpg / webp)を選んでください: {file}",
+                        "[error:voice] 请选择图片(png / jpg / webp):{file}"
+                    ));
+                    return;
+                }
+                match set_voice_image(&src, &this.voices_dir(), &name) {
+                    Ok(()) => this.push_log(trf!("Voice icon set: {name}", "声のアイコンを設定: {name}", "已设置声音图标:{name}")),
+                    Err(e) => this.push_log(format!("[error:voice] {}: {e}", src.display())),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn open_voice_folder(&mut self, cx: &mut Context<Self>) {
+        let dir = self.voices_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        cx.open_with_system(&dir);
+    }
+
+    pub(super) fn voices_dir(&self) -> PathBuf {
+        self.root.join("data").join("voices")
     }
 
     /// data/voices を再スキャンして選択肢を更新する(`select` が None なら現在の選択を維持)。
     pub(super) fn refresh_voices(&mut self, select: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
         self.voices = scan_voice_bank(&self.root);
+        self.voice_secs = voice_durations(&self.voices);
         let mut items = vec![default_voice_label().to_string()];
         items.extend(self.voices.iter().map(|(n, _)| n.clone()));
         let selected = select
@@ -189,6 +316,18 @@ pub(super) fn scan_voice_bank(root: &std::path::Path) -> Vec<(String, PathBuf)> 
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
+}
+
+/// 参照音声の長さ(秒)。読めないものは載せない。ヘッダだけを読む
+pub(super) fn voice_durations(voices: &[(String, PathBuf)]) -> std::collections::HashMap<String, f32> {
+    voices
+        .iter()
+        .filter_map(|(name, path)| {
+            let file = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+            let secs = rodio::Source::total_duration(&rodio::Decoder::new(file).ok()?)?.as_secs_f32();
+            Some((name.clone(), secs))
+        })
+        .collect()
 }
 
 fn find_voice_image(dir: &std::path::Path, name: &str) -> Option<PathBuf> {

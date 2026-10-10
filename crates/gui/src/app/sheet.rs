@@ -17,30 +17,54 @@ const REPO_URL: &str = "https://github.com/kjranyone/sttts-gui";
 
 impl StttsApp {
     pub(super) fn render_settings_sheet(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let close = cx.listener(|this, _, _, cx| {
-            this.settings_open = false;
-            this.persist_settings(cx);
+        self.side_sheet(
+            "settings",
+            tr!("Settings", "詳細設定", "详细设置"),
+            |this, cx| {
+                this.settings_open = false;
+                this.persist_settings(cx);
+            },
+            v_flex()
+                .child(self.render_language())
+                .child(self.render_devices())
+                .child(self.render_models(cx))
+                .child(self.render_about(cx)),
+            cx,
+        )
+    }
+
+    /// 右から出るシートの枠: 背景の幕(クリックで閉じる)+ 見出しと閉じるボタン + スクロールする本文。
+    /// 詳細設定と声のライブラリで共通。
+    pub(super) fn side_sheet(
+        &self,
+        id: &'static str,
+        title: &'static str,
+        close: fn(&mut Self, &mut Context<Self>),
+        body: impl IntoElement,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let on_close = move |this: &mut Self, cx: &mut Context<Self>| {
+            close(this, cx);
             cx.notify();
-        });
+        };
         div()
             .absolute()
             .top_0()
             .left_0()
             .size_full()
             .child(
-                // 背景の幕(クリックで閉じる)
                 div()
-                    .id("settings-scrim")
+                    .id(SharedString::from(format!("{id}-scrim")))
                     .absolute()
                     .top_0()
                     .left_0()
                     .size_full()
                     .bg(ca(0x07060f, 0x99))
-                    .on_click(close),
+                    .on_click(cx.listener(move |this, _, _, cx| on_close(this, cx))),
             )
             .child(
                 v_flex()
-                    .id("settings-sheet")
+                    .id(SharedString::from(format!("{id}-sheet")))
                     .occlude()
                     .absolute()
                     .top_0()
@@ -64,31 +88,24 @@ impl StttsApp {
                                     .text_base()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(c(theme::TEXT))
-                                    .child(tr!("Settings", "詳細設定", "详细设置")),
+                                    .child(title),
                             )
                             .child(
-                                Button::new("close-settings")
+                                Button::new(SharedString::from(format!("close-{id}")))
                                     .small()
                                     .ghost()
                                     .icon(IconName::Close)
                                     .tooltip(tr!("Close", "閉じる", "关闭"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.settings_open = false;
-                                        this.persist_settings(cx);
-                                        cx.notify();
-                                    })),
+                                    .on_click(cx.listener(move |this, _, _, cx| on_close(this, cx))),
                             ),
                     )
                     .child(
                         v_flex()
-                            .id("settings-body")
+                            .id(SharedString::from(format!("{id}-body")))
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
-                            .child(self.render_language())
-                            .child(self.render_devices())
-                            .child(self.render_models(cx))
-                            .child(self.render_about(cx)),
+                            .child(body),
                     ),
             )
     }

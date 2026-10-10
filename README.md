@@ -105,9 +105,9 @@ The acting palette and emoji-based expression are described in [Expression instr
 
 ### Voice bank
 
-Drag and drop reference audio (wav / flac, about 10 seconds) onto the window, or pick it with "+" under "Voice". Imported audio goes into `data/voices/` and is selected right away. Drop an image (png / jpg / webp) to make it the icon of the selected voice.
+Drag and drop reference audio (wav / flac, about 10 seconds) onto the window, or pick it with "+" under "Voice". Imported audio goes into `data/voices/` and is selected right away. Drop an image (png / jpg / webp) to make it the icon of the selected voice. The gear next to "+" opens the voice library, where you can preview voices, set their icons and delete them (deleting asks for confirmation).
 
-Eight preset voices come with the app (`genki`, `kuudere`, `narrator`, `ojisan`, `oneesan`, `seinen`, `shounen`, `tsundere`). They are written to `data/voices/` on first launch and can be used or deleted like your own; a deleted preset does not come back, and a voice of yours with the same name is never overwritten. The presets are synthetic voices made with Gemini TTS, not recordings of real people.
+Eight preset voices come with the app (`genki`, `kuudere`, `narrator`, `ojisan`, `oneesan`, `seinen`, `shounen`, `tsundere`). They are written to `data/voices/` on first launch and can be used or deleted like your own; a deleted preset does not come back on its own (restore it from the voice library), and a voice of yours with the same name is never overwritten. The presets are synthetic voices made with Gemini TTS, not recordings of real people.
 
 > [!CAUTION]
 > Only use reference audio from people who have given their consent. The Irodori-TTS model cards prohibit impersonating real people and creating deepfakes.

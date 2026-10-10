@@ -21,6 +21,7 @@ mod sampling;
 mod sheet;
 mod stream;
 mod title_bar;
+mod voice_library;
 mod voice_bank;
 
 use std::collections::VecDeque;
@@ -46,7 +47,7 @@ use crate::locale::Lang;
 use crate::{audio, backend, locale, secret, settings, sysmon};
 use log::open_log_file;
 pub(crate) use log::is_error_line;
-use voice_bank::{default_voice_label, scan_voice_bank};
+use voice_bank::{default_voice_label, scan_voice_bank, voice_durations};
 pub(crate) use voice_bank::voice_phrase;
 
 /// ASR プロバイダ選択(表示名, asr.engine 値)。ローカルとクラウドを選べる。
@@ -107,6 +108,14 @@ pub struct StttsApp {
 
     // ---- 声
     voices: Vec<(String, PathBuf)>,
+    /// 参照音声の長さ(秒。声のライブラリの表示用。refresh_voices で更新)
+    voice_secs: std::collections::HashMap<String, f32>,
+    /// 声のライブラリ(管理シート)を開いているか
+    voice_library_open: bool,
+    /// 削除の確認を出している声(1 つだけ)
+    voice_delete_confirm: Option<String>,
+    /// 試聴中の声
+    previewing_voice: Option<String>,
     /// ファイル選択ダイアログの結果。Window が要るので render で取り込む。
     pending_voice_import: Option<Vec<PathBuf>>,
     /// PC リソース(RAM / GPU 専用メモリ)の最新サンプル
@@ -303,7 +312,11 @@ impl StttsApp {
             composer,
             auto_speak,
             performance_enabled,
+            voice_secs: voice_durations(&voices),
             voices,
+            voice_library_open: false,
+            voice_delete_confirm: None,
+            previewing_voice: None,
             pending_voice_import: None,
             sys: None,
             backend_pid: Arc::new(AtomicU32::new(0)),

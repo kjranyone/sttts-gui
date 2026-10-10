@@ -14,10 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sttts-say model list` / `model use NAME`.
 - The RF sampler options of Irodori in `tts.sampling` (and in the GUI's synthesis parameters): `cfg_scale_text`, `cfg_scale_caption`, `cfg_scale_speaker`, `cfg_scale`, `cfg_guidance_mode`, `cfg_min_t`, `cfg_max_t`, `truncation_factor`, `rescale_k`, `rescale_sigma`, `speaker_kv_scale`, `speaker_kv_min_t`, `speaker_kv_max_layers`, `speaker_uncond_mode`, `t_schedule_mode`, `sway_coeff`.
 - Eight preset voices (`genki`, `kuudere`, `narrator`, `ojisan`, `oneesan`, `seinen`, `shounen`, `tsundere`), synthetic voices made with Gemini TTS. They are written to `data/voices/` on first launch of the GUI or `sttts-say`; deleted presets are not restored and existing voices with the same name are kept.
+- Voice library: a panel opened from the gear next to "+" under Voice, to preview voices, set their icons, delete them (with confirmation) and restore deleted bundled voices. Deleting a voice also removes its `sttts-say` settings (`NAME.json`).
 - Each card shows the seed its voice was synthesized with. Click it to make it the fixed seed, so a voice you liked while on random can be used again.
 
 ### Changed
 
+- The delete button next to the voice selector is gone; voices are deleted from the voice library instead, so a click meant for "+" cannot delete one.
 - `tts.num_steps` and `tts.sampling.num_steps` default to the model's own step count (4 for MeanFlow, 40 for RF) when unset.
 
 ### Fixed

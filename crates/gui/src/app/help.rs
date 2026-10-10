@@ -83,16 +83,19 @@ impl HelpTopic {
                 &[
                     "The voice used for reading aloud. \"Default voice\" synthesizes without a voice sample.",
                     "Drag and drop a wav / flac file (about 10 seconds of speech) onto the window, or pick one with \"+\", to add it as a voice. Drop an image to make it the icon of the selected voice.",
+                    "Preview, set icons for and delete voices in the voice library (the gear next to \"+\").",
                     "Only use voice samples from people who have given their consent.",
                 ],
                 &[
                     "読み上げに使う声です。「既定の声」は、声の見本を使わずに合成します。",
                     "wav / flac(10 秒ほどの話し声)をウィンドウへドラッグ&ドロップするか「＋」から選ぶと、声として追加されます。画像を落とすと、選んでいる声のアイコンになります。",
+                    "声の試聴・アイコンの設定・削除は、「＋」の隣の歯車(声のライブラリ)から行えます。",
                     "見本にする声は、本人の同意があるものだけを使ってください。",
                 ],
                 &[
                     "用于朗读的声音。「默认声音」不使用声音样本进行合成。",
                     "将 wav / flac(约 10 秒的说话声)拖放到窗口,或通过「＋」选择,即可添加为声音。拖放图片会将其设为当前所选声音的图标。",
+                    "试听声音、设置图标和删除声音,请使用「＋」旁边的齿轮(声音库)。",
                     "请只使用已获得本人同意的声音作为样本。",
                 ],
             ),

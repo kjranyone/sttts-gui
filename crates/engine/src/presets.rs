@@ -42,28 +42,57 @@ pub fn preset_names() -> impl Iterator<Item = &'static str> {
 
 /// まだ書き出していないプリセットを `data/voices` へ書き出し、書き出した名前を返す。
 pub fn install_presets(root: &Path) -> Result<Vec<String>> {
+    write_presets(root, false)
+}
+
+/// 消したプリセットも含め、`data/voices` に無いプリセットを書き戻す(利用者の操作で呼ぶ)。
+/// 同名の声があるものは上書きしない。
+pub fn restore_presets(root: &Path) -> Result<Vec<String>> {
+    write_presets(root, true)
+}
+
+/// `data/voices` に無いプリセットの名前(`restore_presets` で戻せるもの)。
+pub fn missing_presets(root: &Path) -> Vec<&'static str> {
+    let dir = voices_dir(root);
+    preset_names().filter(|n| !name_taken(&dir, n)).collect()
+}
+
+/// `path` が同梱プリセットの参照音声そのものか(利用者が同じ名前で置いた声と区別する)
+pub fn is_preset_audio(name: &str, path: &Path) -> bool {
+    PRESETS
+        .iter()
+        .find(|(n, _, _)| *n == name)
+        .is_some_and(|(_, flac, _)| std::fs::metadata(path).is_ok_and(|m| m.len() == flac.len() as u64))
+}
+
+fn name_taken(dir: &Path, name: &str) -> bool {
+    ["wav", "flac", "json"].iter().any(|e| dir.join(format!("{name}.{e}")).exists())
+}
+
+fn write_presets(root: &Path, include_done: bool) -> Result<Vec<String>> {
     let dir = voices_dir(root);
     let marker = dir.join(MARKER);
     let mut done: Vec<String> = match std::fs::read_to_string(&marker) {
         Ok(text) => serde_json::from_str(&text).with_context(|| marker.display().to_string())?,
         Err(_) => Vec::new(),
     };
-    let pending: Vec<_> = PRESETS.iter().filter(|(n, _, _)| !done.iter().any(|d| d == n)).collect();
+    let pending: Vec<_> = PRESETS.iter().filter(|(n, _, _)| include_done || !done.iter().any(|d| d == n)).collect();
     if pending.is_empty() {
         return Ok(Vec::new());
     }
     std::fs::create_dir_all(&dir).with_context(|| dir.display().to_string())?;
     let mut installed = Vec::new();
     for (name, flac, json) in pending {
-        let taken = ["wav", "flac", "json"].iter().any(|e| dir.join(format!("{name}.{e}")).exists());
-        if !taken {
+        if !name_taken(&dir, name) {
             let audio = dir.join(format!("{name}.flac"));
             std::fs::write(&audio, flac).with_context(|| audio.display().to_string())?;
             let conf = dir.join(format!("{name}.json"));
             std::fs::write(&conf, json).with_context(|| conf.display().to_string())?;
             installed.push(name.to_string());
         }
-        done.push(name.to_string());
+        if !done.iter().any(|d| d == name) {
+            done.push(name.to_string());
+        }
     }
     std::fs::write(&marker, serde_json::to_string_pretty(&done)? + "\n").with_context(|| marker.display().to_string())?;
     Ok(installed)
@@ -114,6 +143,26 @@ mod tests {
         assert!(!installed.iter().any(|n| n == "genki"));
         assert_eq!(std::fs::read(dir.join("genki.wav")).unwrap(), b"mine");
         assert!(!dir.join("genki.flac").exists());
+    }
+
+    #[test]
+    fn restore_brings_back_deleted_presets_but_keeps_user_voices() {
+        let tmp = tempfile::tempdir().unwrap();
+        install_presets(tmp.path()).unwrap();
+        let dir = voices_dir(tmp.path());
+        for e in ["flac", "json"] {
+            std::fs::remove_file(dir.join(format!("genki.{e}"))).unwrap();
+            std::fs::remove_file(dir.join(format!("kuudere.{e}"))).unwrap();
+        }
+        std::fs::write(dir.join("kuudere.wav"), b"mine").unwrap();
+        assert_eq!(missing_presets(tmp.path()), ["genki"]);
+        assert_eq!(restore_presets(tmp.path()).unwrap(), ["genki"]);
+        assert!(is_preset_audio("genki", &dir.join("genki.flac")));
+        assert!(!is_preset_audio("kuudere", &dir.join("kuudere.wav")));
+        assert!(missing_presets(tmp.path()).is_empty());
+        // 記録は重複しない
+        let marker: Vec<String> = serde_json::from_str(&std::fs::read_to_string(dir.join(MARKER)).unwrap()).unwrap();
+        assert_eq!(marker.len(), PRESETS.len());
     }
 
     #[test]

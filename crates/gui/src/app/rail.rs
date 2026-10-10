@@ -141,7 +141,6 @@ impl StttsApp {
             .selected_voice_name
             .as_deref()
             .and_then(|n| self.voice_image(n));
-        let has_voice = self.selected_voice_name.is_some();
         kit::section_with_help(
             tr!("Voice", "声", "声音"),
             self.help_icon(HelpTopic::Voice, cx),
@@ -173,16 +172,19 @@ impl StttsApp {
                                 ))
                                 .on_click(cx.listener(|this, _, _, cx| this.pick_voice_files(cx))),
                         )
-                        .when(has_voice, |d| {
-                            d.child(
-                                Button::new("delete-voice")
-                                    .small()
-                                    .ghost()
-                                    .icon(IconName::Delete)
-                                    .tooltip(tr!("Delete this voice", "この声を削除", "删除此声音"))
-                                    .on_click(cx.listener(|this, _, window, cx| this.delete_selected_voice(window, cx))),
-                            )
-                        }),
+                        .child(
+                            Button::new("voice-library")
+                                .small()
+                                .ghost()
+                                .icon(IconName::Settings2)
+                                .selected(self.voice_library_open)
+                                .tooltip(tr!(
+                                    "Voice library (preview, icons, delete)",
+                                    "声のライブラリ(試聴・アイコン・削除)",
+                                    "声音库(试听、图标、删除)"
+                                ))
+                                .on_click(cx.listener(|this, _, _, cx| this.open_voice_library(cx))),
+                        ),
                 )
                 .child(kit::field_with_help(
                     tr!("Speaking style", "話し方", "说话方式"),

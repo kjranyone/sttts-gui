@@ -140,6 +140,9 @@ impl StttsApp {
                                     .tooltip(tr!("Settings", "詳細設定", "详细设置"))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.settings_open = !this.settings_open;
+                                        if this.settings_open {
+                                            this.close_voice_library(cx);
+                                        }
                                         cx.notify();
                                     })),
                             )

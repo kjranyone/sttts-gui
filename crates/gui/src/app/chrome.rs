@@ -92,7 +92,8 @@ impl Render for StttsApp {
                                     .child(self.render_stream(cx))
                                     .child(self.render_rail(cx)),
                             )
-                            .when(self.settings_open, |d| d.child(self.render_settings_sheet(cx))),
+                            .when(self.settings_open, |d| d.child(self.render_settings_sheet(cx)))
+                            .when(self.voice_library_open, |d| d.child(self.render_voice_library(cx))),
                     )
                     .when(self.log_open, |d| d.child(self.render_log(cx)))
                     .child(self.render_status_bar(cx)),

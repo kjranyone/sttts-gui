@@ -19,7 +19,7 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 async-channel = { workspace = true }
 base64 = { workspace = true }
-rodio = { version = "0.22.2", default-features = false, features = ["playback", "wav"] }
+rodio = { version = "0.22.2", default-features = false, features = ["playback", "wav", "flac"] }
 sttts-audio = { path = "../audio" }
 
 [build-dependencies]

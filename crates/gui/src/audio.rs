@@ -37,6 +37,8 @@ enum OutStream {
 pub struct AudioOut {
     // drop はフィールド順: Player → ストリーム → デバイスの返却(ASIO ドライバの解放)
     player: Player,
+    /// 声の試聴用(合成音のキューとは別。同じミキサーに混ぜる)
+    preview: Player,
     // 再生デバイスを保持し続けるためにフィールドに置いておく必要がある
     _stream: OutStream,
     _device: OpenedDevice,
@@ -53,7 +55,8 @@ impl AudioOut {
             // 終了時の "Dropping OutputStream, ..." という eprintln を抑制する(情報メッセージのため)
             stream.log_on_drop(false);
             let player = Player::connect_new(stream.mixer());
-            return Ok(Self { player, _stream: OutStream::Rodio(stream), _device: device });
+            let preview = Player::connect_new(stream.mixer());
+            return Ok(Self { player, preview, _stream: OutStream::Rodio(stream), _device: device });
         }
         // ASIO: rodio はストリームの全チャンネルへ同じ音を出すので、ミキサーの出力を
         // 選んだチャンネルにだけ書き込むストリームを自前で張る
@@ -74,7 +77,8 @@ impl AudioOut {
         }?;
         stream.play()?;
         let player = Player::connect_new(&mixer);
-        Ok(Self { player, _stream: OutStream::Routed(stream), _device: device })
+        let preview = Player::connect_new(&mixer);
+        Ok(Self { player, preview, _stream: OutStream::Routed(stream), _device: device })
     }
 
     /// base64 エンコードされた WAV をデコードしてキューに積む(完了したチャンクから順に再生)。
@@ -96,6 +100,22 @@ impl AudioOut {
     /// そのままだと以降に積んだチャンクが一切鳴らなくなる。clear 後に必ず play() で再開する。
     pub fn clear(&self) {
         clear_and_resume(&self.player);
+    }
+
+    /// 音声ファイル(wav / flac)を試聴する。前の試聴は止める。
+    pub fn preview(&self, bytes: Vec<u8>) -> Result<()> {
+        let source = Decoder::new(Cursor::new(bytes))?;
+        clear_and_resume(&self.preview);
+        self.preview.append(source);
+        Ok(())
+    }
+
+    pub fn stop_preview(&self) {
+        clear_and_resume(&self.preview);
+    }
+
+    pub fn is_previewing(&self) -> bool {
+        !self.preview.empty()
     }
 
     /// 未再生チャンク数(現在再生中のものを含む)。
