@@ -18,12 +18,12 @@ env:
 
 jobs:
   meta:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.meta.outputs.version }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check the tag against Cargo.toml and CHANGELOG.md
         id: meta
         shell: pwsh
@@ -46,7 +46,7 @@ jobs:
           (($notes -join "`n").Trim() + "`n`n---`n`n" + $platforms + "`n`n" + $policy) | Set-Content -Encoding utf8 release-notes.md
           "version=$version" >> $env:GITHUB_OUTPUT
           if ($version -match '-') { "prerelease=--prerelease" >> $env:GITHUB_OUTPUT } else { "prerelease=" >> $env:GITHUB_OUTPUT }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-notes
           path: release-notes.md
@@ -58,7 +58,7 @@ jobs:
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
       TARGET: x86_64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Rust toolchain
         run: rustup update stable --no-self-update && rustup default stable
       - uses: Swatinem/rust-cache@v2
@@ -85,7 +85,7 @@ jobs:
           }
           Pack "sttts-gui-v$v-$env:TARGET" @('sttts-gui.exe', 'sttts-say.exe')
           Pack "sttts-say-v$v-$env:TARGET" @('sttts-say.exe')
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-windows
           path: dist/*
@@ -103,7 +103,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System libraries (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libasound2-dev
@@ -125,23 +125,23 @@ jobs:
           cp target/release/sttts-say LICENSE PRIVACY.md README.md README.ja.md README.zh-CN.md CHANGELOG.md "$stage/"
           cp -R skills/sttts-say "$stage/skills/"
           tar -czf "dist/$name.tar.gz" -C "$RUNNER_TEMP" "$name"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.target }}
           path: dist/*
 
   publish:
     needs: [meta, windows, unix]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: dist-*
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release-notes
       - name: Checksums

@@ -23,7 +23,7 @@ jobs:
       # cpal の ASIO 対応(asio-sys の bindgen)が libclang を使う。ランナーには LLVM が入っている
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Rust toolchain
         run: rustup update stable --no-self-update && rustup default stable && rustup component add clippy
       - uses: Swatinem/rust-cache@v2
@@ -42,7 +42,7 @@ jobs:
         os: [macos-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System libraries (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libasound2-dev
