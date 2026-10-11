@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-12
+
+### Added
+
+- Models `v4.1-anime` and `v4.1-anime-int8`: Irodori-TTS v4.1 Anime by phasefield-audio, v4.1 Small (RF) fine-tuned on anime-style speech. Captions and emoji may act differently from `v4.1-small`. Choose it with `sttts-say model use v4.1-anime` or in the GUI's Advanced settings.
+
+### Changed
+
+- Agent Skill (`skills/sttts-say/SKILL.md`): the agent chooses the model, voice and take itself and reports its choices instead of asking the user, picks takes by checks it can make without hearing them, and always synthesizes with a voice that has reference audio (a bundled preset or one it makes first) so the output stays stable from line to line and across models.
+
 ## [0.1.2] - 2026-10-11
 
 ### Added
@@ -71,7 +81,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reading aloud while you are still talking no longer stops for the rest of a long utterance when the recognizer revises text it has already read (e.g. Gemini adding spaces); it carries on from the same position.
 - Expression: "pausing as it goes" (間を取りながら) is no longer added to almost every utterance. Only gaps of 320 ms or more between speech count as pauses (ordinary breaks between phrases and the silence before/after the utterance no longer do), and only longer utterances (1.5 s or more of speech) get it.
 
-[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/kjranyone/sttts-gui/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/kjranyone/sttts-gui/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/kjranyone/sttts-gui/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/kjranyone/sttts-gui/releases/tag/v0.1.0
