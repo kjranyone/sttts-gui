@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-11
+
 ### Added
 
 - Model choice: Irodori-TTS v4.1 Small (RF, 40 steps with classifier-free guidance) besides the default v4.1 Small MeanFlow. It reads kanji and clones voices more accurately at about 20 times the computation, which suits `sttts-say`. Choose it with `sttts-say model use v4.1-small` (recorded in `data/backend.json` as `tts.model`) or in the GUI's Advanced settings.
@@ -58,5 +60,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reading aloud while you are still talking no longer stops for the rest of a long utterance when the recognizer revises text it has already read (e.g. Gemini adding spaces); it carries on from the same position.
 - Expression: "pausing as it goes" (間を取りながら) is no longer added to almost every utterance. Only gaps of 320 ms or more between speech count as pauses (ordinary breaks between phrases and the silence before/after the utterance no longer do), and only longer utterances (1.5 s or more of speech) get it.
 
-[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/kjranyone/sttts-gui/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/kjranyone/sttts-gui/releases/tag/v0.1.0
