@@ -36,6 +36,16 @@
 - 🌐 **英语 / 日语 / 简体中文界面** — 按 Windows 显示语言启动,可随时在 ⚙ 详细设置中切换
 - ⏱️ **始终显示延迟** — 每次都会在标题栏显示从说完话到发出第一个声音的时间(说话结束 → 首音)
 
+## 在 AI 智能体中使用
+
+要让 AI 智能体(Claude Code 等)拥有角色声音,把下面这一行粘贴给智能体:
+
+```text
+请按照 https://raw.githubusercontent.com/kjranyone/sttts-gui/main/skills/sttts-say/INSTALL.md 的步骤安装 sttts-say 及其 Agent Skill
+```
+
+智能体会从 Releases 下载适合本机的 CLI 并校验。接着它会安装 Skill,确认能运行,并报告改动了什么。之后只需提出请求,例如「このセリフを落ち着いた女性の声で読んで」(用沉稳的女声读这句台词)。首次合成会下载模型(约 3.5 GB)。支持 Windows x64;macOS(Apple Silicon)与 Linux x64 为实验版。需要 GPU。功能详见[从命令行合成](#从命令行合成sttts-say)。
+
 ## 快速开始
 
 **需要**:Windows 11 / 支持 Vulkan 的 GPU(Intel Arc、NVIDIA、AMD;已在 Intel Arc B570 上验证)/ Rust 1.95 及以上 + MSVC 构建工具 + [LLVM](https://github.com/llvm/llvm-project/releases)(用于生成 ASIO 绑定的 libclang;ASIO SDK 会在构建时自动获取)
@@ -51,6 +61,9 @@ cd sttts-gui
 | `.\dev.ps1 -Mode real` | 使用真实引擎启动(无交互) |
 | `.\dev.ps1 -Mode mock` | 不使用模型,只检查界面和连接 |
 | `.\dev.ps1 -DebugBuild` | 以 debug 配置启动 |
+| `.\dev.ps1 say` | 只构建 CLI(`target
+elease\sttts-say.exe`) |
+| `./dev.sh say` | 在 macOS / Linux 上做同样的事(`dev.sh` 接受与 `dev.ps1` 相同的命令;GUI 仅支持 Windows) |
 | `cargo run --release -p sttts-gui -- --real` | 不用脚本直接启动 |
 
 模型大小为 Irodori-TTS ≈3GB + 编解码器 ≈0.4GB + 所选 ASR。与 HuggingFace 缓存(`~/.cache/huggingface/hub`)共用。
@@ -114,7 +127,7 @@ Irodori-TTS 以句子为单位合成,不支持流式。因此采用伪流式:**�
 
 ### 从命令行合成(sttts-say)
 
-`sttts-say.exe`(用 `cargo build --release` 与 GUI 一同生成)无需打开 GUI 即可把台词合成为 WAV。可作为智能体(Agent Skills)或视频制作流程中的组件,让角色「用某种方式说某句台词」。
+`sttts-say.exe` 无需打开 GUI 即可把台词合成为 WAV。可作为智能体(Agent Skills)或视频制作流程中的组件,让角色「用某种方式说某句台词」。
 
 ```powershell
 sttts-say speak --text "ねえ、聞いて!" --voice mio --style "興奮気味に" --out s01.wav
@@ -136,7 +149,7 @@ sttts-say model use v4.1-small      # 切换到高质量的 RF 模型(较慢;选
 
 CLI 无需实时,因此适合较慢但更准确的模型。所选模型记录在 `data/backend.json` 的 `tts.model` 中(GUI 使用其详细设置中的选择)。v4 Large 的文本编码器源自 T5Gemma 2,须遵守 [Gemma 使用条款](https://ai.google.dev/gemma/terms)。
 
-预构建版本见 [Releases](https://github.com/kjranyone/sttts-gui/releases)(另有仅含 CLI 的 zip)。也提供 macOS(Apple Silicon)与 Linux x64 版的 `sttts-say`,但属于实验版:仅在 CI 中构建和测试,尚未在真机上验证。macOS 使用 Metal;Linux 需要 Vulkan 驱动和 OpenSSL 3。macOS 因未签名而拦截时,请运行 `xattr -d com.apple.quarantine sttts-say`。从源码构建请运行 `cargo build --release -p sttts-say`。同一时间只有一个进程使用 GPU(GUI 正在合成时会报错停止)。`speak` / `render` / `audition` 由保持模型加载的 `sttts-say` 常驻进程合成,因此第二次起可省去模型加载(默认模型合成一句短句约从 6 秒降到 1 秒)。常驻进程会自动启动,10 分钟无请求或执行 `sttts-say stop` 后退出;空闲时启动 GUI 会把 GPU 让给 GUI 并退出。设计见 [sttts-say](docs/sttts-say.md)(日语),Skill 见 [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md)。
+预构建版本见 [Releases](https://github.com/kjranyone/sttts-gui/releases)(另有仅含 CLI 的 zip)。也提供 macOS(Apple Silicon)与 Linux x64 版的 `sttts-say`,但属于实验版:仅在 CI 中构建和测试,尚未在真机上验证。macOS 使用 Metal;Linux 需要 Vulkan 驱动和 OpenSSL 3。macOS 因未签名而拦截时,请运行 `xattr -d com.apple.quarantine sttts-say`。从源码构建请运行 `.\dev.ps1 say`(Windows)或 `./dev.sh say`(macOS / Linux),也可以运行 `cargo build --release -p sttts-say`。同一时间只有一个进程使用 GPU(GUI 正在合成时会报错停止)。`speak` / `render` / `audition` 由保持模型加载的 `sttts-say` 常驻进程合成,因此第二次起可省去模型加载(默认模型合成一句短句约从 6 秒降到 1 秒)。常驻进程会自动启动,10 分钟无请求或执行 `sttts-say stop` 后退出;空闲时启动 GUI 会把 GPU 让给 GUI 并退出。设计见 [sttts-say](docs/sttts-say.md)(日语),Skill 见 [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md)。
 
 ## 模型
 

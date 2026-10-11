@@ -33,6 +33,16 @@ UI からマイク・VAD・ASR・TTS まで、**Rust 1 プロセスだけ**で�
 - 🌐 **英語 / 日本語 / 簡体字中国語の UI** — Windows の表示言語に合わせて起動し、⚙ 詳細設定でいつでも切り替えられます(認識と音声合成は日本語向けです)
 - ⏱️ **遅延を常に表示** — 話し終わりから最初の音が鳴るまで(発話終了→初音)を、毎回タイトルバーに表示します
 
+## AI エージェントから使う
+
+AI エージェント(Claude Code など)にキャラクターの声を持たせるには、次の 1 行をエージェントに貼り付けます。
+
+```text
+https://raw.githubusercontent.com/kjranyone/sttts-gui/main/skills/sttts-say/INSTALL.md の手順に従って、sttts-say とその Agent Skill をインストールして
+```
+
+エージェントが、この PC に合う CLI を Releases から取ってきて検証します。続けて Skill を入れ、動くことを確かめ、変更した内容を報告します。あとは「このセリフを落ち着いた女性の声で読んで」のように頼むだけです。最初の合成でモデル(約 3.5 GB)をダウンロードします。対応は Windows x64 で、macOS(Apple Silicon)と Linux x64 は実験版です。GPU が必要です。できることは[コマンドラインから合成する](#コマンドラインから合成するsttts-say)を参照してください。
+
 ## クイックスタート
 
 **必要なもの**: Windows 11 / Vulkan 対応 GPU(Intel Arc・NVIDIA・AMD。Intel Arc B570 で検証)/ Rust 1.95 以上 + MSVC ビルドツール + [LLVM](https://github.com/llvm/llvm-project/releases)(ASIO バインディング生成の libclang 用。ASIO SDK はビルド時に自動取得)
@@ -48,6 +58,9 @@ cd sttts-gui
 | `.\dev.ps1 -Mode real` | 実エンジンで起動(対話なし) |
 | `.\dev.ps1 -Mode mock` | モデルを使わずに UI と配線だけ確認 |
 | `.\dev.ps1 -DebugBuild` | debug プロファイルで起動 |
+| `.\dev.ps1 say` | CLI だけをビルド(`target
+elease\sttts-say.exe`) |
+| `./dev.sh say` | macOS / Linux で同じことをする(`dev.sh` は `dev.ps1` と同じコマンドを受け付ける。GUI は Windows のみ) |
 | `cargo run --release -p sttts-gui -- --real` | スクリプトを使わずに直接起動 |
 
 モデルは Irodori-TTS ≈3GB + コーデック ≈0.4GB + 選んだ ASR の分です。HuggingFace のキャッシュ(`~/.cache/huggingface/hub`)を共有します。
@@ -111,7 +124,7 @@ Irodori-TTS は文単位の非ストリーミング合成です。そこで **�
 
 ### コマンドラインから合成する(sttts-say)
 
-`sttts-say.exe`(`cargo build --release` で GUI と一緒にできます)は、GUI を開かずにセリフを WAV にします。エージェント(Agent Skills)や動画制作のワークフローから、キャラクターの声で「このセリフをこう喋らせる」部品として使えます。
+`sttts-say.exe` は、GUI を開かずにセリフを WAV にします。エージェント(Agent Skills)や動画制作のワークフローから、キャラクターの声で「このセリフをこう喋らせる」部品として使えます。
 
 ```powershell
 sttts-say speak --text "ねえ、聞いて!" --voice mio --style "興奮気味に" --out s01.wav
@@ -133,7 +146,7 @@ sttts-say model use v4.1-small      # 高品質な RF のモデルに切り替�
 
 CLI はリアルタイムでなくてよいので、遅くても正確なモデルが向いています。選んだモデルは `data/backend.json` の `tts.model` に記録されます(GUI は詳細設定での自分の選択を使います)。v4 Large はテキストエンコーダが T5Gemma 2 由来のため、[Gemma の利用規約](https://ai.google.dev/gemma/terms)に従います。
 
-ビルド済みのものは [Releases](https://github.com/kjranyone/sttts-gui/releases) にあります(CLI だけの zip もあります)。macOS(Apple Silicon)と Linux x64 向けの `sttts-say` も置いていますが、CI でのビルドとテストのみで、実機では未検証の実験版です。macOS は Metal、Linux は Vulkan ドライバと OpenSSL 3 が必要です。macOS で未署名のためブロックされたら `xattr -d com.apple.quarantine sttts-say` を実行してください。ソースからは `cargo build --release -p sttts-say` でビルドできます。GPU を使うのは同時に 1 プロセスだけです(GUI が合成している間はエラーで止まります)。`speak` / `render` / `audition` はモデルを読み込んだまま待つ `sttts-say` の常駐プロセスで合成するので、2 回目以降はモデルの読み込みを省けます(既定のモデルで短い 1 行なら約 6 秒が約 1 秒に)。常駐プロセスは自動で起動し、10 分使われないか `sttts-say stop` で終わります。待機中に GUI を起動すると、GPU を GUI に譲って終わります。仕組みは [sttts-say](docs/sttts-say.md)、Skill は [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md) にあります。
+ビルド済みのものは [Releases](https://github.com/kjranyone/sttts-gui/releases) にあります(CLI だけの zip もあります)。macOS(Apple Silicon)と Linux x64 向けの `sttts-say` も置いていますが、CI でのビルドとテストのみで、実機では未検証の実験版です。macOS は Metal、Linux は Vulkan ドライバと OpenSSL 3 が必要です。macOS で未署名のためブロックされたら `xattr -d com.apple.quarantine sttts-say` を実行してください。ソースからは `.\dev.ps1 say`(Windows)か `./dev.sh say`(macOS / Linux)、または `cargo build --release -p sttts-say` でビルドできます。GPU を使うのは同時に 1 プロセスだけです(GUI が合成している間はエラーで止まります)。`speak` / `render` / `audition` はモデルを読み込んだまま待つ `sttts-say` の常駐プロセスで合成するので、2 回目以降はモデルの読み込みを省けます(既定のモデルで短い 1 行なら約 6 秒が約 1 秒に)。常駐プロセスは自動で起動し、10 分使われないか `sttts-say stop` で終わります。待機中に GUI を起動すると、GPU を GUI に譲って終わります。仕組みは [sttts-say](docs/sttts-say.md)、Skill は [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md) にあります。
 
 ## モデル
 

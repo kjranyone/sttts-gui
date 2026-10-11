@@ -36,6 +36,16 @@ Everything from the UI to the mic, VAD, ASR and TTS runs in **a single Rust proc
 - 🌐 **UI in English / Japanese / Simplified Chinese** — starts in the Windows display language and can be switched at any time in ⚙ Settings
 - ⏱️ **Latency always on screen** — the time from the end of your speech to the first sound (end of speech → first audio) is shown in the title bar every time
 
+## Use it from your AI agent
+
+To give an AI agent (Claude Code, etc.) character voices, paste this into the agent:
+
+```text
+Install sttts-say and its Agent Skill by following https://raw.githubusercontent.com/kjranyone/sttts-gui/main/skills/sttts-say/INSTALL.md
+```
+
+The agent downloads the CLI for your machine from Releases and verifies it. Then it installs the Skill, checks that it runs, and tells you what it changed. After that, just ask, e.g. 「このセリフを落ち着いた女性の声で読んで」 ("read this line in a calm woman's voice"). The first synthesis downloads the model (about 3.5 GB). Windows x64 is supported; macOS (Apple Silicon) and Linux x64 are experimental. A GPU is required. See [Synthesizing from the command line](#synthesizing-from-the-command-line-sttts-say) for what it can do.
+
 ## Quick start
 
 **Requirements**: Windows 11 / a Vulkan-capable GPU (Intel Arc, NVIDIA, AMD; tested on Intel Arc B570) / Rust 1.95 or later + MSVC build tools + [LLVM](https://github.com/llvm/llvm-project/releases) (libclang for generating the ASIO bindings; the ASIO SDK is fetched automatically at build time)
@@ -51,6 +61,9 @@ cd sttts-gui
 | `.\dev.ps1 -Mode real` | Launch with the real engine (no prompt) |
 | `.\dev.ps1 -Mode mock` | Check only the UI and wiring, without models |
 | `.\dev.ps1 -DebugBuild` | Launch with the debug profile |
+| `.\dev.ps1 say` | Build only the CLI (`target
+elease\sttts-say.exe`) |
+| `./dev.sh say` | The same on macOS / Linux (`dev.sh` takes the same commands as `dev.ps1`; the GUI is Windows-only) |
 | `cargo run --release -p sttts-gui -- --real` | Launch directly without the script |
 
 Models take Irodori-TTS ≈3GB + codec ≈0.4GB + the ASR you choose. The HuggingFace cache (`~/.cache/huggingface/hub`) is shared.
@@ -136,7 +149,7 @@ sttts-say model use v4.1-small      # switch to the higher-quality RF model (slo
 
 The CLI does not have to be real time, so the slower, more accurate models suit it. The choice is stored in `data/backend.json` (`tts.model`); the GUI keeps its own choice under Advanced settings. The v4 Large models are subject to the [Gemma Terms of Use](https://ai.google.dev/gemma/terms) because their text encoder derives from T5Gemma 2.
 
-Prebuilt binaries are on [Releases](https://github.com/kjranyone/sttts-gui/releases) (including a CLI-only zip). Builds of `sttts-say` for macOS (Apple Silicon) and Linux x64 are there too, but they are experimental: built and tested in CI, not yet verified on real hardware (macOS uses Metal; Linux needs a Vulkan driver and OpenSSL 3; if macOS blocks the unsigned binary, run `xattr -d com.apple.quarantine sttts-say`). To build from source, run `cargo build --release -p sttts-say`. Only one process uses the GPU at a time (it stops with an error while the GUI is synthesizing). `speak` / `render` / `audition` run in a background `sttts-say` process that keeps the model loaded, so after the first call each call skips loading it (about 1 s instead of 6 s for a short line with the default model). It starts by itself, exits after 10 minutes without requests or with `sttts-say stop`, and hands the GPU to the GUI when the GUI starts while it is idle. See [sttts-say](docs/sttts-say.md) (in Japanese) for the design and [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md) for the Skill.
+Prebuilt binaries are on [Releases](https://github.com/kjranyone/sttts-gui/releases) (including a CLI-only zip). Builds of `sttts-say` for macOS (Apple Silicon) and Linux x64 are there too, but they are experimental: built and tested in CI, not yet verified on real hardware (macOS uses Metal; Linux needs a Vulkan driver and OpenSSL 3; if macOS blocks the unsigned binary, run `xattr -d com.apple.quarantine sttts-say`). To build from source, run `.\dev.ps1 say` (Windows) or `./dev.sh say` (macOS / Linux), or `cargo build --release -p sttts-say`. Only one process uses the GPU at a time (it stops with an error while the GUI is synthesizing). `speak` / `render` / `audition` run in a background `sttts-say` process that keeps the model loaded, so after the first call each call skips loading it (about 1 s instead of 6 s for a short line with the default model). It starts by itself, exits after 10 minutes without requests or with `sttts-say stop`, and hands the GPU to the GUI when the GUI starts while it is idle. See [sttts-say](docs/sttts-say.md) (in Japanese) for the design and [`skills/sttts-say/SKILL.md`](skills/sttts-say/SKILL.md) for the Skill.
 
 ## Models
 
