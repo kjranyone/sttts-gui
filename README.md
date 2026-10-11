@@ -18,6 +18,8 @@ Everything from the UI to the mic, VAD, ASR and TTS runs in **a single Rust proc
 ![No Python](https://img.shields.io/badge/Python-not%20required-7ff0c8)
 [![License: MIT](https://img.shields.io/badge/License-MIT-ff9ec7)](LICENSE)
 
+<img src="assets/screenshot.webp" alt="sttts-gui main window" width="880">
+
 </div>
 
 ---
@@ -38,7 +40,7 @@ Everything from the UI to the mic, VAD, ASR and TTS runs in **a single Rust proc
 
 ## Use it from your AI agent
 
-To give an AI agent (Claude Code, etc.) character voices, paste this into the agent:
+To give an AI agent (Claude Code, etc.) character voices, paste this line into the agent's chat as is. You do not need to clone this repository or build anything:
 
 ```text
 Install sttts-say and its Agent Skill by following https://raw.githubusercontent.com/kjranyone/sttts-gui/main/skills/sttts-say/INSTALL.md

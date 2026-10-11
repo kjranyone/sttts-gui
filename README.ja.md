@@ -18,6 +18,8 @@ UI からマイク・VAD・ASR・TTS まで、**Rust 1 プロセスだけ**で�
 ![No Python](https://img.shields.io/badge/Python-not%20required-7ff0c8)
 [![License: MIT](https://img.shields.io/badge/License-MIT-ff9ec7)](LICENSE)
 
+<img src="assets/screenshot.webp" alt="sttts-gui のメイン画面" width="880">
+
 </div>
 
 ---
@@ -35,7 +37,7 @@ UI からマイク・VAD・ASR・TTS まで、**Rust 1 プロセスだけ**で�
 
 ## AI エージェントから使う
 
-AI エージェント(Claude Code など)にキャラクターの声を持たせるには、次の 1 行をエージェントに貼り付けます。
+AI エージェント(Claude Code など)にキャラクターの声を持たせるには、次の 1 行をエージェントのチャット欄にそのまま貼り付けます。このリポジトリの clone やビルドは要りません。
 
 ```text
 https://raw.githubusercontent.com/kjranyone/sttts-gui/main/skills/sttts-say/INSTALL.md の手順に従って、sttts-say とその Agent Skill をインストールして

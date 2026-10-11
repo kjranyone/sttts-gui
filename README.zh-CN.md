@@ -18,6 +18,8 @@
 ![No Python](https://img.shields.io/badge/Python-not%20required-7ff0c8)
 [![License: MIT](https://img.shields.io/badge/License-MIT-ff9ec7)](LICENSE)
 
+<img src="assets/screenshot.webp" alt="sttts-gui 主界面" width="880">
+
 </div>
 
 ---
@@ -38,7 +40,7 @@
 
 ## 在 AI 智能体中使用
 
-要让 AI 智能体(Claude Code 等)拥有角色声音,把下面这一行粘贴给智能体:
+要让 AI 智能体(Claude Code 等)拥有角色声音,把下面这一行原样粘贴到智能体的对话框中。无需 clone 本仓库,也无需构建:
 
 ```text
 请按照 https://raw.githubusercontent.com/kjranyone/sttts-gui/main/skills/sttts-say/INSTALL.md 的步骤安装 sttts-say 及其 Agent Skill
