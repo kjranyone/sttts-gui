@@ -24,7 +24,7 @@ On Windows the app root is next to the executable when that folder is writable (
 ## Rules that keep the machine safe
 
 - **Only one GPU user at a time.** If sttts-gui is using the GPU, `sttts-say` stops with "Another sttts process … is using the GPU". Ask the user to close the GUI; do not retry in a loop, and do not run several `sttts-say` processes in parallel (they queue behind each other anyway).
-- The very first run downloads the model and compiles GPU kernels (can take minutes). After that, `speak` / `render` / `audition` are handled by a background `sttts-say` process that keeps the model loaded, so one-line calls are cheap (about 1 s with the default model) and you can work line by line. It exits by itself after 10 minutes without requests; run `sttts-say stop` when you are done if the user wants the GPU back sooner. Many lines are still best put in one script for `render` (incremental, one manifest).
+- The very first run downloads the model and compiles GPU kernels (can take minutes). After that, synthesis goes through a background process that keeps the model loaded (see [The background process](#the-background-process)). **Run `sttts-say stop` when your task is finished**, so the GPU memory is freed.
 - You cannot hear the audio. When quality matters (choosing a voice, judging a delivery), give the user the file paths and let them choose.
 
 ## Concepts
@@ -80,6 +80,34 @@ Script (`ep1.jsonl`):
 
 `render` is incremental: a line whose settings match its previous take is left as is (`"status":"unchanged"`), and when nothing changed the model is not even loaded. To change one line, edit it and re-run. To force a retake of a line, delete its `.wav` or give it a different `seed`.
 All lines are validated (voices exist, sampling keys valid, ids unique) before anything is synthesized.
+
+## The background process
+
+`speak`, `render` and `audition` do not synthesize in the process you start. They hand the work to a background `sttts-say serve` process that keeps the model loaded on the GPU, so only the first call pays for loading the model.
+
+| Call (default model, one short line) | Time |
+|---|---|
+| First call (starts the background process and loads the model) | about 9 s |
+| Later calls | about 1–2 s |
+
+What this means for you:
+
+- **Nothing to set up.** The first synthesis call starts the background process. Never run `sttts-say serve` yourself.
+- **Calls behave the same as before.** Your call waits until the result is ready. stdout JSON, stderr progress, exit codes and relative paths work the same as before. The background process runs each request in your current directory. If it cannot be used, your call synthesizes by itself and gives the same output.
+- **Settings are read on every call.** Your call reads `data/backend.json`, `STTTS_ROOT` and the display language and sends them with each request. Voices and scripts are read fresh for each request. Edits take effect on the next call, with no restart. After `model use` (or a change to `tts.num_steps`), the next call frees the old model and loads the new one, so that call is slow again.
+- **One request at a time.** Concurrent calls queue up and run one after another, so running them in parallel gives no speedup. Several lines are still best as one `render` script (incremental, one manifest).
+- **It outlives your call, on purpose.** A `sttts-say` process that stays after your command returns is the background process, not a leak. Do not kill it, and do not delete its files in the temp directory (`sttts-say-server.json` / `.lock`).
+- **It holds the GPU while it lives.** It keeps the GPU lock and the model's GPU memory (up to about 16 GB with `v4-large`) even while idle.
+- **How it ends:**
+  - It exits by itself after 10 minutes without requests.
+  - `sttts-say stop` ends it now. If it is synthesizing, it finishes first. Output: `{"stopped": true}`, or `{"stopped": false}` when none was running.
+  - Run `stop` when your task is done, and before the user runs other GPU-heavy work.
+- **With the GUI:**
+  - If sttts-gui starts while the background process is idle, the background process exits and gives the GPU to the GUI.
+  - If the GUI is already using the GPU, synthesis fails with "Another sttts process … is using the GPU". Ask the user to close the GUI.
+- **After an update.** If the `sttts-say` executable is replaced by a new build, the next call stops the old background process and starts a new one.
+- **If it dies mid-request.** If the background process dies during a request, the call fails with "The sttts-say background process stopped unexpectedly". The next call starts a fresh one. Retry once, not in a loop.
+- **Security.** It listens only on 127.0.0.1 and accepts only requests that carry a random token from its registration file.
 
 ## Choosing the model
 
