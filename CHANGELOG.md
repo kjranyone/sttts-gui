@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- GUI: each card has 📁, which opens the folder with that line's WAV selected, so it can be dragged into a video editor. "Open" under "Audio queue" opens `output/`.
+- GUI: each saved line gets subtitles (`.srt`, one cue per synthesized chunk) and a record (`.json`: text, caption, seed, timings) next to its WAV.
+
+### Changed
+
+- GUI: spoken audio is saved as one WAV per line instead of one per chunk, in a folder per launch, numbered in the order it was spoken and named after the start of the line (`output/2026-10-11_153012/003_そっか、今日もおつかれさま。.wav`). Cancelled or failed lines are no longer saved.
+
 ## [0.1.1] - 2026-10-11
 
 ### Added

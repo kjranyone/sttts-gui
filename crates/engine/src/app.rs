@@ -7,7 +7,7 @@
 //! 外界(モデル・マイク・VAD・デバイス列挙)は `Platform` を通して注入する。本番は `RealPlatform`、
 //! テストは偽物に差し替える。
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -26,6 +26,7 @@ use crate::asr::{AsrEngine, Progress};
 use crate::chunker::{ChunkOptions, count_mora, settled_prefix_len, split_chunks};
 use crate::config::{default_config, default_user_config_path, get, get_bool, get_f64, get_i64, load_user_config, merge_config};
 use crate::performance::{AcousticObservation, Delivery, observe, plan_delivery};
+use crate::recording::Recorder;
 use crate::session::{AsrSource, AudioSource, LiveSession, OnBlock, SessionConfig, SessionHost, Timing, Vad};
 use crate::sink::Sink;
 use crate::tts::{MockTts, TtsEngine, TtsOutput, TtsRequest, check_sampling_overrides};
@@ -99,6 +100,7 @@ pub struct BackendOptions {
     pub mock: bool,
     /// 実 ASR + モック TTS(ベンチ用)
     pub mock_tts: bool,
+    /// 合成した発話の保存先(1 発話 = 1 ファイル。`crate::recording`)
     pub output_dir: PathBuf,
     pub save_wavs: bool,
     /// アプリのルート(`data/backend.json` の場所)
@@ -249,6 +251,17 @@ struct PendingInfo {
     speech_end: Option<f64>,
     /// 話している途中の発話で、まだチャンクが追加される(確定までは speak_done を送らない)
     open: bool,
+    take: TakeParts,
+}
+
+/// 発話を 1 ファイルに保存するために集めるもの
+#[derive(Default)]
+struct TakeParts {
+    /// チャンクのテキスト(読み上げの注釈を付ける前。字幕に使う)。添字はチャンク番号
+    texts: Vec<String>,
+    caption: Option<String>,
+    seed: Option<i64>,
+    wavs: BTreeMap<u32, Vec<u8>>,
 }
 
 #[derive(Default)]
@@ -323,7 +336,7 @@ pub(crate) struct Inner {
     perf_pending: Mutex<HashMap<u64, Arc<PerfSlot>>>,
     recent_rates: Mutex<VecDeque<f64>>,
     emotion_missing_reported: AtomicBool,
-    wav_counter: AtomicU64,
+    recorder: Mutex<Recorder>,
 }
 
 // ---------------------------------------------------------------- Backend
@@ -415,6 +428,7 @@ impl Inner {
             let warn = |m: &str| sink.warn(m.to_string());
             config = merge_config(&config, &load_user_config(&path, &warn));
         }
+        let opts_output_dir = opts.output_dir.clone();
         let (perf_tx, perf_rx) = mpsc::channel::<PerfJob>();
         // 並行解析は 1 スレッド(混雑時は古い結果を捨てる)
         std::thread::Builder::new()
@@ -446,7 +460,7 @@ impl Inner {
             perf_pending: Mutex::new(HashMap::new()),
             recent_rates: Mutex::new(VecDeque::new()),
             emotion_missing_reported: AtomicBool::new(false),
-            wav_counter: AtomicU64::new(0),
+            recorder: Mutex::new(Recorder::new(opts_output_dir)),
         })
     }
 
@@ -775,6 +789,7 @@ impl Inner {
                     accepted: now(),
                     speech_end: p.speech_end,
                     open: false,
+                    take: TakeParts { texts: chunks.clone(), caption: caption.clone(), ..Default::default() },
                 },
             );
             request
@@ -999,7 +1014,16 @@ impl Inner {
                 let request = pend.seq;
                 pend.map.insert(
                     request,
-                    PendingInfo { total: 0, done: 0, cancelled: false, failed: false, accepted: now(), speech_end: None, open: true },
+                    PendingInfo {
+                        total: 0,
+                        done: 0,
+                        cancelled: false,
+                        failed: false,
+                        accepted: now(),
+                        speech_end: None,
+                        open: true,
+                        take: TakeParts { caption: caption.clone(), ..Default::default() },
+                    },
                 );
                 request
             };
@@ -1027,6 +1051,10 @@ impl Inner {
             if let Some(info) = pend.map.get_mut(&o.request) {
                 info.total += chunks.len() as u32;
                 info.open = keep_open;
+                info.take.texts.extend(chunks.iter().cloned());
+                if delivery.is_some() {
+                    info.take.caption = caption.clone();
+                }
             }
         }
         for chunk_text in &chunks {
@@ -1086,23 +1114,21 @@ impl Inner {
         }
     }
 
-    fn save_wav(&self, wav: &[u8]) -> Option<String> {
-        if !self.opts.save_wavs {
+    /// 終わった発話を 1 ファイルに保存する(取り消し・失敗した発話は保存しない)。保存先を返す
+    fn save_take(&self, request: u64, info: &mut PendingInfo) -> Option<String> {
+        if !self.opts.save_wavs || info.cancelled || info.failed || info.take.wavs.is_empty() {
             return None;
         }
-        let dir = &self.opts.output_dir;
-        let write = || -> std::io::Result<PathBuf> {
-            std::fs::create_dir_all(dir)?;
-            let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-            let n = self.wav_counter.fetch_add(1, Ordering::Relaxed);
-            let path = dir.join(format!("tts_{secs}_{n:04}.wav"));
-            std::fs::write(&path, wav)?;
-            Ok(path)
-        };
-        match write() {
-            Ok(p) => Some(p.to_string_lossy().into_owned()),
+        let take = std::mem::take(&mut info.take);
+        let chunks = take.wavs.into_iter().map(|(i, wav)| (take.texts.get(i as usize).cloned().unwrap_or_default(), wav)).collect();
+        match lock(&self.recorder).save(chunks, take.caption.as_deref(), take.seed) {
+            Ok(path) => Some(path.to_string_lossy().into_owned()),
             Err(e) => {
-                self.sink.warn(format!("failed to save wav: {e}"));
+                self.sink.warn(trf!(
+                    "Failed to save the audio of request {request}: {e:#}",
+                    "request {request} の音声を保存できませんでした: {e:#}",
+                    "无法保存 request {request} 的音频:{e:#}"
+                ));
                 None
             }
         }
@@ -1140,8 +1166,9 @@ impl Inner {
     fn send_speak_done_locked(&self, pend: &mut Pending, request: u64) {
         let Some(info) = pend.map.get(&request) else { return };
         if (info.done >= info.total && !info.open) || info.cancelled {
-            let info = pend.map.remove(&request).expect("checked above");
-            self.sink.send(BackendMessage::SpeakDone { request, chunks: info.done, cancelled: info.cancelled, failed: info.failed });
+            let mut info = pend.map.remove(&request).expect("checked above");
+            let path = self.save_take(request, &mut info);
+            self.sink.send(BackendMessage::SpeakDone { request, chunks: info.done, cancelled: info.cancelled, failed: info.failed, path });
         }
     }
 
@@ -1160,13 +1187,16 @@ impl Inner {
                 }
             }
         }
-        let path = self.save_wav(&result.wav);
         let wav_base64 = base64::engine::general_purpose::STANDARD.encode(&result.wav);
-        let pend = lock(&self.pending);
-        let Some(info) = pend.map.get(&request).filter(|i| !i.cancelled) else {
+        let mut pend = lock(&self.pending);
+        let Some(info) = pend.map.get_mut(&request).filter(|i| !i.cancelled) else {
             self.sink.debug(format!("drop audio of cancelled request {request} chunk {chunk}"));
             return;
         };
+        if self.opts.save_wavs {
+            info.take.wavs.insert(chunk, result.wav.clone());
+            info.take.seed = result.used_seed.or(info.take.seed);
+        }
         self.sink.send(BackendMessage::TtsChunkStart { request, chunk, text: text.to_string() });
         let (mut first_chunk_ms, mut e2e_ms) = (None, None);
         if chunk == 0 {
@@ -1182,7 +1212,6 @@ impl Inner {
             sample_rate: result.sample_rate,
             duration_ms: result.duration_ms,
             gen_ms: result.gen_ms,
-            path,
             seed: result.used_seed,
             first_chunk: chunk == 0,
             speculative,

@@ -790,16 +790,87 @@ fn round1(x: f64) -> f64 {
 
 /// モノラル f32 → 16bit PCM WAV
 pub fn wav_bytes(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
+    let pcm: Vec<i16> = samples.iter().map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16).collect();
+    pcm16_wav(&pcm, sample_rate)
+}
+
+fn pcm16_wav(samples: &[i16], sample_rate: u32) -> Result<Vec<u8>> {
     let spec = hound::WavSpec { channels: 1, sample_rate, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
     let mut buf = Cursor::new(Vec::with_capacity(44 + samples.len() * 2));
     {
         let mut w = hound::WavWriter::new(&mut buf, spec)?;
         for &s in samples {
-            w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)?;
+            w.write_sample(s)?;
         }
         w.finalize()?;
     }
     Ok(buf.into_inner())
+}
+
+/// つないだ音声の中の、1 チャンクの区間(字幕・口パクのタイミングに使える)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct Segment {
+    pub text: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+/// チャンクの WAV をつないだ 1 つの WAV
+pub struct JoinedWav {
+    pub wav: Vec<u8>,
+    pub sample_rate: u32,
+    pub segments: Vec<Segment>,
+}
+
+impl JoinedWav {
+    pub fn duration_ms(&self) -> u64 {
+        self.segments.last().map_or(0, |s| s.end_ms)
+    }
+}
+
+/// チャンクごとの WAV(16-bit モノラル。`(テキスト, WAV)` を順に)を 1 つにつなぐ
+pub fn join_wavs(parts: impl IntoIterator<Item = (String, Vec<u8>)>) -> Result<JoinedWav> {
+    let mut samples: Vec<i16> = Vec::new();
+    let mut sample_rate = 0u32;
+    let mut segments = Vec::new();
+    for (text, wav) in parts {
+        let mut reader = hound::WavReader::new(Cursor::new(wav))?;
+        let sr = reader.spec().sample_rate;
+        if sample_rate != 0 && sr != sample_rate {
+            bail!(trf!(
+                "The sample rate changed between chunks: {sample_rate} -> {sr}",
+                "チャンクの間でサンプルレートが変わりました: {sample_rate} -> {sr}",
+                "块之间的采样率发生了变化:{sample_rate} -> {sr}"
+            ));
+        }
+        sample_rate = sr;
+        let start = samples.len();
+        for s in reader.samples::<i16>() {
+            samples.push(s?);
+        }
+        let ms = |n: usize| (n as u64 * 1000) / u64::from(sr.max(1));
+        segments.push(Segment { text, start_ms: ms(start), end_ms: ms(samples.len()) });
+    }
+    Ok(JoinedWav { wav: pcm16_wav(&samples, sample_rate)?, sample_rate, segments })
+}
+
+/// [`join_wavs`] でつないだ WAV を、チャンクの長さ(ms)ごとに切り分ける。最後の 1 つは残り全部
+pub fn split_wav(wav: &[u8], durations_ms: &[u64]) -> Result<Vec<Vec<u8>>> {
+    let mut reader = hound::WavReader::new(Cursor::new(wav))?;
+    let sr = reader.spec().sample_rate;
+    let samples = reader.samples::<i16>().collect::<Result<Vec<_>, _>>()?;
+    let mut out = Vec::with_capacity(durations_ms.len());
+    let mut start = 0usize;
+    for (i, ms) in durations_ms.iter().enumerate() {
+        let end = if i + 1 == durations_ms.len() {
+            samples.len()
+        } else {
+            (start + (*ms as usize * sr as usize) / 1000).min(samples.len())
+        };
+        out.push(pcm16_wav(&samples[start..end], sr)?);
+        start = end;
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------- モック
@@ -950,6 +1021,15 @@ mod tests {
         let r = tts.synthesize(&TtsRequest { text: &text, caption: None, ref_wavs: &[], seed: None, sampling: &Map::new() }).unwrap();
         assert!((180..400).contains(&r.gen_ms), "{}", r.gen_ms);
         assert!(r.sample_rate > 0 && !r.wav.is_empty());
+    }
+
+    #[test]
+    fn joined_chunks_split_back_into_the_same_audio() {
+        let a = wav_bytes(&[0.5; 300], 1000).unwrap();
+        let b = wav_bytes(&[-0.5; 200], 1000).unwrap();
+        let joined = join_wavs([("あ".to_string(), a.clone()), ("い".to_string(), b.clone())]).unwrap();
+        assert_eq!(joined.segments[1], Segment { text: "い".into(), start_ms: 300, end_ms: 500 });
+        assert_eq!(split_wav(&joined.wav, &[300, 200]).unwrap(), [a, b]);
     }
 
     #[test]

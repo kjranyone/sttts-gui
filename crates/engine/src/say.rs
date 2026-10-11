@@ -16,7 +16,6 @@
 //! 予約キー・未知のキーはエラー。caption は声質に話し方を重ねる([`compose_caption`])。
 
 use std::cell::OnceCell;
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -29,7 +28,7 @@ use sttts_i18n::trf;
 use crate::chunker::{ChunkOptions, split_chunks};
 use crate::config::{get, get_i64};
 use crate::performance::compose_caption;
-use crate::tts::{TtsEngine, TtsRequest, apply_sampling};
+use crate::tts::{Segment, TtsEngine, TtsRequest, apply_sampling, join_wavs};
 
 const VOICE_AUDIO_EXT: &[&str] = &["wav", "flac"];
 
@@ -104,13 +103,6 @@ pub struct Spec {
     pub sampling: Map<String, Value>,
     pub model: String,
     pub num_steps: Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Segment {
-    pub text: String,
-    pub start_ms: u64,
-    pub end_ms: u64,
 }
 
 /// テイクの記録(`<stem>.json`)。
@@ -419,9 +411,7 @@ impl Studio {
         // 未指定ならここで 1 回だけ決めて全チャンクで共有する(チャンクごとに声質が変わらないように)
         let seed = spec.seed.unwrap_or_else(random_seed);
         let ref_wavs: Vec<String> = spec.ref_wav.iter().cloned().collect();
-        let mut samples: Vec<i16> = Vec::new();
-        let mut sample_rate = 0u32;
-        let mut segments = Vec::new();
+        let mut parts = Vec::new();
         for chunk in self.chunks(&spec.text) {
             let out = engine.synthesize(&TtsRequest {
                 text: &chunk,
@@ -433,28 +423,9 @@ impl Studio {
             for m in &out.messages {
                 (self.log)(m);
             }
-            let mut reader = hound::WavReader::new(Cursor::new(out.wav))?;
-            let sr = reader.spec().sample_rate;
-            if sample_rate != 0 && sr != sample_rate {
-                bail!("sample rate changed between chunks: {sample_rate} -> {sr}");
-            }
-            sample_rate = sr;
-            let start = samples.len();
-            for s in reader.samples::<i16>() {
-                samples.push(s?);
-            }
-            let ms = |n: usize| (n as u64 * 1000) / u64::from(sr.max(1));
-            segments.push(Segment { text: chunk, start_ms: ms(start), end_ms: ms(samples.len()) });
+            parts.push((chunk, out.wav));
         }
-        let mut buf = Cursor::new(Vec::with_capacity(44 + samples.len() * 2));
-        {
-            let wspec = hound::WavSpec { channels: 1, sample_rate, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
-            let mut w = hound::WavWriter::new(&mut buf, wspec)?;
-            for s in &samples {
-                w.write_sample(*s)?;
-            }
-            w.finalize()?;
-        }
+        let joined = join_wavs(parts)?;
         if let Some(dir) = wav.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir).with_context(|| dir.display().to_string())?;
         }
@@ -462,13 +433,13 @@ impl Studio {
             line: line.clone(),
             spec: spec.clone(),
             seed,
-            sample_rate,
-            duration_ms: segments.last().map_or(0, |s| s.end_ms),
-            segments,
+            sample_rate: joined.sample_rate,
+            duration_ms: joined.duration_ms(),
+            segments: joined.segments,
         };
         // 記録を先に消し、音声 → 記録の順に書く(途中で止まったら「最新でない」扱いになる)
         let _ = std::fs::remove_file(take_record_path(wav));
-        write_atomic(wav, &buf.into_inner())?;
+        write_atomic(wav, &joined.wav)?;
         write_json(&take_record_path(wav), &take)?;
         Ok(take)
     }

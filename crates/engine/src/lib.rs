@@ -14,6 +14,7 @@ pub mod performance;
 pub mod presets;
 #[cfg(feature = "live")]
 pub mod real;
+pub mod recording;
 pub mod root;
 pub mod say;
 pub mod say_server;

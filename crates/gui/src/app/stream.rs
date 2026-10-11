@@ -311,7 +311,7 @@ impl StttsApp {
                 TurnStatus::Queued => self.voice_phrase(),
                 _ => voice_phrase(turn.voice.as_deref()),
             };
-            let has_audio = !turn.audio_paths().is_empty();
+            let has_audio = turn.audio_file.is_some();
             h_flex()
                 .px_4()
                 .py_2()
@@ -403,6 +403,18 @@ impl StttsApp {
                                 .icon(IconName::Play)
                                 .tooltip(tr!("Play again", "再生", "重新播放"))
                                 .on_click(cx.listener(move |this, _, _, _| this.replay_turn(id))),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("reveal-{id}")))
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::FolderOpen)
+                                .tooltip(tr!(
+                                    "Show the saved WAV in its folder (drag it into a video editor)",
+                                    "保存した WAV をフォルダで表示(動画編集ソフトへドラッグできます)",
+                                    "在文件夹中显示已保存的 WAV(可拖入视频编辑软件)"
+                                ))
+                                .on_click(cx.listener(move |this, _, _, _| this.reveal_turn_audio(id))),
                         )
                     })
                     .child(

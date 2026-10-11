@@ -719,7 +719,6 @@ impl StttsApp {
                 chunk,
                 wav_base64,
                 duration_ms,
-                path,
                 seed,
                 first_chunk,
                 rtf,
@@ -763,11 +762,11 @@ impl StttsApp {
                         }
                     }
                 }
-                self.turns.chunk_audio(request, chunk, path, duration_ms, total_e2e, seed);
+                self.turns.chunk_audio(request, chunk, duration_ms, total_e2e, seed);
             }
             BackendMessage::TtsChunkDone { .. } => {}
-            BackendMessage::SpeakDone { request, chunks, cancelled, failed } => {
-                self.turns.speak_done(request, cancelled, failed);
+            BackendMessage::SpeakDone { request, chunks, cancelled, failed, path } => {
+                self.turns.speak_done(request, cancelled, failed, path);
                 self.push_log(trf!(
                     "Speech done request={request} chunks={chunks} cancelled={cancelled} failed={failed}",
                     "発話完了 request={request} chunks={chunks} cancelled={cancelled} failed={failed}",
@@ -911,34 +910,40 @@ impl StttsApp {
         cx.notify();
     }
 
-    /// 届けた音声(保存済み WAV)を再生し直す。
+    /// 届けた音声(保存した WAV)を再生し直す。チャンクごとに切り分けて積み、再生中のチャンクを示せるようにする
     fn replay_turn(&mut self, id: u64) {
         let Some(turn) = self.turns.get(id) else { return };
-        let paths: Vec<(u32, String)> =
-            turn.chunks.iter().filter_map(|c| Some((c.index, c.path.clone()?))).collect();
+        let Some(path) = turn.audio_file.clone() else { return };
+        let chunks: Vec<(u32, u64)> = turn.chunks.iter().map(|c| (c.index, c.duration_ms.unwrap_or(0))).collect();
         let Some(audio) = &self.audio else {
             self.push_log(
                 tr!("[error:audio] The output device is not open", "[error:audio] 出力デバイスが開かれていません", "[error:audio] 输出设备未打开"),
             );
             return;
         };
+        let parts = std::fs::read(&path).map_err(anyhow::Error::from).and_then(|wav| {
+            let durations: Vec<u64> = chunks.iter().map(|(_, ms)| *ms).collect();
+            if durations.is_empty() { Ok(vec![wav]) } else { sttts_engine::tts::split_wav(&wav, &durations) }
+        });
         let mut errors = Vec::new();
-        for (chunk, path) in &paths {
-            match std::fs::read(path) {
-                Ok(bytes) => match audio.enqueue_wav_bytes(bytes) {
-                    Ok(()) => self.playback.push(id, *chunk),
-                    Err(e) => errors.push(trf!(
-                        "[error:audio] Playback failed: {e}",
-                        "[error:audio] 再生失敗: {e}",
-                        "[error:audio] 播放失败:{e}"
-                    )),
-                },
-                Err(e) => errors.push(trf!(
-                    "[error:audio] Failed to read {path}: {e}",
-                    "[error:audio] ファイル読込失敗 {path}: {e}",
-                    "[error:audio] 读取文件失败 {path}:{e}"
-                )),
+        match parts {
+            Ok(parts) => {
+                for (i, bytes) in parts.into_iter().enumerate() {
+                    match audio.enqueue_wav_bytes(bytes) {
+                        Ok(()) => self.playback.push(id, chunks.get(i).map_or(0, |(index, _)| *index)),
+                        Err(e) => errors.push(trf!(
+                            "[error:audio] Playback failed: {e}",
+                            "[error:audio] 再生失敗: {e}",
+                            "[error:audio] 播放失败:{e}"
+                        )),
+                    }
+                }
             }
+            Err(e) => errors.push(trf!(
+                "[error:audio] Failed to read {path}: {e}",
+                "[error:audio] ファイル読込失敗 {path}: {e}",
+                "[error:audio] 读取文件失败 {path}:{e}"
+            )),
         }
         for e in errors {
             self.push_log(e);
@@ -1149,6 +1154,31 @@ impl StttsApp {
     fn open_data_folder(&mut self) {
         let dir = self.root.join("data");
         let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+    }
+
+    /// 合成した発話の保存先(起動ごとのフォルダが並ぶ)を開く。
+    fn open_output_folder(&mut self) {
+        let dir = self.root.join("output");
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+    }
+
+    /// 発話の WAV を選んだ状態でエクスプローラーを開く(そこから動画編集ソフトへドラッグできる)。
+    fn reveal_turn_audio(&mut self, id: u64) {
+        let Some(path) = self.turns.get(id).and_then(|t| t.audio_file.clone()) else { return };
+        let mut cmd = std::process::Command::new("explorer");
+        // explorer は `/select,` と引用したパスを 1 つの引数として受け取る(空白を含むパスのため自前で引用する)
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::raw_arg(&mut cmd, format!("/select,\"{path}\""));
+        #[cfg(not(windows))]
+        cmd.arg(&path);
+        if let Err(e) = cmd.spawn() {
+            self.push_log(trf!(
+                "[error:file] Could not open the folder: {e}",
+                "[error:file] フォルダを開けませんでした: {e}",
+                "[error:file] 无法打开文件夹:{e}"
+            ));
+        }
     }
 
     // ---------- 診断・永続化 ----------

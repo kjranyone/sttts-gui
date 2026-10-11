@@ -139,8 +139,6 @@ pub enum BackendMessage {
         duration_ms: u64,
         gen_ms: u64,
         #[serde(default)]
-        path: Option<String>,
-        #[serde(default)]
         seed: Option<i64>,
         /// 先頭チャンクか
         #[serde(default)]
@@ -176,6 +174,10 @@ pub enum BackendMessage {
         cancelled: bool,
         #[serde(default)]
         failed: bool,
+        /// 発話を 1 つにつないで保存した WAV(保存しない設定・取り消し・失敗のときは None)。
+        /// 隣に字幕 `.srt` と記録 `.json` がある
+        #[serde(default)]
+        path: Option<String>,
     },
     Error {
         scope: String,
@@ -429,12 +431,10 @@ mod tests {
             AnyMessage::Known(BackendMessage::TtsAudio {
                 wav_base64,
                 sample_rate,
-                path,
                 ..
             }) => {
                 assert_eq!(wav_base64, "QUJD");
                 assert_eq!(sample_rate, 48000);
-                assert_eq!(path, None);
             }
             _ => panic!("expected tts_audio"),
         }
@@ -458,7 +458,7 @@ mod tests {
         let m: AnyMessage = serde_json::from_str(
             r#"{"type":"tts_audio","request":2,"chunk":0,"wav_base64":"","sample_rate":48000,"duration_ms":1200,"gen_ms":300,
                "first_chunk":true,"speculative":true,"rtf":0.25,"queue_wait_ms":3,"first_chunk_ms":310,"e2e_ms":820,
-               "stages":{"predict_duration":20.5,"sample_meanflow":150.0},"path":null,"seed":7}"#,
+               "stages":{"predict_duration":20.5,"sample_meanflow":150.0},"seed":7}"#,
         )
         .unwrap();
         match m {

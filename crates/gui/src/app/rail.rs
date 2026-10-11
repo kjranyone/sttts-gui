@@ -132,7 +132,32 @@ impl StttsApp {
                             let _ = weak_expr.update(cx, |this, cx| this.set_performance_enabled(*checked, cx));
                         }),
                     self.help_icon(HelpTopic::Tempo, cx),
-                )),
+                ))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .text_color(c(theme::TEXT_MUTED))
+                                .child(tr!(
+                                    "Each line is saved as one WAV with subtitles (.srt), in a folder per launch",
+                                    "話した音声は 1 セリフ 1 つの WAV と字幕(.srt)で、起動ごとのフォルダに保存",
+                                    "说出的语音按每句一个 WAV 加字幕(.srt)保存在每次启动的文件夹中"
+                                )),
+                        )
+                        .child(
+                            Button::new("open-output")
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::FolderOpen)
+                                .label(tr!("Open", "開く", "打开"))
+                                .on_click(cx.listener(|this, _, _, _| this.open_output_folder())),
+                        ),
+                ),
         )
     }
 

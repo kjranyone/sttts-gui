@@ -108,7 +108,7 @@ The screen separates *what you said*, *how it is delivered* and *which voice del
 
 | Area | What you can do |
 |---|---|
-| **Stream** (center) | One card = what you said (top) and the voice that delivered it (bottom). After delivery: ▶ play again / ↻ speak again with the current voice / correct |
+| **Stream** (center) | One card = what you said (top) and the voice that delivered it (bottom). After delivery: ▶ play again / 📁 show the saved WAV in its folder / ↻ speak again with the current voice / correct |
 | **Input box** (bottom) | Type text and **Speak** (Ctrl+Enter). **Stop** discards audio that is playing or not yet played |
 | **Live** | Start/stop the mic, and the input level |
 | **Audio queue** | With "Auto play" ON, recognized sentences are read aloud as they are. With it OFF, each stops at its card so you can speak, correct or skip it. "Match tempo and pauses" reflects the speed of the original speech |
@@ -117,6 +117,20 @@ The screen separates *what you said*, *how it is delivered* and *which voice del
 | **⚙ Settings** | Settings you decide once per machine: display language, input/output devices, TTS model |
 
 The acting palette and emoji-based expression are described in [Expression instructions for Irodori](docs/irodori-annotations.md), and the mechanism for reproducing the way you speak in [Design for reconstructing delivery](docs/acting-reconstruction-design.md) (both in Japanese).
+
+### Using the audio in a video
+
+Every line the app speaks is saved as one WAV, in a folder per launch, numbered in the order it was spoken and named after the start of the line:
+
+```text
+output/2026-10-11_153012/
+  001_おはよう。まだ眠いけど.wav   # the line, joined into one file
+  001_おはよう。まだ眠いけど.srt   # subtitles (one cue per synthesized chunk)
+  001_おはよう。まだ眠いけど.json  # text, caption, seed and timings
+  002_ねえ、今日の天気って.wav
+```
+
+Drop the folder into a video editor and the clips line up in the order they were spoken. 📁 on a card opens the folder with that line's WAV selected, so you can drag it into the editor, and "Open" under "Audio queue" opens `output/`. Cancelled lines are not saved.
 
 ### Voice bank
 

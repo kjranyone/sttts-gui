@@ -75,10 +75,18 @@ struct Harness {
 
 impl Harness {
     fn new(mock: bool) -> Self {
+        Self::with_opts(BackendOptions { mock, save_wavs: false, load_user_file: false, ..Default::default() })
+    }
+
+    /// 合成した発話を `dir` に保存する
+    fn saving(dir: &std::path::Path) -> Self {
+        Self::with_opts(BackendOptions { mock: true, output_dir: dir.to_path_buf(), load_user_file: false, ..Default::default() })
+    }
+
+    fn with_opts(opts: BackendOptions) -> Self {
         let rec = Arc::new(Rec::default());
         let r2 = Arc::clone(&rec);
         let sink = Sink::new(move |m| r2.msgs.lock().unwrap().push(serde_json::to_value(&m).unwrap()));
-        let opts = BackendOptions { mock, save_wavs: false, load_user_file: false, ..Default::default() };
         let app = Inner::new(opts, Arc::new(FakePlatform { asr: Mutex::new(None) }), sink);
         Self { app, rec, worker: None }
     }
@@ -551,6 +559,67 @@ fn next_utterance_final_closes_previous_open_request() {
     assert!(wait3(|| h.done().len() == 2));
 }
 
+// ---------------------------------------------------------------- 発話の保存
+
+fn saved_record(done: &Value) -> (PathBuf, Value) {
+    let wav = PathBuf::from(done["path"].as_str().expect("saved"));
+    let record = serde_json::from_slice(&std::fs::read(wav.with_extension("json")).unwrap()).unwrap();
+    (wav, record)
+}
+
+#[test]
+fn a_finished_utterance_is_saved_as_one_file_with_subtitles() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = Harness::saving(dir.path()).with_engine(Arc::new(MockTts::new("m", 0.0, 0.0)));
+    h.speak(&format!("{S1}{S2}"));
+    assert!(wait3(|| h.done().len() == 1));
+    let audio = h.rec.of_type("tts_audio");
+    assert!(audio.len() >= 2, "the line is synthesized in several chunks");
+    let (wav, record) = saved_record(&h.done()[0]);
+    assert!(wav.starts_with(dir.path()));
+    assert!(wav.file_name().unwrap().to_string_lossy().starts_with("001_"));
+    // チャンクをつないだ 1 ファイル。区間はチャンクごと
+    assert_eq!(record["text"], format!("{S1}{S2}"));
+    assert_eq!(record["segments"].as_array().unwrap().len(), audio.len());
+    let total: u64 = audio.iter().map(|a| a["duration_ms"].as_u64().unwrap()).sum();
+    assert!(record["duration_ms"].as_u64().unwrap().abs_diff(total) <= audio.len() as u64);
+    assert_eq!(record["seed"], audio[0]["seed"]);
+    assert!(wav.with_extension("srt").exists());
+    // 次の発話は同じフォルダの次の番号
+    h.speak(S1);
+    assert!(wait3(|| h.done().len() == 2));
+    let (second, _) = saved_record(&h.done()[1]);
+    assert_eq!(second.parent(), wav.parent());
+    assert!(second.file_name().unwrap().to_string_lossy().starts_with("002_"));
+}
+
+#[test]
+fn speech_read_while_talking_is_saved_as_one_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = Harness::saving(dir.path()).with_engine(GateTts::new());
+    partial(&h, 1, &format!("{S1}二"));
+    partial(&h, 1, &format!("{S1}二文"));
+    final_(&h, 1, &format!("{S1}{S2}"));
+    assert!(wait3(|| h.done().len() == 1));
+    let (_, record) = saved_record(&h.done()[0]);
+    assert_eq!(record["text"], format!("{S1}{S2}"));
+}
+
+#[test]
+fn cancelled_utterances_are_not_saved() {
+    let dir = tempfile::tempdir().unwrap();
+    let eng = GateTts::new();
+    let h = Harness::saving(dir.path()).with_engine(eng.clone());
+    eng.close_gate();
+    h.speak(&format!("{S1}{S2}"));
+    assert!(eng.wait_started());
+    h.app.cancel_speak();
+    eng.open_gate();
+    assert!(wait3(|| h.done().len() == 1));
+    assert_eq!(h.done()[0]["path"], Value::Null);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing is written");
+}
+
 // ---------------------------------------------------------------- キャンセル
 
 fn gate_harness() -> (Harness, Arc<GateTts>) {
@@ -597,7 +666,7 @@ fn speak_after_cancel_plays_normally() {
     h.speak("二つ目です。");
     assert!(wait3(|| h.done().len() == 2));
     assert_eq!(h.rec.of_type("tts_audio").iter().map(|a| a["request"].as_u64().unwrap()).collect::<Vec<_>>(), [2]);
-    assert_eq!(h.done()[1], json!({"type": "speak_done", "request": 2, "chunks": 1, "cancelled": false, "failed": false}));
+    assert_eq!(h.done()[1], json!({"type": "speak_done", "request": 2, "chunks": 1, "cancelled": false, "failed": false, "path": null}));
 }
 
 #[test]
