@@ -4,7 +4,7 @@ GUI を開かずに、Irodori-TTS でセリフを WAV にする CLI。エージ�
 「このキャラクターに、このセリフを、こう喋らせる」部品として呼ぶためのもの。マイクは開かない。
 
 - 本体: `crates/engine/src/say.rs`(テストは偽の TTS で完結。`cargo test -p sttts-engine say::`)
-- バイナリ: `crates/say`(`sttts-say.exe`。配布は GitHub Releases、ソースからは `cargo build --release -p sttts-say`。`live` feature なしの engine でビルドし、マイク・ASR のコードを含まない)
+- バイナリ: `crates/say`(`sttts-say.exe`。配布は GitHub Releases、ソースからは `.\dev.ps1 say` / `./dev.sh say`(中身は `cargo build --release -p sttts-say`)。`live` feature なしの engine でビルドし、マイク・ASR のコードを含まない)
 - Skill: `skills/sttts-say/SKILL.md`(`~/.claude/skills/` か、使うプロジェクトの `.claude/skills/` へコピーする)
 
 ## GPU のプロセス間ロック

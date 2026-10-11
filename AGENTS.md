@@ -19,7 +19,7 @@ Python は使わない。ターゲット環境は Windows + Intel Arc GPU(Vulkan
 
 ## 開発コマンド
 
-- 起動: `.\dev.ps1`(毎回差分 `cargo build` → GUI 起動。`-Mode mock|real`、`-DebugBuild`)
+- 起動: `.\dev.ps1`(毎回差分 `cargo build` → GUI 起動。`-Mode mock|real`、`-DebugBuild`)。`.\dev.ps1 say` は CLI(`sttts-say`)を単独でビルドするだけ。`dev.sh` は macOS / Linux 向けの同じコマンド(GUI は Windows のみなので `say` だけ)。2 つは同じ振る舞いに保つ
 - テスト: `cargo test -p sttts-engine`(実モデル・実デバイス不要。偽物で全体を検証する設計)
 - 各クレートのパリティテスト(`crates/irodori` `crates/whisper` `crates/nemotron` `crates/audio`)は、PyTorch 等の参照データ(`tools/reference/` のスクリプトで作る)が無い環境では `eprintln!` して戻る
 - Rust: `cargo check` / `cargo build --release`(MSRV 1.95。`rust-version` 宣言済み)
