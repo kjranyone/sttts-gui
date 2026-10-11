@@ -527,6 +527,42 @@ pub fn tts_models() -> Vec<TtsModel> {
             license: None,
         },
         TtsModel {
+            alias: "v4.1-anime",
+            repo: "phasefield-audio/Irodori-TTS-v4.1-Anime",
+            weights: irodori::pipeline::MODEL_WEIGHTS,
+            label: tr!(
+                "Irodori v4.1 Anime RF (anime-style voices)",
+                "Irodori v4.1 Anime RF(アニメ調の声)",
+                "Irodori v4.1 Anime RF(动漫风格的声音)"
+            ),
+            meanflow: false,
+            download_mb: 3064,
+            summary: tr!(
+                "v4.1 Small (RF) fine-tuned on anime-style speech by phasefield-audio. Its training data was annotated separately, so captions and emoji may act differently from v4.1 Small",
+                "v4.1 Small(RF)を phasefield-audio がアニメ調の音声で追加学習したもの。学習データの注釈が別なので、キャプションや絵文字の効き方は v4.1 Small と異なることがある",
+                "由 phasefield-audio 以动漫风格语音对 v4.1 Small(RF)进行微调的模型。训练数据的标注方式不同,描述与表情符号的效果可能与 v4.1 Small 不同"
+            ),
+            license: None,
+        },
+        TtsModel {
+            alias: "v4.1-anime-int8",
+            repo: "phasefield-audio/Irodori-TTS-v4.1-Anime",
+            weights: "int8-weight-only/model.safetensors",
+            label: tr!(
+                "Irodori v4.1 Anime RF int8 (anime-style, little GPU memory)",
+                "Irodori v4.1 Anime RF int8(アニメ調・GPU メモリが少ない環境向け)",
+                "Irodori v4.1 Anime RF int8(动漫风格,适合显存较少的环境)"
+            ),
+            meanflow: false,
+            download_mb: 914,
+            summary: tr!(
+                "v4.1 Anime with int8 weights: about a quarter of the GPU memory and download for its main layers, slightly less accurate than the full model",
+                "v4.1 Anime の重みを int8 にしたもの。主な層の GPU メモリとダウンロード量が約 1/4 になる代わりに、元のモデルよりわずかに精度が落ちる",
+                "将 v4.1 Anime 的权重量化为 int8。主要层的显存与下载量约为四分之一,精度略低于原模型"
+            ),
+            license: None,
+        },
+        TtsModel {
             alias: "v4-large",
             repo: "Aratako/Irodori-TTS-v4-Large",
             weights: irodori::pipeline::MODEL_WEIGHTS,

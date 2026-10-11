@@ -160,6 +160,8 @@ sttts-say model use v4.1-small      # switch to the higher-quality RF model (slo
 | `v4.1-small-mf` (default) | 3.1 GB | MeanFlow, 4 steps. Fast enough for conversation |
 | `v4.1-small` | 3.1 GB | RF, 40 steps with guidance. More accurate kanji reading and voice cloning, about 20x the computation |
 | `v4.1-small-int8` | 0.9 GB | `v4.1-small` with int8 weights: about a quarter of the GPU memory for its main layers, for GPUs with little memory |
+| `v4.1-anime` | 3.1 GB | `v4.1-small` fine-tuned on anime-style speech by [phasefield-audio](https://huggingface.co/phasefield-audio/Irodori-TTS-v4.1-Anime). Captions and emoji may act differently from `v4.1-small` |
+| `v4.1-anime-int8` | 0.9 GB | `v4.1-anime` with int8 weights |
 | `v4-large` | 13 GB | 3.3B parameters. Follows captions and long reference audio best. Needs about 16 GB of GPU memory |
 | `v4-large-int8` | 3.8 GB | `v4-large` with int8 weights, for mid-range GPUs |
 

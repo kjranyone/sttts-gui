@@ -160,6 +160,8 @@ sttts-say model use v4.1-small      # 切换到高质量的 RF 模型(较慢;选
 | `v4.1-small-mf`(默认) | 3.1 GB | MeanFlow,4 步。速度足以用于对话 |
 | `v4.1-small` | 3.1 GB | RF,40 步 + CFG。汉字读音与声音还原更准确,计算量约为 20 倍 |
 | `v4.1-small-int8` | 0.9 GB | `v4.1-small` 的 int8 权重版。主要层显存约为四分之一,适合显存较少的环境 |
+| `v4.1-anime` | 3.1 GB | 由 [phasefield-audio](https://huggingface.co/phasefield-audio/Irodori-TTS-v4.1-Anime) 以动漫风格语音对 `v4.1-small` 微调的模型。描述与表情符号的效果可能与 `v4.1-small` 不同 |
+| `v4.1-anime-int8` | 0.9 GB | `v4.1-anime` 的 int8 权重版 |
 | `v4-large` | 13 GB | 33 亿参数。对描述和长参考音频的遵循最好。需要约 16GB 显存 |
 | `v4-large-int8` | 3.8 GB | `v4-large` 的 int8 权重版,适合中端 GPU |
 

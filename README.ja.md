@@ -157,6 +157,8 @@ sttts-say model use v4.1-small      # 高品質な RF のモデルに切り替�
 | `v4.1-small-mf`(既定) | 3.1 GB | MeanFlow、4 ステップ。会話に使える速さ |
 | `v4.1-small` | 3.1 GB | RF、40 ステップ + CFG。漢字の読みと声の再現がより正確。計算量は約 20 倍 |
 | `v4.1-small-int8` | 0.9 GB | `v4.1-small` の重みを int8 にしたもの。主な層の GPU メモリが約 1/4。GPU メモリが少ない環境向け |
+| `v4.1-anime` | 3.1 GB | `v4.1-small` を [phasefield-audio](https://huggingface.co/phasefield-audio/Irodori-TTS-v4.1-Anime) がアニメ調の音声で追加学習したもの。キャプションや絵文字の効き方は `v4.1-small` と異なることがある |
+| `v4.1-anime-int8` | 0.9 GB | `v4.1-anime` の重みを int8 にしたもの |
 | `v4-large` | 13 GB | 33 億パラメータ。キャプションと長い参照音声への追従が最も良い。GPU メモリは 16GB 程度必要 |
 | `v4-large-int8` | 3.8 GB | `v4-large` の重みを int8 にしたもの。中程度の GPU 向け |
 

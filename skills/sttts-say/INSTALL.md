@@ -12,7 +12,7 @@ Follow these steps in order. Report to the user what you installed and where. Do
 | Linux x64 | `sttts-say-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` | experimental (CI only); needs a Vulkan driver, OpenSSL 3, glibc 2.35+ |
 
 - **No match:** for any other OS or CPU (Intel Mac, ARM Linux, ...), stop and tell the user there is no build for it.
-- **Experimental builds:** on macOS / Linux, tell the user before going on.
+- **Experimental builds:** on macOS / Linux, go on and mention in your report that the build is experimental.
 - **GPU required:** a GPU is required (DirectX 12 / Vulkan on Windows, Metal on macOS). There is no CPU mode.
 - **Windows runtime:** Windows also needs the Visual C++ Redistributable (x64). If `sttts-say --help` fails to start with a missing `VCRUNTIME140.dll`, tell the user to install it from https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist.
 
@@ -76,7 +76,7 @@ Tell the user:
   - Only use reference audio of people who consented. Impersonating real people is prohibited by the Irodori-TTS model cards.
   - The larger v4 models fall under the Gemma Terms of Use.
 
-Then offer to make a short test line. Make it only if the user agrees, because it starts the download.
+Do not make a test line: the first real request downloads the model.
 
 ## Updating and uninstalling
 
