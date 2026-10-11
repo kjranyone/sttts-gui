@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-11
+
 ### Added
 
 - GUI: each card has 📁, which opens the folder with that line's WAV selected, so it can be dragged into a video editor. "Open" under "Audio queue" opens `output/`.
@@ -69,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reading aloud while you are still talking no longer stops for the rest of a long utterance when the recognizer revises text it has already read (e.g. Gemini adding spaces); it carries on from the same position.
 - Expression: "pausing as it goes" (間を取りながら) is no longer added to almost every utterance. Only gaps of 320 ms or more between speech count as pauses (ordinary breaks between phrases and the silence before/after the utterance no longer do), and only longer utterances (1.5 s or more of speech) get it.
 
-[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/kjranyone/sttts-gui/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/kjranyone/sttts-gui/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/kjranyone/sttts-gui/releases/tag/v0.1.0
