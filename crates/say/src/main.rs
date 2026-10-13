@@ -9,7 +9,7 @@
 //! 最初の呼び出しで自動的に起動し、10 分使われなければ終わる。使えないときはこのプロセスで合成する。
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -19,6 +19,7 @@ use serde_json::{Map, Value, json};
 use sttts_engine::config::{default_config, default_user_config_path, load_user_config, merge_config};
 use sttts_engine::say::{Line, Studio, line_like, list_models, list_voices, load_voice, read_take, use_model};
 use sttts_engine::config::get;
+use sttts_i18n::trf;
 use sttts_engine::say_server::{self, EngineCache, RunRequest, ServerPaths};
 use sttts_engine::tts::{IrodoriTts, TtsEngine};
 
@@ -218,6 +219,9 @@ fn run(cmd: Command) -> Result<Option<Value>> {
     let root = sttts_engine::root::app_root();
     let warn = |m: &str| eprintln!("[warn] {m}");
     let cfg = merge_config(&default_config(), &load_user_config(&default_user_config_path(&root), &warn));
+    if !matches!(cmd, Command::Help | Command::Serve | Command::Stop) {
+        install_presets(&root, &warn);
+    }
     let value = match cmd {
         Command::Help => {
             print!("{USAGE}");
@@ -253,6 +257,29 @@ fn run(cmd: Command) -> Result<Option<Value>> {
         }
     };
     Ok(Some(value))
+}
+
+/// 同梱の声プリセットのうち未導入のものを `data/voices` へ書き出す(GUI の起動時と同じ。消したものは戻さない)。
+/// 書き出せなくても声を使わないコマンドは動くので、警告にとどめる
+fn install_presets(root: &Path, warn: &dyn Fn(&str)) {
+    match sttts_engine::presets::install_presets(root) {
+        Ok(names) if !names.is_empty() => {
+            let names = names.join(", ");
+            eprintln!(
+                "{}",
+                trf!("Added the bundled voices: {names}", "同梱の声を追加しました: {names}", "已添加内置声音:{names}")
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            let e = format!("{e:#}");
+            warn(&trf!(
+            "Could not write the bundled voices: {e}",
+            "同梱の声を書き出せませんでした: {e}",
+            "无法写入内置声音:{e}"
+            ))
+        }
+    }
 }
 
 fn main() {

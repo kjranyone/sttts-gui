@@ -159,7 +159,7 @@ The v4 Large models are subject to the Gemma Terms of Use (`model use` prints th
 
 Reference audio is what keeps the output stable: the same person, the same timbre and level from line to line, and across models. A voice defined only by caption + seed drifts when the text changes and becomes a different person on another model. So **every line you produce should use a voice that has reference audio** (`ref_wav` is set in `sttts-say voice list`). Do not render lines from a caption alone, even a handful.
 
-1. **Use an existing voice when one fits.** `sttts-say voice list` shows the user's voices and eight bundled presets with reference audio: `genki`, `kuudere`, `narrator`, `ojisan`, `oneesan`, `seinen`, `shounen`, `tsundere`. A preset close to the character, with the details in `style`, is better than no reference.
+1. **Use an existing voice when one fits.** `sttts-say voice list` shows the user's voices and eight bundled presets with reference audio: `genki`, `kuudere`, `narrator`, `ojisan`, `oneesan`, `seinen`, `shounen`, `tsundere`. A preset close to the character, with the details in `style`, is better than no reference. The presets are built into the executable: any `sttts-say` command (e.g. `voice list`) writes the missing ones to `data/voices/` and says so on stderr. Do not fetch them from the repository. A preset that is still missing was deleted by the user and is not written again; make a voice instead (step 2).
 2. **Otherwise make one first**, before the lines:
    1. Audition seeds: `sttts-say audition --text "はじめまして、ミオです。よろしくね。" --caption "明るい十代の女の子の声" --count 6`
    2. Pick one of the returned `takes[].out` yourself (see [Choosing a take without hearing it](#choosing-a-take-without-hearing-it)), and keep the others for your report.

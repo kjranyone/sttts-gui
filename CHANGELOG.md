@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `sttts-say` did not write the bundled preset voices to `data/voices/` (only the GUI did), so a CLI-only install had no voices with reference audio. Any `sttts-say` command now writes the missing presets, like the GUI; deleted presets are still not restored.
+
 ## [0.1.3] - 2026-10-12
 
 ### Added
