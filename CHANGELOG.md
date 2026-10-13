@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-13
+
 ### Fixed
 
 - `sttts-say` did not write the bundled preset voices to `data/voices/` (only the GUI did), so a CLI-only install had no voices with reference audio. Any `sttts-say` command now writes the missing presets, like the GUI; deleted presets are still not restored.
@@ -85,7 +87,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reading aloud while you are still talking no longer stops for the rest of a long utterance when the recognizer revises text it has already read (e.g. Gemini adding spaces); it carries on from the same position.
 - Expression: "pausing as it goes" (間を取りながら) is no longer added to almost every utterance. Only gaps of 320 ms or more between speech count as pauses (ordinary breaks between phrases and the silence before/after the utterance no longer do), and only longer utterances (1.5 s or more of speech) get it.
 
-[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/kjranyone/sttts-gui/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/kjranyone/sttts-gui/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/kjranyone/sttts-gui/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/kjranyone/sttts-gui/compare/v0.1.0...v0.1.1

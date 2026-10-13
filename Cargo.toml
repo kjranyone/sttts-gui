@@ -6,7 +6,7 @@ members = ["crates/protocol", "crates/i18n", "crates/gui", "crates/irodori", "cr
 default-members = ["crates/protocol", "crates/i18n", "crates/gui", "crates/say"]
 
 [workspace.package]
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 # gpui-pre 0.3.8 が std::hint::cold_path(Rust 1.95 で stable 化)を使用するため
 rust-version = "1.95"
