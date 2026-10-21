@@ -30,7 +30,7 @@ Everything from the UI to the mic, VAD, ASR and TTS runs in **a single Rust proc
 ## Features
 
 - 🎙️ **Starts reading before you finish talking** — confirmed sentences are synthesized and played in order. While you keep talking, playback follows from where each sentence ends
-- 🦀 **Pure Rust inference** — Irodori-TTS and kotoba-whisper are reimplemented on [burn](https://burn.dev) and verified to match PyTorch numerically. RTF ≈ 0.3 on an Intel Arc B570
+- 🦀 **Pure Rust inference** — Irodori-TTS and kotoba-whisper are reimplemented on [burn](https://burn.dev) and verified to match PyTorch numerically. RTF ≈ 0.07–0.13 on an Intel Arc B580
 - 🎭 **Voice bank** — drag and drop about 10 seconds of reference audio and it speaks in that voice. Expression such as tempo and pauses in the original speech is also passed to Irodori
 - 🔀 **Choice of ASR** — Nemotron 3.5 (with punctuation, local) / kotoba-whisper (local GPU) / Gemini Live (cloud)
 - 🎚️ **ASIO support** — in ⚙ Settings, choose the driver (WASAPI / each ASIO driver), then the device for WASAPI or the channels for ASIO (input: single channels or a 2-channel pair; output: a 2-channel pair or a single channel)
@@ -173,7 +173,7 @@ Prebuilt binaries are on [Releases](https://github.com/kjranyone/sttts-gui/relea
 
 | Role | Model | Runs on | Notes |
 |---|---|---|---|
-| TTS | [Irodori-TTS v4.1 Small MeanFlow](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF) | GPU (burn / wgpu) | Default. RTF ≈ 0.3 (Arc B570). No CPU inference |
+| TTS | [Irodori-TTS v4.1 Small MeanFlow](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF) | GPU (burn / wgpu) | Default. RTF ≈ 0.07–0.13 (Arc B580). No CPU inference |
 | TTS | [Irodori-TTS v4.1 Small](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small) (RF) and its [int8 version](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-Quantized) | GPU (burn / wgpu) | 40 steps with guidance (CFG): more accurate, about 20x the computation. For `sttts-say` and other offline use |
 | TTS | [Irodori-TTS v4 Large](https://huggingface.co/Aratako/Irodori-TTS-v4-Large) (RF) and its [int8 version](https://huggingface.co/Aratako/Irodori-TTS-v4-Large-Quantized) | GPU (burn / wgpu) | 3.3B parameters, T5Gemma 2 text encoder ([Gemma Terms of Use](https://ai.google.dev/gemma/terms)) |
 | ASR | Nemotron 3.5 ASR streaming 0.6B | CPU (onnxruntime) | **Outputs punctuation**, whisper large-v3 class accuracy. Partial results continue from the previous computation, so they are cheap. Weak on runs of vowels only (e.g. 「あいうえお」) |

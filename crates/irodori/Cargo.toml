@@ -11,7 +11,7 @@ default = []
 # GPU(wgpu: Vulkan / DX12 / Metal)。Intel Arc を含む。Level Zero / PyTorch に依存しない。
 # 注意: burn/vulkan(SPIR-V コンパイラ)は Arc B570 + ドライバ 32.0.101.8860 で reduce 系(sum/mean/max/softmax/attention)が
 # 誤った値を返すため使わない。WGSL 経路(burn/wgpu のみ)は全演算が CPU と一致する。
-_gpu = ["burn/wgpu"]
+_gpu = ["burn/wgpu", "dep:burn-cubecl"]
 # 既定の GPU 構成: 演算融合(fusion)と自動チューニング(autotune)は使わない。
 # 有効にすると初回のカーネル探索・コンパイルが極端に長く(ModernBERT だけで 40 秒以上、コーデックは
 # 層ごとに 10 秒以上)、使わない場合の初回は 1 秒未満(定常速度は同程度)。
@@ -21,7 +21,9 @@ gpu-tuned = ["_gpu", "burn/fusion", "burn/autotune"]
 
 [dependencies]
 # flex = 純 Rust の CPU バックエンド(参照・テスト用)
-burn = { version = "0.22", default-features = false, features = ["std", "flex"] }
+burn = { version = "0.22", default-features = false, features = ["std", "flex", "extension"] }
+# GPU の自前 WGSL カーネル(`gemm`)の起動に使う
+burn-cubecl = { version = "0.22", default-features = false, features = ["std", "template"], optional = true }
 tokenizers = { version = "0.22", default-features = false, features = ["unstable_wasm"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

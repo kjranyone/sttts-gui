@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Irodori-TTS runs about 3–7× faster on the GPU. Matrix multiplication (including attention), the codec's convolutions and parts of the DiT now use hand-written WGSL kernels instead of burn's defaults, CFG passes run as one batch, and the codec decodes in 4-second windows instead of 1-second ones. On an Intel Arc B580, 8 seconds of audio take 0.35 s with the default MeanFlow model (was 1.55 s) and 1.83 s with RF models (was 6.2 s); 30 seconds take 1.1 s (was 6.6 s) and 9 s (was 62 s). Warm-up is also shorter. Decoding uses about 0.45 GB more GPU memory. Output differs from before only at the level of floating-point rounding.
+
 ## [0.1.4] - 2026-10-13
 
 ### Fixed

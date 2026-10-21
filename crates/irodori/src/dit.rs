@@ -9,7 +9,7 @@
 //! - 線形層は `[out, in]` の重みをロード時に 1 回転置して保持する。
 
 use anyhow::{Context, Result, bail, ensure};
-use burn::tensor::activation::{sigmoid, silu};
+use burn::tensor::activation::{sigmoid, silu, softmax};
 use burn::tensor::module::attention;
 use burn::tensor::ops::AttentionModuleOptions;
 use burn::tensor::{Device, Tensor, TensorData};
@@ -56,6 +56,9 @@ struct Rope {
     /// `[1, S, 1, Dh/2, 1]`
     cos: Tensor<5>,
     sin: Tensor<5>,
+    /// 同じ表を `[S*Dh/2]` で(GPU の [`crate::gemm::qk_norm_rope`] 用)
+    cos1: Tensor<1>,
+    sin1: Tensor<1>,
 }
 
 impl Rope {
@@ -73,10 +76,9 @@ impl Rope {
             }
         }
         let shape = vec![1, seq_len, 1, half, 1];
-        Self {
-            cos: Tensor::<5>::from_data(TensorData::new(cos, shape.clone()), dev),
-            sin: Tensor::<5>::from_data(TensorData::new(sin, shape), dev),
-        }
+        let cos = Tensor::<5>::from_data(TensorData::new(cos, shape.clone()), dev);
+        let sin = Tensor::<5>::from_data(TensorData::new(sin, shape), dev);
+        Self { cos1: cos.clone().reshape([seq_len * half]), sin1: sin.clone().reshape([seq_len * half]), cos, sin }
     }
 
     /// `x`: `[B, S, H, Dh]`
@@ -113,6 +115,16 @@ fn from_heads(x: Tensor<4>) -> Tensor<3> {
 }
 
 fn sdpa(q: Tensor<4>, k: Tensor<4>, v: Tensor<4>, bias: Tensor<4>) -> Tensor<4> {
+    let [b, h, s, d] = q.dims();
+    let sk = k.dims()[2];
+    // GPU では QK^T と PV を自前の行列積で(burn の注意は既定で burn の行列積を使い、長い系列で遅い)。
+    // 式と順序は burn の attention_fallback と同じ: softmax(QK^T * scale + bias) V
+    if q.device() != Device::flex() && sk.is_multiple_of(4) && d.is_multiple_of(4) {
+        let kt = k.swap_dims(2, 3).reshape([b * h, d, sk]);
+        let scores = crate::gemm::bmm(q.reshape([b * h, s, d]), kt).reshape([b, h, s, sk]);
+        let p = softmax(scores.mul_scalar(1.0 / (d as f64).sqrt()).add(bias), 3);
+        return crate::gemm::bmm(p.reshape([b * h, s, sk]), v.reshape([b * h, sk, d])).reshape([b, h, s, d]);
+    }
     attention(q, k, v, None, Some(bias), AttentionModuleOptions::default())
 }
 
@@ -288,6 +300,9 @@ impl LowRankAdaLn {
     }
 
     fn norm_modulate(&self, x: Tensor<3>, shift: Tensor<3>, scale: Tensor<3>) -> Tensor<3> {
+        if let Some(y) = crate::gemm::norm_modulate(&x, &shift, &scale, self.eps as f32) {
+            return y;
+        }
         let inv = x.clone().square().mean_dim(2).add_scalar(self.eps).sqrt().recip();
         x.mul(inv).mul(scale.add_scalar(1.0)).add(shift)
     }
@@ -297,6 +312,12 @@ impl LowRankAdaLn {
 pub struct LayerKv {
     pub k: Tensor<4>,
     pub v: Tensor<4>,
+}
+
+/// 各層の adaLN 変調([`Dit::modulations`])。層ごとに [注意, MLP] の (shift, scale, tanh(gate))、各 `[N, 1, dim]`
+pub struct Modulations {
+    layers: Vec<[(Tensor<3>, Tensor<3>, Tensor<3>); 2]>,
+    n: usize,
 }
 
 /// [`Dit::prepare`] の結果(条件・系列長が固定の間、全ステップで使い回す)
@@ -332,6 +353,7 @@ impl ContextKv {
 }
 
 /// エンコード済み条件(`encode_conditions` の出力に相当)。マスクは f32(1.0 / 0.0)。
+#[derive(Clone)]
 pub struct Conditions {
     pub text_state: Tensor<3>,
     pub text_mask: Tensor<2>,
@@ -359,17 +381,48 @@ impl Conditions {
     }
 }
 
+/// 自己注意の q, k, v とゲートの射影(f32 なら 1 つの行列積にまとめる)
+enum QkvGate {
+    /// 出力 `[q | k | v | gate]`
+    Fused(Box<Linear>),
+    /// `[wq, wk, wv, gate]`(int8 など、まとめられない重み)
+    Separate(Box<[Linear; 4]>),
+}
+
+impl QkvGate {
+    fn new(wq: Linear, wk: Linear, wv: Linear, gate: Linear) -> Self {
+        match Linear::concat_out(vec![wq, wk, wv, gate]) {
+            Ok(l) => Self::Fused(Box::new(l)),
+            Err(v) => Self::Separate(Box::new(v.try_into().unwrap_or_else(|_| unreachable!()))),
+        }
+    }
+
+    /// (q, k, v, gate)、各 `[B, S, dim]`。まとめた射影なら、その出力 `[B*S, 4*dim]` も返す(q, k はその 0 列目・dim 列目から)
+    fn forward(&self, x: Tensor<3>) -> (Option<Tensor<2>>, Tensor<3>, Tensor<3>, Tensor<3>, Tensor<3>) {
+        match self {
+            Self::Fused(l) => {
+                let [b, s, _] = x.dims();
+                let d = l.out_dim() / 4;
+                let y = l.forward3(x);
+                let part = |i: usize| y.clone().narrow(2, i * d, d);
+                (Some(y.clone().reshape([b * s, 4 * d])), part(0), part(1), part(2), part(3))
+            }
+            Self::Separate(w) => {
+                let [wq, wk, wv, gate] = &**w;
+                (None, wq.forward3(x.clone()), wk.forward3(x.clone()), wv.forward3(x.clone()), gate.forward3(x))
+            }
+        }
+    }
+}
+
 struct JointAttention {
-    wq: Linear,
-    wk: Linear,
-    wv: Linear,
+    qkvg: QkvGate,
     wk_text: Linear,
     wv_text: Linear,
     wk_speaker: Option<Linear>,
     wv_speaker: Option<Linear>,
     wk_caption: Option<Linear>,
     wv_caption: Option<Linear>,
-    gate: Linear,
     wo: Linear,
     q_norm: RmsNorm<4>,
     k_norm: RmsNorm<4>,
@@ -386,16 +439,13 @@ impl JointAttention {
             if w.contains(&format!("{prefix}.{n}.weight")) { Ok(Some(lin(n)?)) } else { Ok(None) }
         };
         Ok(Self {
-            wq: lin("wq")?,
-            wk: lin("wk")?,
-            wv: lin("wv")?,
+            qkvg: QkvGate::new(lin("wq")?, lin("wk")?, lin("wv")?, lin("gate")?),
             wk_text: lin("wk_text")?,
             wv_text: lin("wv_text")?,
             wk_speaker: opt("wk_speaker")?,
             wv_speaker: opt("wv_speaker")?,
             wk_caption: opt("wk_caption")?,
             wv_caption: opt("wv_caption")?,
-            gate: lin("gate")?,
             wo: lin("wo")?,
             q_norm: RmsNorm::from_weights(w, &format!("{prefix}.q_norm.weight"), [1, 1, heads, hd], eps, dev)?,
             k_norm: RmsNorm::from_weights(w, &format!("{prefix}.k_norm.weight"), [1, 1, heads, hd], eps, dev)?,
@@ -432,13 +482,24 @@ impl JointAttention {
         let [b, s, d] = x.dims();
         let hd = d / self.heads;
         let split = |t: Tensor<3>| t.reshape([b, s, self.heads, hd]);
-        let q = rope.apply_half(self.q_norm.forward(split(self.wq.forward3(x.clone()))));
-        let ks = rope.apply_half(self.k_norm.forward(split(self.wk.forward3(x.clone()))));
-        let vs = split(self.wv.forward3(x.clone()));
+        let (full, q, ks, vs, g) = self.qkvg.forward(x);
+        // GPU では RMSNorm と RoPE を 1 つのカーネルで(まとめた射影の出力から直接読む)
+        let norm_rope = |norm: &RmsNorm<4>, part: &Tensor<3>, col: usize| {
+            let (y, off) = match &full {
+                Some(y) => (y.clone(), col),
+                None => (part.clone().reshape([b * s, d]), 0),
+            };
+            let w = norm.w.clone().reshape([d]);
+            crate::gemm::qk_norm_rope(&y, off, s, self.heads, self.heads / 2, &w, &rope.cos1, &rope.sin1, norm.eps as f32)
+                .map(|t| t.reshape([b, s, self.heads, hd]))
+        };
+        let q = norm_rope(&self.q_norm, &q, 0).unwrap_or_else(|| rope.apply_half(self.q_norm.forward(split(q))));
+        let ks = norm_rope(&self.k_norm, &ks, d).unwrap_or_else(|| rope.apply_half(self.k_norm.forward(split(ks))));
+        let vs = split(vs);
         let k = Tensor::cat(vec![ks.swap_dims(1, 2), kv.k.clone()], 2);
         let v = Tensor::cat(vec![vs.swap_dims(1, 2), kv.v.clone()], 2);
         let y = from_heads(sdpa(q.swap_dims(1, 2), k, v, bias));
-        self.wo.forward3(y.mul(sigmoid(self.gate.forward3(x))))
+        self.wo.forward3(y.mul(sigmoid(g)))
     }
 }
 
@@ -669,7 +730,7 @@ impl Dit {
         ensure!(valid_len >= 1 && valid_len <= s, "valid_len {valid_len} out of range 1..={s}");
         let dev = &self.device;
         let heads = self.cfg.num_heads;
-        let kv = match kv {
+        let mut kv = match kv {
             Some(k) => ContextKv {
                 layers: k.layers.iter().map(|l| LayerKv { k: l.k.clone(), v: l.v.clone() }).collect(),
                 speaker_range: k.speaker_range,
@@ -678,7 +739,18 @@ impl Dit {
         };
         ensure!(kv.layers.len() == self.blocks.len(), "context kv cache layer count mismatch");
         // 連結キー = [自己(valid_len まで有効)、text、speaker、caption]
-        let ctx_mask = cond.context_mask();
+        let mut ctx_mask = cond.context_mask();
+        // キーの数を 4 の倍数にそろえる(GPU の行列積の条件)。足したキーは無効(マスク 0)なので結果は変わらない
+        let pad = (4 - (s + ctx_mask.dims()[1]) % 4) % 4;
+        if pad > 0 {
+            ctx_mask = Tensor::cat(vec![ctx_mask, Tensor::<2>::zeros([b, pad], dev)], 1);
+            for l in &mut kv.layers {
+                let [kb, kh, _, kd] = l.k.dims();
+                let z = Tensor::<4>::zeros([kb, kh, pad, kd], dev);
+                l.k = Tensor::cat(vec![l.k.clone(), z.clone()], 2);
+                l.v = Tensor::cat(vec![l.v.clone(), z], 2);
+            }
+        }
         let self_mask = if valid_len == s {
             Tensor::<2>::ones([b, s], dev)
         } else {
@@ -692,29 +764,58 @@ impl Dit {
     /// [`Self::prepare`] 済みの共通部分を使って 1 ステップ進める。`t` / `delta_t` はホスト側の値(バッチ長)。
     /// `delta_t` は MeanFlow では必須、RF では None。
     pub fn forward_prepared(&self, x_t: Tensor<3>, t: &[f32], delta_t: Option<&[f32]>, p: &Prepared) -> Result<Tensor<3>> {
-        let [b, s, _] = x_t.dims();
-        ensure!(b == p.batch && s == p.seq_len, "x_t shape {:?} != prepared ({}, {})", x_t.dims(), p.batch, p.seq_len);
+        let b = x_t.dims()[0];
         ensure!(t.len() == b, "t must have batch size {b}");
+        ensure!(delta_t.is_none_or(|d| d.len() == b), "delta_t must have batch size {b}");
+        let mods = self.modulations(t, delta_t)?;
+        self.forward_mods(x_t, &mods, None, p)
+    }
+
+    /// 時刻(と MeanFlow の区間長)ごとの adaLN 変調をまとめて作る。時刻だけで決まり、x や条件に依らないので、
+    /// サンプラは全ステップ分を 1 回で作り([`Self::forward_step`] で i 番目を使う)、CFG の各パスでも共有する。
+    pub fn modulations(&self, t: &[f32], delta_t: Option<&[f32]>) -> Result<Modulations> {
         let dev = &self.device;
         let ted = self.cfg.timestep_embed_dim;
         let mut cond_embed = self.cond_module.forward(timestep_embedding(t, ted, dev));
         match (&self.delta_cond_module, delta_t) {
             (Some(m), Some(dt)) => {
-                ensure!(dt.len() == b, "delta_t must have batch size {b}");
+                ensure!(dt.len() == t.len(), "delta_t length {} != t length {}", dt.len(), t.len());
                 cond_embed = cond_embed.add(m.forward(timestep_embedding(dt, ted, dev)));
             }
             (None, None) => {}
             (Some(_), None) => bail!("delta_t is required for a MeanFlow forward pass"),
             (None, Some(_)) => bail!("delta_t was provided to an RF velocity model"),
         }
+        let layers = self
+            .blocks
+            .iter()
+            .map(|blk| [blk.attention_adaln.modulation(&cond_embed), blk.mlp_adaln.modulation(&cond_embed)])
+            .collect();
+        Ok(Modulations { layers, n: t.len() })
+    }
 
+    /// [`Self::modulations`] の `i` 番目の時刻で 1 ステップ進める(バッチ全体が同じ時刻)。
+    pub fn forward_step(&self, x_t: Tensor<3>, mods: &Modulations, i: usize, p: &Prepared) -> Result<Tensor<3>> {
+        ensure!(i < mods.n, "step {i} out of range (modulations for {} steps)", mods.n);
+        self.forward_mods(x_t, mods, Some(i), p)
+    }
+
+    /// `step` が Some なら変調の `step` 番目をバッチ全体に、None なら変調をバッチ要素ごとに使う
+    fn forward_mods(&self, x_t: Tensor<3>, mods: &Modulations, step: Option<usize>, p: &Prepared) -> Result<Tensor<3>> {
+        let [b, s, _] = x_t.dims();
+        ensure!(b == p.batch && s == p.seq_len, "x_t shape {:?} != prepared ({}, {})", x_t.dims(), p.batch, p.seq_len);
+        ensure!(step.is_some() || mods.n == b, "modulations for {} steps do not match batch {b}", mods.n);
+        let pick = |m: &(Tensor<3>, Tensor<3>, Tensor<3>)| match step {
+            Some(i) => (m.0.clone().narrow(0, i, 1), m.1.clone().narrow(0, i, 1), m.2.clone().narrow(0, i, 1)),
+            None => m.clone(),
+        };
         let mut x = self.in_proj.forward3(x_t);
-        for (blk, lkv) in self.blocks.iter().zip(&p.kv.layers) {
-            let (shift, scale, gate) = blk.attention_adaln.modulation(&cond_embed);
+        for ((blk, lkv), [am, mm]) in self.blocks.iter().zip(&p.kv.layers).zip(&mods.layers) {
+            let (shift, scale, gate) = pick(am);
             let h = blk.attention_adaln.norm_modulate(x.clone(), shift, scale);
             x = x.add(gate.mul(blk.attention.forward(h, lkv, p.bias.clone(), &p.rope)));
 
-            let (shift, scale, gate) = blk.mlp_adaln.modulation(&cond_embed);
+            let (shift, scale, gate) = pick(mm);
             let h = blk.mlp_adaln.norm_modulate(x.clone(), shift, scale);
             x = x.add(gate.mul(blk.mlp.forward(h)));
         }

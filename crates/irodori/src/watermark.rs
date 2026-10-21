@@ -189,7 +189,7 @@ impl Layer {
             let base = ci * CHUNK;
             let mut parts: Vec<Tensor<2>> = taps.iter().map(|&o| x.clone().narrow(1, base + o, CHUNK)).collect();
             let cols = if parts.len() == 1 { parts.pop().unwrap() } else { Tensor::cat(parts, 0) };
-            let cg = self.w2.clone().matmul(cols) + self.b.clone();
+            let cg = crate::gemm::matmul(self.w2.clone(), cols) + self.b.clone();
             let y = cg.clone().narrow(0, 0, co) * sigmoid(cg.narrow(0, co, co));
             let m = g.mask.clone().narrow(1, base, CHUNK);
             sum = sum + (y.clone() * m).sum_dim(1);

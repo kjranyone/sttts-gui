@@ -10,6 +10,7 @@
 //! - [`pth`] / [`codec`]: DACVAE(潜在 ⇄ 波形)
 //! - [`watermark`]: SilentCipher 透かし
 //! - [`pipeline`]: 上記をつないだ `synthesize`
+//! - [`gemm`]: GPU の自前カーネル(行列積・畳み込み・DiT の正規化など。CPU は burn のまま)
 
 // バイト列 → 数値の変換は `chunks_exact` + `from_le_bytes` と書いたほうが読みやすい(速度は同じ)
 #![allow(clippy::chunks_exact_to_as_chunks)]
@@ -26,6 +27,7 @@ pub mod config;
 pub mod device;
 pub mod dit;
 pub mod duration;
+pub mod gemm;
 pub mod modernbert;
 pub mod nn;
 pub mod pipeline;

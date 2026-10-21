@@ -56,6 +56,21 @@ impl Linear {
         Ok(Self { w: Weight::Dense(wt), b, in_dim, out_dim })
     }
 
+    /// 同じ入力に掛ける複数の層(バイアスなし・f32)を、出力方向に連結した 1 つの層にする(1 回の行列積で済む)。
+    /// 条件に合わない(int8・バイアスあり・入力次元が違う)ときは元の層をそのまま返す。
+    pub fn concat_out(parts: Vec<Linear>) -> std::result::Result<Linear, Vec<Linear>> {
+        let in_dim = parts[0].in_dim;
+        if parts.iter().any(|p| p.b.is_some() || p.in_dim != in_dim || !matches!(p.w, Weight::Dense(_))) {
+            return Err(parts);
+        }
+        let out_dim = parts.iter().map(|p| p.out_dim).sum();
+        let ws = parts.into_iter().map(|p| match p.w {
+            Weight::Dense(w) => w,
+            Weight::Int8(_) => unreachable!(),
+        });
+        Ok(Self { w: Weight::Dense(Tensor::cat(ws.collect(), 1)), b: None, in_dim, out_dim })
+    }
+
     pub fn in_dim(&self) -> usize {
         self.in_dim
     }
@@ -66,7 +81,7 @@ impl Linear {
 
     pub fn forward2(&self, x: Tensor<2>) -> Tensor<2> {
         let y = match &self.w {
-            Weight::Dense(wt) => x.matmul(wt.clone()),
+            Weight::Dense(wt) => crate::gemm::matmul(x, wt.clone()),
             Weight::Int8(q) => x.matmul(q.clone().dequantize().transpose()),
         };
         match &self.b {

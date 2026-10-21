@@ -53,7 +53,7 @@ pub struct ModernBert {
 pub(crate) fn linear(x: Tensor<3>, w: &Tensor<2>) -> Tensor<3> {
     let [b, s, i] = x.dims();
     let o = w.dims()[1];
-    x.reshape([b * s, i]).matmul(w.clone()).reshape([b, s, o])
+    crate::gemm::matmul(x.reshape([b * s, i]), w.clone()).reshape([b, s, o])
 }
 
 /// バイアスなし LayerNorm(最終軸)。

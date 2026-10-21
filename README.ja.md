@@ -27,7 +27,7 @@ UI からマイク・VAD・ASR・TTS まで、**Rust 1 プロセスだけ**で�
 ## 特長
 
 - 🎙️ **話し終わる前に読み上げ始める** — 確定した文から順に合成・再生します。話し続けていても、文が切れたところから読み上げが追いかけます
-- 🦀 **ピュア Rust 推論** — Irodori-TTS と kotoba-whisper を [burn](https://burn.dev) で再実装し、PyTorch と数値一致を確認済み。Intel Arc B570 で RTF ≈ 0.3
+- 🦀 **ピュア Rust 推論** — Irodori-TTS と kotoba-whisper を [burn](https://burn.dev) で再実装し、PyTorch と数値一致を確認済み。Intel Arc B580 で RTF ≈ 0.07〜0.13
 - 🎭 **声のバンク** — 10 秒ほどの参照音声をドラッグ&ドロップすると、その声で話します。テンポや間など、元の話し方の表現も Irodori に渡します
 - 🔀 **ASR を選べる** — Nemotron 3.5(句読点付き・ローカル)/ kotoba-whisper(ローカル GPU)/ Gemini Live(クラウド)
 - 🎚️ **ASIO 対応** — ⚙ 詳細設定でドライバ(WASAPI / 各 ASIO ドライバ)を選び、WASAPI ならデバイス、ASIO なら使うチャンネル(入力は 1ch ずつか 2ch の組、出力は 2ch の組か 1ch)を選べます
@@ -170,7 +170,7 @@ CLI はリアルタイムでなくてよいので、遅くても正確なモデ�
 
 | 役割 | モデル | 実行環境 | 備考 |
 |---|---|---|---|
-| TTS | [Irodori-TTS v4.1 Small MeanFlow](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF) | GPU(burn / wgpu) | 既定。RTF ≈ 0.3(Arc B570)。CPU 推論はしません |
+| TTS | [Irodori-TTS v4.1 Small MeanFlow](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF) | GPU(burn / wgpu) | 既定。RTF ≈ 0.07〜0.13(Arc B580)。CPU 推論はしません |
 | TTS | [Irodori-TTS v4.1 Small](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small)(RF)と [int8 版](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-Quantized) | GPU(burn / wgpu) | 40 ステップ + CFG。より正確だが計算量は約 20 倍。`sttts-say` などリアルタイムでない用途向け |
 | TTS | [Irodori-TTS v4 Large](https://huggingface.co/Aratako/Irodori-TTS-v4-Large)(RF)と [int8 版](https://huggingface.co/Aratako/Irodori-TTS-v4-Large-Quantized) | GPU(burn / wgpu) | 33 億パラメータ、T5Gemma 2 のテキストエンコーダ([Gemma の利用規約](https://ai.google.dev/gemma/terms)) |
 | ASR | Nemotron 3.5 ASR streaming 0.6B | CPU(onnxruntime) | **句読点を出力**、whisper large-v3 級の精度。途中経過は前回の続きから計算するので軽い。母音だけの連続(「あいうえお」等)は苦手 |

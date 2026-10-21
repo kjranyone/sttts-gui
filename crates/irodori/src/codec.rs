@@ -69,6 +69,26 @@ impl Conv {
         })
     }
 
+    /// `act` を通してから畳み込み、`res` を足す。GPU で stride 1 なら 1 つのカーネル([`crate::gemm::conv1d`])で計算する
+    fn forward_fused(&self, x: Tensor<3>, act: Option<&Snake>, res: Option<&Tensor<3>>) -> Tensor<3> {
+        if self.stride == 1 {
+            let k = self.w.dims()[2];
+            let snake = act.map(|s| crate::gemm::SnakeParams { alpha: &s.alpha1, inv: &s.inv1 });
+            if let Some(y) = crate::gemm::conv1d(&x, &self.w2, k, self.dil, self.pad, self.b.as_ref(), snake, res) {
+                return y;
+            }
+        }
+        let x = match act {
+            Some(s) => s.forward(x),
+            None => x,
+        };
+        let y = self.forward(x);
+        match res {
+            Some(r) => y + r.clone(),
+            None => y,
+        }
+    }
+
     fn forward(&self, x: Tensor<3>) -> Tensor<3> {
         let [batch, c, l] = x.dims();
         let [co, _, k] = self.w.dims();
@@ -82,7 +102,7 @@ impl Conv {
         let lout = l + 2 * pad - dil * (k - 1);
         let w2 = self.w2.clone();
         if k == 1 {
-            let y = w2.matmul(x.reshape([c, l])).reshape([1, co, lout]);
+            let y = crate::gemm::matmul(w2, x.reshape([c, l])).reshape([1, co, lout]);
             return match &self.b {
                 Some(b) => y + b.clone().reshape([1, co, 1]),
                 None => y,
@@ -102,7 +122,7 @@ impl Conv {
             let n = CHUNK_COLS.min(lout - t0);
             let parts: Vec<Tensor<3>> = (0..k).map(|j| xp.clone().narrow(2, t0 + j * dil, n)).collect();
             let cols = Tensor::cat(parts, 1).reshape([k * c, n]);
-            pieces.push(w2.clone().matmul(cols).reshape([1, co, n]));
+            pieces.push(crate::gemm::matmul(w2.clone(), cols).reshape([1, co, n]));
             t0 += n;
         }
         let y = if pieces.len() == 1 { pieces.pop().unwrap() } else { Tensor::cat(pieces, 2) };
@@ -117,16 +137,38 @@ struct ConvT {
     w: Tensor<3>,
     b: Option<Tensor<1>>,
     opts: ConvTransposeOptions<1>,
+    stride: usize,
+    /// `[k*Cout, Cin]`(`w[c, o, j]` を行 `j*Cout + o` に。GPU の行列積 + 重なり加算用)
+    wt: Tensor<2>,
 }
 
 impl ConvT {
     /// `NormConvTranspose1d`(pad_mode="none"): padding = (s+1)/2、output_padding = s%2
     fn load(p: &Pth, name: &str, stride: usize, dev: &Device) -> Result<Self> {
+        let w = p.tensor::<3>(&format!("{name}.weight"), dev)?;
+        let [ci, co, k] = w.dims();
+        let wt = w.clone().permute([2, 1, 0]).reshape([k * co, ci]);
         Ok(Self {
-            w: p.tensor::<3>(&format!("{name}.weight"), dev)?,
+            w,
             b: Some(p.tensor::<1>(&format!("{name}.bias"), dev)?),
             opts: ConvTransposeOptions::new([stride], [stride.div_ceil(2)], [stride % 2], [1], 1),
+            stride,
+            wt,
         })
+    }
+
+    /// `act` を通してから転置畳み込み。GPU で kernel = 2 * stride なら行列積 + 重なり加算([`crate::gemm::conv_transpose1d`])
+    fn forward_fused(&self, x: Tensor<3>, act: &Snake) -> Tensor<3> {
+        let k = self.w.dims()[2];
+        if k == 2 * self.stride
+            && let Some(b) = &self.b
+        {
+            let snake = Some(crate::gemm::SnakeParams { alpha: &act.alpha1, inv: &act.inv1 });
+            if let Some(y) = crate::gemm::conv_transpose1d(&x, &self.wt, self.stride, b, snake) {
+                return y;
+            }
+        }
+        self.forward(act.forward(x))
     }
 
     fn forward(&self, x: Tensor<3>) -> Tensor<3> {
@@ -138,13 +180,17 @@ impl ConvT {
 struct Snake {
     alpha: Tensor<3>,
     inv: Tensor<3>,
+    /// `[C]`(畳み込みに組み込む用)
+    alpha1: Tensor<1>,
+    inv1: Tensor<1>,
 }
 
 impl Snake {
     fn load(p: &Pth, name: &str, dev: &Device) -> Result<Self> {
         let alpha = p.tensor::<3>(name, dev)?;
         let inv = (alpha.clone() + 1e-9).recip();
-        Ok(Self { alpha, inv })
+        let c = alpha.dims()[1];
+        Ok(Self { alpha1: alpha.clone().reshape([c]), inv1: inv.clone().reshape([c]), alpha, inv })
     }
 
     fn forward(&self, x: Tensor<3>) -> Tensor<3> {
@@ -174,9 +220,8 @@ impl ResUnit {
     }
 
     fn forward(&self, x: Tensor<3>) -> Tensor<3> {
-        let a = self.c0.forward(self.s0.forward(x.clone()));
-        let y = self.c1.forward(self.s1.forward(a));
-        y + x
+        let a = self.c0.forward_fused(x.clone(), Some(&self.s0), None);
+        self.c1.forward_fused(a, Some(&self.s1), Some(&x))
     }
 }
 
@@ -202,7 +247,7 @@ impl DecoderBlock {
     }
 
     fn forward(&self, x: Tensor<3>) -> Tensor<3> {
-        let mut x = self.up.forward(self.snake.forward(x));
+        let mut x = self.up.forward_fused(x, &self.snake);
         for u in &self.units {
             x = u.forward(x);
         }
@@ -234,12 +279,12 @@ impl Decoder {
     }
 
     fn forward(&self, x: Tensor<3>) -> Tensor<3> {
-        let mut x = self.first.forward(x);
+        let mut x = self.first.forward_fused(x, None, None);
         for b in &self.blocks {
             x = b.forward(x);
         }
         // `_watermark_passthrough`: encoder_block.forward_no_conv = Snake → conv(→1ch) → Tanh
-        self.wm_conv.forward(self.wm_snake.forward(x)).tanh()
+        self.wm_conv.forward_fused(x, Some(&self.wm_snake), None).tanh()
     }
 }
 
@@ -267,7 +312,7 @@ impl EncoderBlock {
         for u in &self.units {
             x = u.forward(x);
         }
-        self.down.forward(self.snake.forward(x))
+        self.down.forward_fused(x, Some(&self.snake), None)
     }
 }
 
@@ -296,11 +341,11 @@ impl Encoder {
     }
 
     fn forward(&self, x: Tensor<3>) -> Tensor<3> {
-        let mut x = self.first.forward(x);
+        let mut x = self.first.forward_fused(x, None, None);
         for b in &self.blocks {
             x = b.forward(x);
         }
-        self.last.forward(self.snake.forward(x))
+        self.last.forward_fused(x, Some(&self.snake), None)
     }
 }
 
@@ -376,7 +421,7 @@ impl DacVae {
     /// 潜在 `[B,T,D]` → 波形 `[B,1,T*hop]`(全体一括)。
     pub fn decode_latent(&self, z: Tensor<3>) -> Tensor<3> {
         let z = z.swap_dims(1, 2);
-        self.decoder.forward(self.out_proj.forward(z))
+        self.decoder.forward(self.out_proj.forward_fused(z, None, None))
     }
 
     /// 時間窓ごとに分割してデコードする。`window` フレームを 1 窓の「採用範囲」とし、前後に
@@ -463,7 +508,7 @@ impl DacVae {
             all.extend_from_slice(&x);
         }
         let t = Tensor::<3>::from_data(TensorData::new(all, [b, 1, len]), &self.device);
-        let z = self.in_proj.forward(self.encoder.forward(t));
+        let z = self.in_proj.forward_fused(self.encoder.forward(t), None, None);
         let mean = z.narrow(1, 0, self.latent_dim);
         Ok(mean.swap_dims(1, 2))
     }

@@ -30,7 +30,7 @@
 ## 特点
 
 - 🎙️ **话还没说完就开始朗读** — 按确定的句子依次合成、播放。即使你还在继续说,朗读也会从每句结束处跟上
-- 🦀 **纯 Rust 推理** — 用 [burn](https://burn.dev) 重新实现了 Irodori-TTS 和 kotoba-whisper,并确认与 PyTorch 数值一致。在 Intel Arc B570 上 RTF ≈ 0.3
+- 🦀 **纯 Rust 推理** — 用 [burn](https://burn.dev) 重新实现了 Irodori-TTS 和 kotoba-whisper,并确认与 PyTorch 数值一致。在 Intel Arc B580 上 RTF ≈ 0.07〜0.13
 - 🎭 **声音库** — 拖放约 10 秒的参考音频,就会用那个声音说话。原始说话方式中的语速、停顿等表现也会传给 Irodori
 - 🔀 **可选 ASR** — Nemotron 3.5(带标点、本地)/ kotoba-whisper(本地 GPU)/ Gemini Live(云端)
 - 🎚️ **支持 ASIO** — 在 ⚙ 详细设置中选择驱动(WASAPI / 各 ASIO 驱动),WASAPI 选择设备,ASIO 选择使用的声道(输入为单声道或 2 声道组合,输出为 2 声道组合或单声道)
@@ -173,7 +173,7 @@ CLI 无需实时,因此适合较慢但更准确的模型。所选模型记录在
 
 | 角色 | 模型 | 运行环境 | 备注 |
 |---|---|---|---|
-| TTS | [Irodori-TTS v4.1 Small MeanFlow](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF) | GPU(burn / wgpu) | 默认。RTF ≈ 0.3(Arc B570)。不进行 CPU 推理 |
+| TTS | [Irodori-TTS v4.1 Small MeanFlow](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF) | GPU(burn / wgpu) | 默认。RTF ≈ 0.07〜0.13(Arc B580)。不进行 CPU 推理 |
 | TTS | [Irodori-TTS v4.1 Small](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small)(RF)及其 [int8 版](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-Quantized) | GPU(burn / wgpu) | 40 步 + CFG:更准确,计算量约为 20 倍。适合 `sttts-say` 等非实时用途 |
 | TTS | [Irodori-TTS v4 Large](https://huggingface.co/Aratako/Irodori-TTS-v4-Large)(RF)及其 [int8 版](https://huggingface.co/Aratako/Irodori-TTS-v4-Large-Quantized) | GPU(burn / wgpu) | 33 亿参数,T5Gemma 2 文本编码器([Gemma 使用条款](https://ai.google.dev/gemma/terms)) |
 | ASR | Nemotron 3.5 ASR streaming 0.6B | CPU(onnxruntime) | **输出标点**,精度接近 whisper large-v3。中间结果从上次的计算继续,开销小。不擅长只有元音的连续(如「あいうえお」) |

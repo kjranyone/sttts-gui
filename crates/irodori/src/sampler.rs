@@ -73,9 +73,11 @@ pub fn sample_euler_meanflow_padded(
     }
     let prepared = dit.prepare(cond, padded_len, seq_len)?;
     let sched = meanflow_schedule(steps);
+    let dts: Vec<f32> = (0..steps).map(|i| sched[i] - sched[i + 1]).collect();
+    let mods = dit.modulations(&sched[..steps], Some(&dts))?;
     for i in 0..steps {
         let (t, next) = (sched[i], sched[i + 1]);
-        let v = dit.forward_prepared(x.clone(), &vec![t; batch], Some(&vec![t - next; batch]), &prepared)?;
+        let v = dit.forward_step(x.clone(), &mods, i, &prepared)?;
         x = x.add(v.mul_scalar(next - t));
     }
     Ok(x)
@@ -264,6 +266,20 @@ fn drop_condition(cond: &Conditions, which: &[Guided], speaker_uncond: &Option<(
     Conditions { text_state: ts, text_mask: tm, speaker_state: ss, speaker_mask: sm, caption_state: cs, caption_mask: cm }
 }
 
+/// 条件をバッチ方向に連結する(話者・キャプションの有無はすべて同じであること)
+fn cat_conditions(cs: &[Conditions]) -> Conditions {
+    let cat3 = |f: &dyn Fn(&Conditions) -> Option<Tensor<3>>| cs.iter().map(f).collect::<Option<Vec<_>>>().map(|v| Tensor::cat(v, 0));
+    let cat2 = |f: &dyn Fn(&Conditions) -> Option<Tensor<2>>| cs.iter().map(f).collect::<Option<Vec<_>>>().map(|v| Tensor::cat(v, 0));
+    Conditions {
+        text_state: Tensor::cat(cs.iter().map(|c| c.text_state.clone()).collect(), 0),
+        text_mask: Tensor::cat(cs.iter().map(|c| c.text_mask.clone()).collect(), 0),
+        speaker_state: cat3(&|c| c.speaker_state.clone()),
+        speaker_mask: cat2(&|c| c.speaker_mask.clone()),
+        caption_state: cat3(&|c| c.caption_state.clone()),
+        caption_mask: cat2(&|c| c.caption_mask.clone()),
+    }
+}
+
 /// 話者状態の標本標準偏差(`torch.std`、不偏)
 fn std_all(t: &Tensor<3>) -> Result<f32> {
     let v: Vec<f32> = t
@@ -358,24 +374,32 @@ pub fn sample_euler_rf_cfg_padded(
         Ok(p)
     };
     let mut cond_p = prep(cond)?;
-    // CFG 用(joint は全部外した版、independent と alternating は外す条件ごと)。原典の independent は条件あり・なしを
-    // 1 バッチにまとめるが、burn-wgpu ではバッチ 2〜3 の forward がバッチ 1 の 5〜7 倍かかったので、バッチ 1 を本数ぶん回す
-    // (各サンプルは独立に計算されるので結果は同じ)
+    // CFG 用。independent と joint は、原典と同じく条件ありと外した版(independent は外す条件ごと、joint は全部外した
+    // 1 本)を 1 バッチにまとめて 1 回の forward にする(各サンプルは独立に計算されるので、別々に回すのと同じ結果)。
+    // alternating はステップごとに外す条件が替わるので、外した版を条件ごとに持って 2 回に分けて回す。
     let mut guided_p: Vec<Prepared> = Vec::new();
+    let mut batched_p: Option<Prepared> = None;
     if !guided.is_empty() {
         match opts.mode {
-            CfgGuidanceMode::Independent | CfgGuidanceMode::Alternating => {
+            CfgGuidanceMode::Independent => {
+                let mut passes = vec![cond.clone()];
+                passes.extend(guided.iter().map(|(g, _)| drop_condition(cond, &[*g], &speaker_uncond)));
+                batched_p = Some(prep(&cat_conditions(&passes))?);
+            }
+            CfgGuidanceMode::Joint => {
+                let all: Vec<Guided> = guided.iter().map(|(g, _)| *g).collect();
+                batched_p = Some(prep(&cat_conditions(&[cond.clone(), drop_condition(cond, &all, &speaker_uncond)]))?);
+            }
+            CfgGuidanceMode::Alternating => {
                 for (g, _) in &guided {
                     guided_p.push(prep(&drop_condition(cond, &[*g], &speaker_uncond))?);
                 }
             }
-            CfgGuidanceMode::Joint => {
-                let all: Vec<Guided> = guided.iter().map(|(g, _)| *g).collect();
-                guided_p.push(prep(&drop_condition(cond, &all, &speaker_uncond))?);
-            }
         }
     }
     let mut speaker_kv_active = opts.speaker_kv.is_some();
+    // 時刻だけで決まる adaLN の変調は全ステップ分をまとめて作る(CFG の各パスでも共有)
+    let mods = dit.modulations(&sched[..opts.steps], None)?;
 
     // IRODORI_TRACE: ステップごとの時間(読み戻して実行を完了させるので、計測時だけ)
     let trace = std::env::var_os("IRODORI_TRACE").is_some();
@@ -384,27 +408,30 @@ pub fn sample_euler_rf_cfg_padded(
         let use_cfg = !guided.is_empty() && (opts.cfg_min_t..=opts.cfg_max_t).contains(&f64::from(t));
         let t_step = std::time::Instant::now();
         let mut v = if !use_cfg {
-            dit.forward_prepared(x.clone(), &vec![t; batch], None, &cond_p)?
+            dit.forward_step(x.clone(), &mods, i, &cond_p)?
         } else {
-            match opts.mode {
-                CfgGuidanceMode::Independent => {
-                    let v_cond = dit.forward_prepared(x.clone(), &vec![t; batch], None, &cond_p)?;
+            match (opts.mode, &batched_p) {
+                (CfgGuidanceMode::Independent, Some(bp)) => {
+                    let v_all = dit.forward_step(Tensor::cat(vec![x.clone(); guided.len() + 1], 0), &mods, i, bp)?;
+                    let v_cond = v_all.clone().narrow(0, 0, batch);
                     let mut v = v_cond.clone();
-                    for ((_, scale), p) in guided.iter().zip(&guided_p) {
-                        let v_g = dit.forward_prepared(x.clone(), &vec![t; batch], None, p)?;
+                    for (g, (_, scale)) in guided.iter().enumerate() {
+                        let v_g = v_all.clone().narrow(0, (g + 1) * batch, batch);
                         v = v.add(v_cond.clone().sub(v_g).mul_scalar(*scale));
                     }
                     v
                 }
-                CfgGuidanceMode::Joint => {
-                    let v_cond = dit.forward_prepared(x.clone(), &vec![t; batch], None, &cond_p)?;
-                    let v_uncond = dit.forward_prepared(x.clone(), &vec![t; batch], None, &guided_p[0])?;
+                (CfgGuidanceMode::Joint, Some(bp)) => {
+                    let v_all = dit.forward_step(Tensor::cat(vec![x.clone(); 2], 0), &mods, i, bp)?;
+                    let v_cond = v_all.clone().narrow(0, 0, batch);
+                    let v_uncond = v_all.narrow(0, batch, batch);
                     v_cond.clone().add(v_cond.sub(v_uncond).mul_scalar(guided[0].1))
                 }
-                CfgGuidanceMode::Alternating => {
+                (CfgGuidanceMode::Independent | CfgGuidanceMode::Joint, None) => unreachable!("CFG batch is prepared when guidance is enabled"),
+                (CfgGuidanceMode::Alternating, _) => {
                     let k = i % guided.len();
-                    let v_cond = dit.forward_prepared(x.clone(), &vec![t; batch], None, &cond_p)?;
-                    let v_uncond = dit.forward_prepared(x.clone(), &vec![t; batch], None, &guided_p[k])?;
+                    let v_cond = dit.forward_step(x.clone(), &mods, i, &cond_p)?;
+                    let v_uncond = dit.forward_step(x.clone(), &mods, i, &guided_p[k])?;
                     v_cond.clone().add(v_cond.sub(v_uncond).mul_scalar(guided[k].1))
                 }
             }
@@ -418,7 +445,7 @@ pub fn sample_euler_rf_cfg_padded(
         {
             let inv = 1.0 / kv.scale;
             cond_p.kv.scale_speaker(inv, kv.max_layers);
-            for p in &mut guided_p {
+            for p in guided_p.iter_mut().chain(batched_p.as_mut()) {
                 p.kv.scale_speaker(inv, kv.max_layers);
             }
             speaker_kv_active = false;
