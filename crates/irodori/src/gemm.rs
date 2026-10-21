@@ -4,7 +4,8 @@
 //! (B580 で 2048 角が 0.8 TFLOPS)。DiT の全結合とコーデックの畳み込みはほぼ全時間が行列積なので、
 //! 共有メモリでタイル化したカーネル(`gemm.wgsl`)を使う(同じ B580 で 2048 角が 9 TFLOPS 前後)。
 //! コーデックの畳み込み(stride 1)は im2col を作らずに同じ行列積で計算し、前段の Snake・バイアス・
-//! 残差の足し込みも同じカーネルで行う(`conv1d.wgsl`)。
+//! 残差の足し込みも同じカーネルで行う(`conv1d.wgsl`)。透かしのゲート付き 3x3 畳み込みも同じカーネルで、
+//! 時間方向に切らずに全体を 1 回で計算する(一時メモリは入力と出力だけ)。
 //!
 //! 1 スレッドが受け持つ大きさ(タイル)は形状ごとに速いものが違うので、形状ごとに初回だけ候補を実測して選ぶ。
 //! どのタイルでも各出力は K 方向に同じ順で足すので、選んだタイルで結果は変わらない(ビット単位で同じ)。
@@ -156,7 +157,7 @@ pub fn conv1d(
             None => (dummy1(), dummy1()),
         };
         let res = res.cloned().unwrap_or_else(|| x.clone());
-        let geom = [c as u32, l as u32, lout as u32, k as u32, dil as u32, pad as u32, flags];
+        let geom = conv_geom(co, c, l, lout, k, dil, -(pad as i32), k, 0, kc, None, flags);
         let out = tuned(("conv1d", co, lout, kc), &dev, |t| {
             Tensor::<2>::from_dispatch(<Dispatch as cube::ConvBackend>::conv1d(
                 x.clone().into_dispatch(),
@@ -165,7 +166,7 @@ pub fn conv1d(
                 alpha.clone().into_dispatch(),
                 inv.clone().into_dispatch(),
                 res.clone().into_dispatch(),
-                geom.to_vec(),
+                geom.clone(),
                 pack(t),
             ))
         });
@@ -203,6 +204,116 @@ pub fn conv_transpose1d(x: &Tensor<3>, wt: &Tensor<2>, stride: usize, bias: &Ten
         let _ = (x, wt, stride, bias, snake);
         None
     }
+}
+
+/// `conv1d.wgsl` の起動引数: [Cout, Cin, L, Lout, 近傍の数, dil, off0, kw, rs, K, (ncols, wp, w), flags]
+#[cfg(feature = "_gpu")]
+#[allow(clippy::too_many_arguments)]
+fn conv_geom(
+    co: usize,
+    c: usize,
+    l: usize,
+    lout: usize,
+    taps: usize,
+    dil: usize,
+    off0: i32,
+    kw: usize,
+    rs: usize,
+    k_dim: usize,
+    flat: Option<&Flat>,
+    flags: u32,
+) -> Vec<u32> {
+    let (ncols, wp, w) = flat.map_or((0, 1, 0), |f| (f.h * f.wp(), f.wp(), f.w));
+    [co, c, l, lout, taps, dil]
+        .iter()
+        .map(|&v| v as u32)
+        .chain([off0 as u32, kw as u32, rs as u32, k_dim as u32, ncols as u32, wp as u32, w as u32, flags])
+        .collect()
+}
+
+/// 透かしの縁取り付きの平らな配列(`h` 行 `w` 列。行の幅は `w + 2`、位置 `(i, j)` は `(i + 1) * (w + 2) + j + 1`)。
+/// 層の出力は `n_out` 列(`h * (w + 2)` 以上)を計算し、長さ `n_out + 2 * (w + 2) + 2` の配列に置く
+pub struct Flat {
+    pub h: usize,
+    pub w: usize,
+    pub n_out: usize,
+}
+
+impl Flat {
+    fn wp(&self) -> usize {
+        self.w + 2
+    }
+
+    pub fn buf_len(&self) -> usize {
+        self.n_out + 2 * self.wp() + 2
+    }
+}
+
+/// 透かし(SilentCipher)の層: ゲート付き畳み込み(k = 1 か 3)+ 学習モードの BatchNorm(この入力の有効な位置で統計を取る)。
+/// `x`: 平らな活性 `[Cin, buf_len]`(縁取りと無効な位置は 0)、`w2`: `[2*Cout, K]`(conv の行のあとに gate の行。
+/// 列は (dy, dx, c) の順で、K は `k*k*Cin` を 4 の倍数に零で詰めたもの)、`b`: `[2*Cout]`、`bn_w` / `bn_b`: `[Cout]`。
+/// 戻り値は同じ形式の `[Cout, buf_len]`。入力は畳み込みの後すぐ捨てる(同時に持つのは入力か出力と、ゲート後の値の 2 つ)。
+/// GPU([`gpu_kernels`] が真)のときだけ呼ぶ。
+#[allow(clippy::too_many_arguments)]
+pub fn gated_conv_bn(
+    x: Tensor<2>,
+    w2: &Tensor<2>,
+    b: &Tensor<1>,
+    bn_w: &Tensor<1>,
+    bn_b: &Tensor<1>,
+    k: usize,
+    flat: &Flat,
+    eps: f32,
+) -> Tensor<2> {
+    #[cfg(feature = "_gpu")]
+    {
+        let [c, l] = x.dims();
+        let [co2, kc] = w2.dims();
+        let dev = x.device();
+        assert!(dev != Device::flex(), "gated_conv_bn: GPU only");
+        assert!(
+            l == flat.buf_len() && kc >= k * k * c && kc.is_multiple_of(4) && co2.is_multiple_of(2),
+            "gated_conv_bn: bad shapes x {:?} w2 {:?} k {k} buf_len {}",
+            x.dims(),
+            w2.dims(),
+            flat.buf_len()
+        );
+        let co = co2 / 2;
+        let wp = flat.wp();
+        // 出力の位置 p は平らな配列の wp + 1 + p。近傍 (dy, dx) は p + dy * wp + dx(k = 1 なら p + wp + 1)
+        let off0 = ((1 - k / 2) * (wp + 1)) as i32;
+        let geom = conv_geom(co, c, l, flat.n_out, k * k, 1, off0, k, wp, kc, Some(flat), 8 | 1);
+        // 使わない入力(Snake・残差)にはバイアスを渡す(カーネル側でダミーに差し替える)
+        let y = tuned(("gconv", co2, 0, kc), &dev, |t| {
+            Tensor::<2>::from_dispatch(<Dispatch as cube::ConvBackend>::conv1d(
+                x.clone().into_dispatch(),
+                w2.clone().into_dispatch(),
+                b.clone().into_dispatch(),
+                b.clone().into_dispatch(),
+                b.clone().into_dispatch(),
+                b.clone().into_dispatch(),
+                geom.clone(),
+                pack(t),
+            ))
+        });
+        drop(x);
+        let ncols = (flat.h * wp) as u32;
+        let n_valid = (flat.h * flat.w) as f32;
+        let sgeom = vec![flat.n_out as u32, wp as u32, flat.w as u32, ncols, n_valid.to_bits(), eps.to_bits()];
+        let ab = <Dispatch as cube::ConvBackend>::bn_stats(y.clone().into_dispatch(), bn_w.clone().into_dispatch(), bn_b.clone().into_dispatch(), sgeom);
+        let ageom = vec![flat.n_out as u32, wp as u32, flat.w as u32, ncols, flat.buf_len() as u32];
+        Tensor::from_dispatch(<Dispatch as cube::ConvBackend>::bn_apply(y.into_dispatch(), ab, ageom))
+    }
+    #[cfg(not(feature = "_gpu"))]
+    {
+        let _ = (x, w2, b, bn_w, bn_b, k, flat, eps);
+        unreachable!("gated_conv_bn: GPU only")
+    }
+}
+
+/// `dev` で自前の GPU カーネルが使えるか(GPU ビルドで、CPU(flex)でない)
+pub fn gpu_kernels(dev: &Device) -> bool {
+    cfg!(feature = "_gpu") && *dev != Device::flex()
 }
 
 /// 注意の q / k のヘッドごとの RMSNorm(重み `w`: `[heads*hd]`)と RoPE(前半 `rot_heads` 個のヘッド。表 `cos` / `sin`: `[S*hd/2]`)。
@@ -287,7 +398,8 @@ mod cube {
 
     #[backend_extension(Cube: cfg(feature = "_gpu"))]
     pub trait ConvBackend: Backend {
-        /// [`super::conv1d`] の本体。`geom` = [C, L, Lout, k, dil, pad, flags(bias | snake<<1 | res<<2)]
+        /// [`super::conv1d`] と [`super::gated_conv_bn`] の畳み込み。`geom` は `conv_geom` の並び
+        /// (flags = bias | snake<<1 | res<<2 | gate<<3)
         #[allow(clippy::too_many_arguments)]
         fn conv1d(
             x: FloatTensor<Self>,
@@ -314,6 +426,12 @@ mod cube {
 
         /// [`super::norm_modulate`]。`geom` = [rows, d, seq, mod_batches, eps]
         fn norm_modulate(x: FloatTensor<Self>, shift: FloatTensor<Self>, scale: FloatTensor<Self>, geom: Vec<u32>) -> FloatTensor<Self>;
+
+        /// [`super::gated_conv_bn`] の BatchNorm の統計 `[2*C]`(係数と足す値)。`geom` = [n, wp, w, ncols, n_valid, eps]
+        fn bn_stats(y: FloatTensor<Self>, bn_w: FloatTensor<Self>, bn_b: FloatTensor<Self>, geom: Vec<u32>) -> FloatTensor<Self>;
+
+        /// [`super::gated_conv_bn`] の BatchNorm の適用と平らな配列への配置。`geom` = [n, wp, w, ncols, buf_len]
+        fn bn_apply(y: FloatTensor<Self>, ab: FloatTensor<Self>, geom: Vec<u32>) -> FloatTensor<Self>;
     }
 
     /// 行列積の内側(累積の宣言・K 方向 1 段・書き出し)を展開したコード。`store(i, j, row, colv)` が書き出し 1 つ分を返す
@@ -397,9 +515,19 @@ mod cube {
     impl KernelSource for Conv {
         fn source(&self) -> SourceTemplate {
             let (tm, tnv) = (self.tm as usize, self.tn as usize / 4);
-            let code = unrolled(tm, tnv, |i, j, row, colv| format!("    store({row}, {colv} * 4u, c{i}_{j}, m_dim, n_dim);\n"));
+            let gate = self.flags & 8 != 0;
+            let code = unrolled(tm, tnv, |i, j, row, colv| {
+                if !gate {
+                    format!("    store({row}, {colv} * 4u, c{i}_{j}, m_dim, n_dim);\n")
+                } else if i < tm / 2 {
+                    // 前半の行が conv、後半(i + tm / 2)が同じチャネルの gate
+                    format!("    store_gate({row}, {colv} * 4u, c{i}_{j}, c{}_{j}, m_dim, n_dim);\n", i + tm / 2)
+                } else {
+                    String::new()
+                }
+            });
             let flag = |b: u32| (self.flags & b != 0).to_string();
-            let extra = [("has_bias", flag(1)), ("has_snake", flag(2)), ("has_res", flag(4))];
+            let extra = [("has_bias", flag(1)), ("has_snake", flag(2)), ("has_res", flag(4)), ("has_gate", flag(8))];
             fill(include_str!("conv1d.wgsl"), tm, tnv, &extra, code)
         }
 
@@ -438,6 +566,8 @@ mod cube {
     plain_kernel!(Reduce, "reduce.wgsl");
     plain_kernel!(QkNormRope, "qk_norm_rope.wgsl");
     plain_kernel!(NormModulate, "norm_modulate.wgsl");
+    plain_kernel!(BnStats, "bn_stats.wgsl");
+    plain_kernel!(BnApply, "bn_apply.wgsl");
 
     fn upload_u32(t: &CubeTensor, v: &[u32]) -> Handle {
         let bytes: Vec<u8> = v.iter().flat_map(|d| d.to_le_bytes()).collect();
@@ -518,20 +648,21 @@ mod cube {
             tile: u32,
         ) -> FloatTensor<Self> {
             let (tm, tn) = unpack(tile);
-            let [c, l, lout, k, dil, pad, flags] = geom[..] else { panic!("conv1d: bad geometry {geom:?}") };
-            let co = w2.meta.shape()[0];
+            let (co, lout, flags) = (geom[0] as usize, geom[3] as usize, geom[13]);
             let x = into_contiguous(x);
             let w2 = into_contiguous(w2);
             let client = x.client.clone();
-            let out = empty_device_contiguous_dtype(client.clone(), x.device.clone(), [co, lout as usize].into(), x.dtype);
-            let dims = upload_u32(&x, &[co as u32, c, l, lout, k, dil, pad, 0]);
+            let out = empty_device_contiguous_dtype(client.clone(), x.device.clone(), [co, lout].into(), x.dtype);
+            let dims = upload_u32(&x, &geom[..13]);
             // 使わない入力はダミー(同じバッファを 2 か所に書き込み可能で束ねないため)
             let dummy = || client.create_from_slice(&[0u8; 16]).binding();
             let opt = |t: FloatTensor<Self>, bit: u32| if flags & bit != 0 { into_contiguous(t).handle.binding() } else { dummy() };
-            let (bm, bn) = (16 * tm as usize, 16 * tn as usize);
+            // ゲート付きは 1 ブロックの行の半分ずつが conv と gate なので、1 ブロックが受け持つチャネルは半分
+            let bm = if flags & 8 != 0 { 8 * tm as usize } else { 16 * tm as usize };
+            let bn = 16 * tn as usize;
             client.launch(
                 Box::new(SourceKernel::new(Conv { tm, tn, flags }, CubeDim::new_2d(16, 16))),
-                CubeCount::new_2d((lout as usize).div_ceil(bn) as u32, co.div_ceil(bm) as u32),
+                CubeCount::new_2d(lout.div_ceil(bn) as u32, co.div_ceil(bm) as u32),
                 KernelArguments::new()
                     .with_buffer(w2.handle.clone().binding())
                     .with_buffer(x.handle.clone().binding())
@@ -584,6 +715,44 @@ mod cube {
                     .with_buffer(x.handle.clone().binding())
                     .with_buffer(into_contiguous(shift).handle.binding())
                     .with_buffer(into_contiguous(scale).handle.binding())
+                    .with_buffer(out.handle.clone().binding())
+                    .with_buffer(dims.binding()),
+            );
+            out
+        }
+
+        fn bn_stats(y: FloatTensor<Self>, bn_w: FloatTensor<Self>, bn_b: FloatTensor<Self>, geom: Vec<u32>) -> FloatTensor<Self> {
+            let y = into_contiguous(y);
+            let c = y.meta.shape()[0];
+            let client = y.client.clone();
+            let ab = empty_device_contiguous_dtype(client.clone(), y.device.clone(), [2 * c].into(), y.dtype);
+            let dims = upload_u32(&y, &geom);
+            client.launch(
+                Box::new(SourceKernel::new(BnStats, CubeDim::new_1d(256))),
+                CubeCount::new_1d(c as u32),
+                KernelArguments::new()
+                    .with_buffer(y.handle.clone().binding())
+                    .with_buffer(into_contiguous(bn_w).handle.binding())
+                    .with_buffer(into_contiguous(bn_b).handle.binding())
+                    .with_buffer(ab.handle.clone().binding())
+                    .with_buffer(dims.binding()),
+            );
+            ab
+        }
+
+        fn bn_apply(y: FloatTensor<Self>, ab: FloatTensor<Self>, geom: Vec<u32>) -> FloatTensor<Self> {
+            let y = into_contiguous(y);
+            let c = y.meta.shape()[0];
+            let buf_len = geom[4];
+            let client = y.client.clone();
+            let out = empty_device_contiguous_dtype(client.clone(), y.device.clone(), [c, buf_len as usize].into(), y.dtype);
+            let dims = upload_u32(&y, &geom);
+            client.launch(
+                Box::new(SourceKernel::new(BnApply, CubeDim::new_1d(256))),
+                CubeCount::new_2d(buf_len.div_ceil(256), c as u32),
+                KernelArguments::new()
+                    .with_buffer(y.handle.clone().binding())
+                    .with_buffer(into_contiguous(ab).handle.binding())
                     .with_buffer(out.handle.clone().binding())
                     .with_buffer(dims.binding()),
             );

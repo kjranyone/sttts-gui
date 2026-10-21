@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Watermarking long utterances no longer runs out of GPU memory. The SilentCipher watermark now runs as one GPU pass with its own kernels and needs about 2.1 GB of temporary memory for 30 seconds of audio instead of 5.5 GB. On a 12 GB Intel Arc B580, watermarking 30 seconds of audio took 10–12 s because memory overflowed into system RAM; it now takes about 0.9 s, and peak GPU memory during synthesis drops from 10.8 GB to 6.5 GB. Short utterances are also watermarked faster (7 seconds of audio: 0.22 s → 0.12 s).
+
 ## [0.1.5] - 2026-10-21
 
 ### Changed

@@ -97,6 +97,8 @@ struct Geometry {
     mask: Tensor<2>,
     /// 有効位置の数(`h * w`)。BatchNorm の N
     n_valid: f32,
+    /// GPU の自前カーネル(`gemm::gated_conv_bn`)用の同じ形
+    flat: crate::gemm::Flat,
 }
 
 impl Geometry {
@@ -112,7 +114,9 @@ impl Geometry {
             }
         }
         let mask = Tensor::<2>::from_data(TensorData::new(m, [1, nchunks * CHUNK]), device);
-        Self { h, w, wp, nchunks, buf_len, mask, n_valid: (h * w) as f32 }
+        let flat = crate::gemm::Flat { h, w, n_out: nchunks * CHUNK };
+        debug_assert_eq!(flat.buf_len(), buf_len);
+        Self { h, w, wp, nchunks, buf_len, mask, n_valid: (h * w) as f32, flat }
     }
 
     /// 1 チャネルの値 `[h * w]`(行優先)を縁取り付きの平らな配列 `[1, buf_len]` にして GPU へ送る
@@ -142,6 +146,11 @@ struct Layer {
     w2: Tensor<2>,
     /// conv と gate の偏り `[2*Cout, 1]`
     b: Tensor<2>,
+    /// GPU の自前カーネル用: 列を 4 の倍数に零で詰めた `w2` と、`[2*Cout]` の偏り・`[Cout]` の BatchNorm の重み
+    w2g: Tensor<2>,
+    bg: Tensor<1>,
+    bn_wg: Tensor<1>,
+    bn_bg: Tensor<1>,
     out_ch: usize,
     bn_w: Tensor<2>,
     bn_b: Tensor<2>,
@@ -161,12 +170,24 @@ impl Layer {
         let w = Tensor::cat(vec![conv_w, gate_w], 0);
         let [co2, c, kh, kw] = w.dims();
         let b = Tensor::cat(vec![conv_b, gate_b], 0);
+        let kc = kh * kw * c;
+        let w2 = w.permute([0, 2, 3, 1]).reshape([co2, kc]);
+        let w2g = match kc.next_multiple_of(4) - kc {
+            0 => w2.clone(),
+            pad => Tensor::cat(vec![w2.clone(), Tensor::zeros([co2, pad], device)], 1),
+        };
+        let bn_wg = sd.tensor::<1>(&format!("{prefix}.bn.weight"), device)?;
+        let bn_bg = sd.tensor::<1>(&format!("{prefix}.bn.bias"), device)?;
         Ok(Self {
-            w2: w.permute([0, 2, 3, 1]).reshape([co2, kh * kw * c]),
-            b: b.reshape([co2, 1]),
+            w2,
+            b: b.clone().reshape([co2, 1]),
+            w2g,
+            bg: b,
+            bn_w: bn_wg.clone().reshape([out_ch, 1]),
+            bn_b: bn_bg.clone().reshape([out_ch, 1]),
+            bn_wg,
+            bn_bg,
             out_ch,
-            bn_w: sd.tensor::<1>(&format!("{prefix}.bn.weight"), device)?.reshape([out_ch, 1]),
-            bn_b: sd.tensor::<1>(&format!("{prefix}.bn.bias"), device)?.reshape([out_ch, 1]),
             k,
             pad: k / 2,
         })
@@ -180,7 +201,12 @@ impl Layer {
 
     /// `x`: 縁取り付きの平らな活性 `[Cin, buf_len]` → 同じ形式の `[Cout, buf_len]`。
     /// BatchNorm は学習モード(この入力の全有効位置でチャネルごとに平均・偏分散を取る)。
-    fn forward(&self, x: &Tensor<2>, g: &Geometry) -> Tensor<2> {
+    /// GPU は自前カーネルで時間方向に切らずに計算する(B580、30 秒の音声で一時メモリ 5.5 GB → 2.1 GB)。
+    /// CPU は時間方向の塊ごとに近傍を並べた行列を作って行列積にする(同じ式)。
+    fn forward(&self, x: Tensor<2>, g: &Geometry) -> Tensor<2> {
+        if crate::gemm::gpu_kernels(&x.device()) {
+            return crate::gemm::gated_conv_bn(x, &self.w2g, &self.bg, &self.bn_wg, &self.bn_bg, self.k, &g.flat, BN_EPS);
+        }
         let co = self.out_ch;
         let taps = self.taps(g.wp);
         let mut ys = Vec::with_capacity(g.nchunks);
@@ -288,7 +314,7 @@ impl Watermarker {
         let carrier = geo.place(&mag, dev);
         let mut h = carrier.clone();
         for l in &self.enc {
-            h = l.forward(&h, &geo);
+            h = l.forward(h, &geo);
         }
         let msg_t = geo.place(&msg, dev);
         let merged = Tensor::cat(
@@ -297,7 +323,7 @@ impl Watermarker {
         );
         let mut d = merged;
         for l in &self.dec {
-            d = l.forward(&d, &geo);
+            d = l.forward(d, &geo);
         }
         let flat = d.try_into_data().map_err(|e| anyhow!("GPU からの読み戻しに失敗しました: {e:?}"))?.convert::<f32>().try_to_vec::<f32>().map_err(|e| anyhow!("{e:?}"))?;
         let mut info = geo.extract(&flat);
