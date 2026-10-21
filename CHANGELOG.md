@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-21
+
 ### Changed
 
 - Irodori-TTS runs about 3–7× faster on the GPU. Matrix multiplication (including attention), the codec's convolutions and parts of the DiT now use hand-written WGSL kernels instead of burn's defaults, CFG passes run as one batch, and the codec decodes in 4-second windows instead of 1-second ones. On an Intel Arc B580, 8 seconds of audio take 0.35 s with the default MeanFlow model (was 1.55 s) and 1.83 s with RF models (was 6.2 s); 30 seconds take 1.1 s (was 6.6 s) and 9 s (was 62 s). Warm-up is also shorter. Decoding uses about 0.45 GB more GPU memory. Output differs from before only at the level of floating-point rounding.
@@ -91,7 +93,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reading aloud while you are still talking no longer stops for the rest of a long utterance when the recognizer revises text it has already read (e.g. Gemini adding spaces); it carries on from the same position.
 - Expression: "pausing as it goes" (間を取りながら) is no longer added to almost every utterance. Only gaps of 320 ms or more between speech count as pauses (ordinary breaks between phrases and the silence before/after the utterance no longer do), and only longer utterances (1.5 s or more of speech) get it.
 
-[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/kjranyone/sttts-gui/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/kjranyone/sttts-gui/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/kjranyone/sttts-gui/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/kjranyone/sttts-gui/compare/v0.1.1...v0.1.2
