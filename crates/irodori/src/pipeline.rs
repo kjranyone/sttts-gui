@@ -7,6 +7,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail, ensure};
 use burn::tensor::{Device, Tensor, TensorData};
 use rand::RngCore;
+use sttts_i18n::trf;
 
 use crate::codec::{DEFAULT_NORMALIZE_DB, DacVae};
 use crate::condition::{TextConditioner, caption_inputs};
@@ -189,7 +190,11 @@ impl SamplingRequest {
         }
         if !has_speaker {
             if speaker > 0.0 {
-                messages.push("info: speaker conditioning is disabled for this checkpoint or request; ignoring cfg_scale_speaker.".into());
+                messages.push(trf!(
+                    "info: speaker conditioning is disabled for this checkpoint or request; ignoring cfg_scale_speaker.",
+                    "情報: このモデルか指定では話者の条件付けが無効なので、cfg_scale_speaker は使いません。",
+                    "信息:此模型或请求未启用说话人条件,忽略 cfg_scale_speaker。"
+                ));
             }
             speaker = 0.0;
         }
@@ -198,7 +203,11 @@ impl SamplingRequest {
         }
         let speaker_kv = match self.speaker_kv_scale {
             Some(_) if !has_speaker => {
-                messages.push("info: speaker conditioning is disabled for this request; ignoring speaker_kv_scale.".into());
+                messages.push(trf!(
+                    "info: speaker conditioning is disabled for this request; ignoring speaker_kv_scale.",
+                    "情報: この指定では話者の条件付けが無効なので、speaker_kv_scale は使いません。",
+                    "信息:此请求未启用说话人条件,忽略 speaker_kv_scale。"
+                ));
                 None
             }
             Some(scale) => {
@@ -419,7 +428,11 @@ impl Tts {
             ensure!(sec > 0.0, "seconds must be > 0 when provided");
             let clamped = sec.clamp(req.min_seconds, req.max_seconds);
             if (clamped - sec).abs() > f64::EPSILON {
-                messages.push(format!("warning: manual duration {sec:.3}s was clamped to {clamped:.3}s."));
+                messages.push(trf!(
+                    "warning: manual duration {sec:.3}s was clamped to {clamped:.3}s.",
+                    "警告: 指定の長さ {sec:.3} 秒を {clamped:.3} 秒に収めました。",
+                    "警告:指定时长 {sec:.3} 秒已限制为 {clamped:.3} 秒。"
+                ));
             }
             let target = ((clamped * sr as f64) as usize).max(1);
             (target.div_ceil(hop), target)
@@ -456,7 +469,12 @@ impl Tts {
                 t.duration_log_frames = Some(pred);
             }
             let frames = frames_from_log(pred, req.duration_scale, req.min_seconds, req.max_seconds, sr as usize, hop);
-            messages.push(format!("info: predicted duration frames={:.1}, using_frames={frames} ({:.3}s).", pred.exp_m1(), (frames * hop) as f64 / sr as f64));
+            let (predicted, seconds) = (pred.exp_m1(), (frames * hop) as f64 / sr as f64);
+            messages.push(trf!(
+                "info: predicted duration frames={predicted:.1}, using_frames={frames} ({seconds:.3}s).",
+                "情報: 予測した長さは {predicted:.1} フレーム、使うのは {frames} フレーム({seconds:.3} 秒)。",
+                "信息:预测时长 {predicted:.1} 帧,使用 {frames} 帧({seconds:.3} 秒)。"
+            ));
             (frames, frames * hop)
         } else {
             let target = 30 * sr as usize;
@@ -478,8 +496,10 @@ impl Tts {
         let patched_steps = latent_steps.div_ceil(patch);
         let padded_steps = bucket(patched_steps);
         let z_patched = if self.cfg.is_meanflow() {
-            messages.push(format!(
-                "info: MeanFlow checkpoint uses fused training-time CFG with {steps} NFE; runtime CFG and RF sampler controls are ignored."
+            messages.push(trf!(
+                "info: MeanFlow checkpoint uses fused training-time CFG with {steps} NFE; runtime CFG and RF sampler controls are ignored.",
+                "情報: MeanFlow のモデルは学習時に組み込んだ CFG で {steps} 回評価します。実行時の CFG と RF サンプラの設定は使いません。",
+                "信息:MeanFlow 模型使用训练时融合的 CFG,评估 {steps} 次;忽略运行时 CFG 和 RF 采样器设置。"
             ));
             sample_euler_meanflow_padded(&self.dit, &cond, patched_steps, padded_steps, steps, noise, used_seed)?
         } else {
@@ -529,7 +549,11 @@ impl Tts {
                 audio = wm.encode(&audio, sr, &IRODORI_PAYLOAD)?;
                 lap("silentcipher_watermark", &mut t0);
             } else {
-                messages.push("warning: SilentCipher watermark is unavailable; generated audio was not watermarked.".into());
+                messages.push(trf!(
+                    "warning: SilentCipher watermark is unavailable; generated audio was not watermarked.",
+                    "警告: SilentCipher の透かしを使えないため、透かしを入れていません。",
+                    "警告:SilentCipher 水印不可用,生成的音频未加水印。"
+                ));
             }
         }
 
@@ -546,10 +570,11 @@ impl Tts {
         if max_ref_seconds > 0.0 {
             let max_samples = ((max_ref_seconds * sr as f64) as usize).max(1);
             if n > max_samples {
-                messages.push(format!(
-                    "warning: reference audio exceeds max_ref_seconds ({max_ref_seconds}s). Trimming from {:.2}s to {:.2}s.",
-                    n as f64 / sr as f64,
-                    max_samples as f64 / sr as f64
+                let (from, to) = (n as f64 / sr as f64, max_samples as f64 / sr as f64);
+                messages.push(trf!(
+                    "warning: reference audio exceeds max_ref_seconds ({max_ref_seconds}s). Trimming from {from:.2}s to {to:.2}s.",
+                    "警告: 参照音声が max_ref_seconds({max_ref_seconds} 秒)を超えているので、{from:.2} 秒から {to:.2} 秒に切り詰めます。",
+                    "警告:参考音频超过 max_ref_seconds({max_ref_seconds} 秒),从 {from:.2} 秒截短到 {to:.2} 秒。"
                 ));
                 keep = max_samples;
             }
@@ -565,7 +590,11 @@ impl Tts {
             let max_steps = ((max_ref_seconds * self.codec.sample_rate as f64 / self.codec.hop as f64).ceil() as usize).max(1);
             let t = latent.dims()[1];
             if t > max_steps {
-                messages.push(format!("warning: reference latent steps ({t}) exceed max_ref_seconds bound ({max_steps} steps). Trimming."));
+                messages.push(trf!(
+                    "warning: reference latent steps ({t}) exceed max_ref_seconds bound ({max_steps} steps). Trimming.",
+                    "警告: 参照音声の潜在のフレーム数({t})が max_ref_seconds の上限({max_steps})を超えているので、切り詰めます。",
+                    "警告:参考音频的潜在帧数({t})超过 max_ref_seconds 上限({max_steps}),将截短。"
+                ));
                 latent = latent.narrow(1, 0, max_steps);
             }
         }

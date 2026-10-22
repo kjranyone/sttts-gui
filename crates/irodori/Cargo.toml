@@ -38,4 +38,6 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 rand = "0.9"
 rand_distr = "0.5"
 regex = "1"
+# 合成のメッセージ(`SynthResult::messages`)は GUI と sttts-say にそのまま出るので、表示言語に合わせる
+sttts-i18n = { path = "../i18n" }
 sttts-hub = { path = "../hub" }

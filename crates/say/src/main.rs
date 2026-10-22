@@ -38,6 +38,7 @@ USAGE
   sttts-say model list
   sttts-say model use NAME
   sttts-say stop
+  sttts-say version
 
   --voice    a voice in data/voices (reference audio NAME.wav and/or settings NAME.json)
   --style    how this line is delivered; appended to the voice's caption
@@ -48,7 +49,8 @@ USAGE
              re-render changed lines. v4.1-small (RF) is slower but more accurate than
              the default v4.1-small-mf (MeanFlow). Weights download on first use.
 
-Results are JSON on stdout; progress and errors go to stderr.
+Results are JSON on stdout; progress and errors go to stderr. Paths in results are absolute.
+Each take result has synth_ms: synthesis time in this call (0 when left unchanged).
 Settings come from data/backend.json (tts.sampling etc.), the same as the GUI.
 
 speak / render / audition run in a background sttts-say process that keeps the model
@@ -60,6 +62,7 @@ without requests, and gives the GPU to sttts-gui when the GUI starts while it is
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 enum Command {
     Help,
+    Version,
     Speak { line: Line, like: Option<PathBuf>, reseed: bool, out: Option<PathBuf> },
     Render { script: PathBuf, out_dir: Option<PathBuf> },
     Audition { line: Line, count: usize, out_dir: Option<PathBuf> },
@@ -113,6 +116,10 @@ fn parse(args: &[String]) -> Result<Command> {
     };
     let cmd = match cmd.as_str() {
         "help" | "-h" | "--help" => Command::Help,
+        "version" | "-V" | "--version" => {
+            no_positional(&positional)?;
+            Command::Version
+        }
         "speak" => {
             no_positional(&positional)?;
             if text.is_none() && like.is_none() {
@@ -219,7 +226,7 @@ fn run(cmd: Command) -> Result<Option<Value>> {
     let root = sttts_engine::root::app_root();
     let warn = |m: &str| eprintln!("[warn] {m}");
     let cfg = merge_config(&default_config(), &load_user_config(&default_user_config_path(&root), &warn));
-    if !matches!(cmd, Command::Help | Command::Serve | Command::Stop) {
+    if !matches!(cmd, Command::Help | Command::Version | Command::Serve | Command::Stop) {
         install_presets(&root, &warn);
     }
     let value = match cmd {
@@ -231,6 +238,7 @@ fn run(cmd: Command) -> Result<Option<Value>> {
             serve()?;
             return Ok(None);
         }
+        Command::Version => json!({ "version": env!("CARGO_PKG_VERSION") }),
         Command::Stop => json!({ "stopped": say_server::stop(&ServerPaths::default())? }),
         Command::VoiceList => serde_json::to_value(list_voices(&root)?)?,
         Command::VoiceShow { name } => serde_json::to_value(load_voice(&root, &name)?)?,
@@ -350,6 +358,8 @@ mod tests {
         assert_eq!(parse(&args(&["voice", "list"])).unwrap(), Command::VoiceList);
         assert_eq!(parse(&args(&["model", "list"])).unwrap(), Command::ModelList);
         assert_eq!(parse(&args(&["stop"])).unwrap(), Command::Stop);
+        assert_eq!(parse(&args(&["--version"])).unwrap(), Command::Version);
+        assert_eq!(parse(&args(&["version"])).unwrap(), Command::Version);
         assert_eq!(parse(&args(&["model", "use", "v4.1-small"])).unwrap(), Command::ModelUse { name: "v4.1-small".into() });
         assert_eq!(parse(&args(&["voice", "save", "mio", "--from", "t.wav"])).unwrap(), Command::VoiceSave { name: "mio".into(), from: "t.wav".into() });
         let Command::Audition { count, .. } = parse(&args(&["audition", "--text", "a", "--count", "6"])).unwrap() else { panic!() };

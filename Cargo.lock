@@ -5884,6 +5884,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sttts-hub",
+ "sttts-i18n",
  "tokenizers",
  "unicode-normalization",
  "zip 2.4.2",

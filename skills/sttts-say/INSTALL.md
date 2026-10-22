@@ -61,10 +61,11 @@ If the folder already exists, replace it, because it describes the old binary.
 
 ```sh
 sttts-say --help
+sttts-say version
 sttts-say voice list
 ```
 
-Both must succeed. The model is not downloaded yet: synthesis downloads it on first use and compiles GPU kernels. This takes a few minutes and needs about 3.5 GB for the default model.
+All three must succeed (`version` prints `{"version": "X.Y.Z"}`; report it). The model is not downloaded yet: synthesis downloads it on first use and compiles GPU kernels. This takes a few minutes and needs about 3.5 GB for the default model.
 
 ## 6. Tell the user
 

@@ -7,6 +7,7 @@ description: Synthesize Japanese voice lines with Irodori-TTS through the local 
 
 `sttts-say` turns lines of text into WAV files with Irodori-TTS on the local GPU. It never opens the microphone.
 Results are JSON on stdout; progress and errors go to stderr; exit code 1 on error.
+Paths in results are absolute, so you can pass them to other tools (e.g. an ffmpeg concat list) as they are. `sttts-say version` prints `{"version": "X.Y.Z"}`.
 
 ## Find the executable
 
@@ -36,10 +37,12 @@ The user handed you the task so that they do not have to make these choices. Dec
   ```json
   { "caption": "落ち着いた低めの女性の声", "seed": 123456, "sampling": { "duration_scale": 1.05 } }
   ```
-  `caption` describes *who* is speaking (timbre, age, character). Unknown keys are errors.
+  `caption` describes *who* is speaking (timbre, age, character). The keys are `caption`, `seed`, `sampling` and `source` (where a saved voice came from; a record only). Other keys are errors.
+  A voice may have no `caption`. The bundled presets have none: their reference audio alone defines the speaker.
 - **Line**: `text` + optional `voice`, `style` (how this line is delivered), `caption` (replaces the voice caption), `seed`, `sampling`.
-  The model receives `caption` as `"<voice caption>。話し方は<style>。"`.
+  The model receives `caption` as `"<voice caption>。話し方は<style>。"`. Without a voice caption it is only `"話し方は<style>。"`, and without a style only the voice caption.
 - **Take**: every output `X.wav` gets `X.json` with the full settings and the seed actually used. Any take can be reproduced (`--like`) or promoted to a voice (`voice save`).
+- **Seed**: a line without a `seed` (and whose voice has none) gets a random one when it is synthesized. `render` keeps that take while the line is unchanged, but editing the line (text, `style`, `sampling`, ...) draws a new seed. To change only the delivery and keep the seed, write the take's `seed` (from `X.json` or the result) into the line, or use `speak --like X.wav --style ...`, which keeps it.
 
 ## Writing "say X like Y"
 
@@ -82,6 +85,8 @@ Script (`ep1.jsonl`):
 ```
 
 `render` is incremental: a line whose settings match its previous take is left as is (`"status":"unchanged"`), and when nothing changed the model is not even loaded. To change one line, edit it and re-run. To force a retake of a line, delete its `.wav` or give it a different `seed`.
+Reference audio is compared by content, so moving the app folder does not re-render; replacing a voice's audio does.
+Each take result has `synth_ms`: the synthesis time of that take in this call (`0` when it was left unchanged). Loading the model is not included, but the first take after loading also compiles GPU kernels and takes a few seconds longer.
 All lines are validated (voices exist, sampling keys valid, ids unique) before anything is synthesized.
 
 ## The background process
@@ -97,7 +102,7 @@ What this means for you:
 
 - **Nothing to set up.** The first synthesis call starts the background process. Never run `sttts-say serve` yourself.
 - **Calls behave the same as before.** Your call waits until the result is ready. stdout JSON, stderr progress, exit codes and relative paths work the same as before. The background process runs each request in your current directory. If it cannot be used, your call synthesizes by itself and gives the same output.
-- **Settings are read on every call.** Your call reads `data/backend.json`, `STTTS_ROOT` and the display language and sends them with each request. Voices and scripts are read fresh for each request. Edits take effect on the next call, with no restart. After `model use` (or a change to `tts.num_steps`), the next call frees the old model and loads the new one, so that call is slow again.
+- **Settings are read on every call.** Your call reads `data/backend.json`, `STTTS_ROOT` and the display language and sends them with each request. Voices and scripts are read fresh for each request. Edits take effect on the next call, with no restart. After `model use` (or a change to `tts.num_steps` or `tts.precision`), the next call frees the old model and loads the new one, so that call is slow again.
 - **One request at a time.** Concurrent calls queue up and run one after another, so running them in parallel gives no speedup. Several lines are still best as one `render` script (incremental, one manifest).
 - **It outlives your call, on purpose.** A `sttts-say` process that stays after your command returns is the background process, not a leak. Do not kill it, and do not delete its files in the temp directory (`sttts-say-server.json` / `.lock`).
 - **It holds the GPU while it lives.** It keeps the GPU lock and the model's GPU memory (up to about 16 GB with `v4-large`) even while idle.

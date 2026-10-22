@@ -362,11 +362,24 @@ pub fn line_like(take: &Take) -> Line {
     Line { id: None, seed: Some(take.seed), ..take.line.clone() }
 }
 
-fn summary(wav: &Path, take: &Take, status: &str) -> Value {
+/// 出力 JSON に書くパス。相対パスは呼び出し元の作業ディレクトリから絶対パスにする(書き方をそろえる)
+fn absolute(path: &Path) -> Result<PathBuf> {
+    std::path::absolute(path).with_context(|| path.display().to_string())
+}
+
+/// 前回のテイクと同じ指定か。参照音声は中身(`ref_hash`)で比べ、置き場のパスは見ない
+/// (ポータブル配置のフォルダを移しても撮り直さない)
+fn same_take(previous: &Spec, now: &Spec) -> bool {
+    *previous == Spec { ref_wav: previous.ref_wav.clone(), ..now.clone() }
+}
+
+/// 1 テイクの結果。`synth_ms` はこの呼び出しで合成にかかった時間(作り直さなかったテイクは 0。モデルの読み込みは含まない)
+fn summary(wav: &Path, take: &Take, status: &str, synth_ms: u64) -> Value {
     json!({
         "out": wav,
         "record": take_record_path(wav),
         "status": status,
+        "synth_ms": synth_ms,
         "voice": take.spec.voice,
         "caption": take.spec.caption,
         "seed": take.seed,
@@ -413,9 +426,10 @@ impl Studio {
         split_chunks(text, &opt)
     }
 
-    /// 1 テイクを合成して `wav` へ書く(記録 `<stem>.json` も)。
-    pub fn take(&self, line: &Line, spec: &Spec, wav: &Path) -> Result<Take> {
+    /// 1 テイクを合成して `wav` へ書く(記録 `<stem>.json` も)。合成にかかった時間(ミリ秒)も返す。
+    pub fn take(&self, line: &Line, spec: &Spec, wav: &Path) -> Result<(Take, u64)> {
         let engine = self.engine()?;
+        let mut synth_ms = 0;
         // 未指定ならここで 1 回だけ決めて全チャンクで共有する(チャンクごとに声質が変わらないように)
         let seed = spec.seed.unwrap_or_else(random_seed);
         let ref_wavs: Vec<String> = spec.ref_wav.iter().cloned().collect();
@@ -431,6 +445,7 @@ impl Studio {
             for m in &out.messages {
                 (self.log)(m);
             }
+            synth_ms += out.gen_ms;
             parts.push((chunk, out.wav));
         }
         let joined = join_wavs(parts)?;
@@ -449,27 +464,28 @@ impl Studio {
         let _ = std::fs::remove_file(take_record_path(wav));
         write_atomic(wav, &joined.wav)?;
         write_json(&take_record_path(wav), &take)?;
-        Ok(take)
+        Ok((take, synth_ms))
     }
 
     /// 1 行を合成する。`out` 省略時は `output/say/say_<時刻>_<seed>.wav`。
     pub fn speak(&self, line: &Line, out: Option<&Path>) -> Result<Value> {
         let spec = resolve(&self.cfg, &self.root, line)?;
         let wav = match out {
-            Some(p) => p.to_path_buf(),
+            Some(p) => absolute(p)?,
             None => {
                 let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
                 let dir = self.root.join("output").join("say");
                 (0u32..).map(|n| dir.join(format!("say_{secs}_{n:02}.wav"))).find(|p| !p.exists()).unwrap_or_default()
             }
         };
-        let take = self.take(line, &spec, &wav)?;
-        Ok(summary(&wav, &take, "rendered"))
+        let (take, synth_ms) = self.take(line, &spec, &wav)?;
+        Ok(summary(&wav, &take, "rendered", synth_ms))
     }
 
     /// 台本を `out_dir/<id>.wav` へ合成する。指定が前回と同じ行は合成し直さない。
     /// 結果は標準出力用の値として返し、`out_dir/manifest.json` にも残す。
     pub fn render(&self, script: &Path, out_dir: Option<&Path>) -> Result<Value> {
+        let script = &absolute(script)?;
         let text = std::fs::read_to_string(script).with_context(|| script.display().to_string())?;
         let lines = parse_script(&text)?;
         // 指定の誤りは合成を始める前に全行ぶん見つける
@@ -478,7 +494,7 @@ impl Studio {
             .map(|(id, line)| resolve(&self.cfg, &self.root, line).with_context(|| format!("id {id}")))
             .collect::<Result<Vec<_>>>()?;
         let out_dir = match out_dir {
-            Some(d) => d.to_path_buf(),
+            Some(d) => absolute(d)?,
             None => {
                 let stem = script.file_stem().and_then(|s| s.to_str()).unwrap_or("script");
                 script.parent().unwrap_or(Path::new(".")).join(stem)
@@ -488,16 +504,17 @@ impl Studio {
         let mut results = Vec::new();
         for (i, ((id, line), spec)) in lines.iter().zip(&specs).enumerate() {
             let wav = out_dir.join(format!("{id}.wav"));
-            let previous = wav.is_file().then(|| read_take(&wav).ok()).flatten().filter(|t| t.spec == *spec);
+            let previous = wav.is_file().then(|| read_take(&wav).ok()).flatten().filter(|t| same_take(&t.spec, spec));
             let n = i + 1;
-            let (take, status) = match previous {
-                Some(t) => (t, "unchanged"),
+            let (take, synth_ms, status) = match previous {
+                Some(t) => (t, 0, "unchanged"),
                 None => {
                     (self.log)(&trf!("[{n}/{total}] {id}: synthesizing", "[{n}/{total}] {id}: 合成中", "[{n}/{total}] {id}:正在合成"));
-                    (self.take(line, spec, &wav).with_context(|| format!("id {id}"))?, "rendered")
+                    let (take, synth_ms) = self.take(line, spec, &wav).with_context(|| format!("id {id}"))?;
+                    (take, synth_ms, "rendered")
                 }
             };
-            let mut s = summary(&wav, &take, status);
+            let mut s = summary(&wav, &take, status, synth_ms);
             s["id"] = json!(id);
             s["text"] = json!(take.spec.text);
             results.push(s);
@@ -521,7 +538,7 @@ impl Studio {
         }
         let mut spec = resolve(&self.cfg, &self.root, line)?;
         let out_dir = match out_dir {
-            Some(d) => d.to_path_buf(),
+            Some(d) => absolute(d)?,
             None => {
                 let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
                 self.root.join("output").join("say").join(format!("audition_{secs}"))
@@ -537,8 +554,8 @@ impl Studio {
             (self.log)(&trf!("[{n}/{count}] seed {seed}", "[{n}/{count}] seed {seed}", "[{n}/{count}] seed {seed}"));
             let wav = out_dir.join(format!("take_{n:02}_seed{seed}.wav"));
             let line = Line { seed: Some(seed), ..line.clone() };
-            let take = self.take(&line, &spec, &wav)?;
-            takes.push(summary(&wav, &take, "rendered"));
+            let (take, synth_ms) = self.take(&line, &spec, &wav)?;
+            takes.push(summary(&wav, &take, "rendered", synth_ms));
         }
         Ok(json!({ "out_dir": out_dir, "takes": takes }))
     }
@@ -548,7 +565,7 @@ impl Studio {
     pub fn save_voice(&self, name: &str, take_path: &Path) -> Result<Value> {
         check_name("voice", name)?;
         let take = read_take(take_path)?;
-        let wav = take_path.with_extension("wav");
+        let wav = absolute(&take_path.with_extension("wav"))?;
         if !wav.is_file() {
             let path = wav.display();
             bail!("{}", trf!("Take audio not found: {path}", "テイクの音声が見つかりません: {path}", "找不到录音音频:{path}"));

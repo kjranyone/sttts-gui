@@ -12,10 +12,10 @@ use std::path::{Path, PathBuf};
 pub fn app_root() -> PathBuf {
     static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     ROOT.get_or_init(|| {
-        let exe_dir = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| e.parent().map(Path::to_path_buf));
+        let exe_dir = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| e.parent().map(plain_path));
         resolve_root(
             std::env::var_os("STTTS_ROOT").filter(|v| !v.is_empty()).map(PathBuf::from),
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().ok(),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().ok().map(|p| plain_path(&p)),
             // exe の隣に置くポータブル運用は Windows の慣習。macOS / Linux は exe の置き場(/usr/local/bin 等)を汚さない
             exe_dir,
             cfg!(windows),
@@ -24,6 +24,19 @@ pub fn app_root() -> PathBuf {
         )
     })
     .clone()
+}
+
+/// `canonicalize` が Windows で付ける `\\?\` を外した普通の絶対パス。ルートは出力 JSON のパスの元になり、
+/// `\\?\` 付きのパスを受け付けない道具(ffmpeg の concat など)がある。UNC は `\\server\share` に戻す
+pub fn plain_path(p: &Path) -> PathBuf {
+    let Some(s) = p.to_str() else { return p.to_path_buf() };
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => p.to_path_buf(),
+    }
 }
 
 /// OS ごとのユーザーデータの場所(アプリ名まで含む)。
@@ -86,6 +99,16 @@ mod tests {
 
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)
+    }
+
+    #[test]
+    fn verbatim_prefix_is_removed() {
+        assert_eq!(plain_path(&p(r"\\?\C:\apps\sttts")), p(r"C:\apps\sttts"));
+        assert_eq!(plain_path(&p(r"\\?\UNC\nas\share\sttts")), p(r"\\nas\share\sttts"));
+        assert_eq!(plain_path(&p(r"C:\apps\sttts")), p(r"C:\apps\sttts"));
+        assert_eq!(plain_path(&p("/home/u/sttts")), p("/home/u/sttts"));
+        // ドライブ文字でない verbatim(ボリューム GUID など)はそのまま
+        assert_eq!(plain_path(&p(r"\\?\Volume{0}\x")), p(r"\\?\Volume{0}\x"));
     }
 
     #[test]

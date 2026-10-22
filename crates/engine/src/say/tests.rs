@@ -289,3 +289,29 @@ fn precision_is_part_of_the_take_and_old_takes_count_as_fp32() {
     assert_eq!(s2.render(&script, None).unwrap()["lines"][0]["status"], "rendered");
     assert_eq!(s2.render(&script, None).unwrap()["lines"][0]["status"], "unchanged");
 }
+
+#[test]
+fn reference_audio_is_compared_by_content_not_by_path() {
+    let root = tempfile::tempdir().unwrap();
+    add_voice(root.path(), "aoi", true, None);
+    let script = root.path().join("ep.jsonl");
+    std::fs::write(&script, "{\"id\":\"a\",\"voice\":\"aoi\",\"text\":\"おはよう。\",\"seed\":3}\n").unwrap();
+    let (s, _) = studio(root.path(), cfg());
+    let first = s.render(&script, None).unwrap();
+    assert_eq!(first["lines"][0]["status"], "rendered");
+    assert!(first["lines"][0]["synth_ms"].is_u64());
+    assert!(Path::new(first["lines"][0]["out"].as_str().unwrap()).is_absolute());
+
+    // 置き場が変わっただけ(ポータブル配置のフォルダを移した)なら撮り直さない
+    let take = root.path().join("ep").join("a.json");
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&take).unwrap()).unwrap();
+    v["spec"]["ref_wav"] = json!("D:/moved/data/voices/aoi.wav");
+    std::fs::write(&take, v.to_string()).unwrap();
+    let again = s.render(&script, None).unwrap();
+    assert_eq!(again["lines"][0]["status"], "unchanged");
+    assert_eq!(again["lines"][0]["synth_ms"], 0);
+
+    // 参照音声の中身を差し替えたら撮り直す
+    std::fs::write(voices_dir(root.path()).join("aoi.wav"), crate::tts::beep_wav(0.7, Some(1))).unwrap();
+    assert_eq!(s.render(&script, None).unwrap()["lines"][0]["status"], "rendered");
+}
