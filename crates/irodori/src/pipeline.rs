@@ -20,6 +20,7 @@ use crate::sampler::{
 use crate::text::normalize_text;
 use crate::tokenizer::Tokenizer;
 use crate::watermark::{IRODORI_PAYLOAD, Watermarker};
+pub use crate::weights::Precision;
 use crate::weights::Weights;
 
 /// 読み込むファイルの場所
@@ -275,8 +276,9 @@ pub struct Tts {
 }
 
 impl Tts {
-    pub fn load(paths: &TtsPaths, device: &Device) -> Result<Self> {
-        let w = Weights::open(&paths.model_weights)?;
+    /// `precision` は全結合層の重みを GPU に置く精度(CPU(flex)では常に f32)
+    pub fn load(paths: &TtsPaths, device: &Device, precision: Precision) -> Result<Self> {
+        let w = Weights::open(&paths.model_weights)?.with_precision(precision);
         let cond = TextConditioner::load(&w, device)?;
         let cfg = cond.cfg.clone();
         // 参照音声の潜在をパッチ化する処理は未実装(v4.1 Small MF は 1)

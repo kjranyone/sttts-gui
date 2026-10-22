@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use burn::tensor::{Device, Tensor, TensorData};
 use irodori::dit::Conditions;
-use irodori::pipeline::{SamplingRequest, Trace, Tts, TtsPaths};
+use irodori::pipeline::{Precision, SamplingRequest, Trace, Tts, TtsPaths};
 use irodori::sampler::{CfgGuidanceMode, TSchedule, rf_schedule};
 use irodori::testing::{self, RF_MODEL_REPO, assert_close, device, to_vec};
 use irodori::weights::Weights;
@@ -142,7 +142,7 @@ fn rf_dit_forward_matches() {
 #[test]
 fn rf_end_to_end_matches_pytorch() {
     let Some((r, paths, dev)) = setup() else { return };
-    let tts = Tts::load(&paths, &dev).unwrap();
+    let tts = Tts::load(&paths, &dev, Precision::F32).unwrap();
     assert!(!tts.is_meanflow());
     let cases = std::env::var("IRODORI_RF_CASES").unwrap_or_else(|_| "RA,RB,RC,RD,RE".into());
     for case in cases.split(',') {

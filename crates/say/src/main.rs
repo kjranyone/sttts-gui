@@ -21,7 +21,7 @@ use sttts_engine::say::{Line, Studio, line_like, list_models, list_voices, load_
 use sttts_engine::config::get;
 use sttts_i18n::trf;
 use sttts_engine::say_server::{self, EngineCache, RunRequest, ServerPaths};
-use sttts_engine::tts::{IrodoriTts, TtsEngine};
+use sttts_engine::tts::{IrodoriTts, Precision, TtsEngine};
 
 const USAGE: &str = "\
 sttts-say — Irodori-TTS without the GUI (voices, takes, incremental scripts)
@@ -169,11 +169,11 @@ fn merge_like(base: Line, given: Line, reseed: bool) -> Line {
     }
 }
 
-/// 読み込んだ TTS の指定(モデルとステップ数)。常駐プロセスはこれが変わったら読み込み直す
-fn engine_key(cfg: &Value) -> (String, Option<usize>) {
+/// 読み込んだ TTS の指定(モデル・ステップ数・重みの精度)。常駐プロセスはこれが変わったら読み込み直す
+fn engine_key(cfg: &Value) -> Result<(String, Option<usize>, Precision)> {
     let model = get(cfg, "tts", "model").as_str().unwrap_or(sttts_engine::tts::DEFAULT_TTS_MODEL).to_string();
     let steps = get(cfg, "tts", "num_steps").as_u64().map(|n| n as usize);
-    (model, steps)
+    Ok((model, steps, sttts_engine::tts::tts_precision(cfg)?))
 }
 
 /// 合成のコマンドを実行する(このプロセスでも常駐プロセスでも同じ)。TTS は `cache` から使い回す
@@ -184,10 +184,10 @@ fn synthesize(cmd: Command, root: PathBuf, cfg: Value, cache: Rc<RefCell<EngineC
         root,
         cfg,
         move || {
-            let (model, steps) = engine_key(&loader_cfg);
+            let (model, steps, precision) = engine_key(&loader_cfg)?;
             let progress = |m: &str| loader_log(m);
-            cache.borrow_mut().get_or_load(&format!("{model}/{steps:?}"), || {
-                Ok(Arc::new(IrodoriTts::load(&model, steps, &progress)?) as Arc<dyn TtsEngine>)
+            cache.borrow_mut().get_or_load(&format!("{model}/{steps:?}/{precision:?}"), || {
+                Ok(Arc::new(IrodoriTts::load(&model, steps, precision, &progress)?) as Arc<dyn TtsEngine>)
             })
         },
         move |m| log(m),

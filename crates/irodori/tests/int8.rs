@@ -5,7 +5,7 @@
 use std::time::Instant;
 
 use burn::tensor::{Tensor, TensorData};
-use irodori::pipeline::{SamplingRequest, Trace, Tts, TtsPaths};
+use irodori::pipeline::{Precision, SamplingRequest, Trace, Tts, TtsPaths};
 use irodori::testing::{self, INT8_MODEL_REPO, INT8_MODEL_WEIGHTS, assert_close, device, to_vec};
 use irodori::weights::Weights;
 
@@ -60,7 +60,7 @@ fn int8_end_to_end_matches_pytorch() {
         return;
     };
     let dev = device();
-    let tts = Tts::load(&paths, &dev).unwrap();
+    let tts = Tts::load(&paths, &dev, Precision::F32).unwrap();
     for case in ["QA", "QC"] {
         let req = case_request(case);
         let (shape, data) = r.f32_vec(&format!("{case}.dit.in.x_t.0")).unwrap();

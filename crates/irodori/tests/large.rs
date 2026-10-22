@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use burn::tensor::{Device, Tensor, TensorData};
-use irodori::pipeline::{MODEL_WEIGHTS, SamplingRequest, Trace, Tts, TtsPaths};
+use irodori::pipeline::{MODEL_WEIGHTS, Precision, SamplingRequest, Trace, Tts, TtsPaths};
 use irodori::t5gemma::T5Gemma2Encoder;
 use irodori::testing::{self, LARGE_INT8_MODEL_REPO, LARGE_MODEL_REPO, assert_close, device, to_vec};
 use irodori::weights::Weights;
@@ -102,7 +102,7 @@ fn large_end_to_end_matches_pytorch() {
         return;
     };
     let dev = device();
-    let tts = Tts::load(&paths, &dev).unwrap();
+    let tts = Tts::load(&paths, &dev, Precision::F32).unwrap();
     end_to_end(&r, &dir, &tts, &dev, &["LA", "LC"]);
 }
 
@@ -120,6 +120,6 @@ fn large_int8_end_to_end_matches_pytorch() {
     let w = Weights::open(&paths.model_weights).unwrap();
     assert!(w.is_int8("pretrained_text_backbone.backbone.layers.0.self_attn.q_proj.weight"));
     drop(w);
-    let tts = Tts::load(&paths, &dev).unwrap();
+    let tts = Tts::load(&paths, &dev, Precision::F32).unwrap();
     end_to_end(&r, &dir, &tts, &dev, &["QA", "QC"]);
 }

@@ -2,7 +2,7 @@
 //!
 //!   cargo run -p irodori --release --features gpu --example tts -- \
 //!       --text "こんにちは" [--caption "落ち着いた声で"] [--ref ref.wav] [--seed 1] \
-//!       [--model Aratako/Irodori-TTS-v4.1-Small [--weights int8-weight-only/model.safetensors]] [--steps 40] [--device gpu|cpu] [--repeat 3] [--out out.wav] [--no-watermark]
+//!       [--model Aratako/Irodori-TTS-v4.1-Small [--weights int8-weight-only/model.safetensors]] [--steps 40] [--device gpu|cpu] [--precision fp32|fp16] [--repeat 3] [--out out.wav] [--no-watermark]
 //!
 //! `--repeat` は同じ設定で繰り返し、2 回目以降(カーネルのコンパイル後)の速度を見るためのもの。
 
@@ -10,13 +10,14 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use irodori::Device;
-use irodori::pipeline::{SamplingRequest, Tts, TtsPaths};
+use irodori::pipeline::{Precision, SamplingRequest, Tts, TtsPaths};
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let mut req = SamplingRequest::default();
     let mut device_kind = "gpu".to_string();
     let mut repeat = 1usize;
+    let mut precision = Precision::F32;
     let mut warmup = false;
     let mut texts: Vec<String> = Vec::new();
     let mut out: Option<PathBuf> = None;
@@ -39,6 +40,13 @@ fn main() -> Result<()> {
             "--weights" => weights = val("--weights")?,
             "--device" => device_kind = val("--device")?,
             "--repeat" => repeat = val("--repeat")?.parse()?,
+            "--precision" => {
+                precision = match val("--precision")?.as_str() {
+                    "fp16" => Precision::F16,
+                    "fp32" => Precision::F32,
+                    other => bail!("unsupported --precision {other} (fp16 / fp32)"),
+                }
+            }
             "--out" => out = Some(PathBuf::from(val("--out")?)),
             "--no-watermark" => req.watermark = false,
             "--warmup" => warmup = true,
@@ -59,7 +67,7 @@ fn main() -> Result<()> {
 
     let t0 = std::time::Instant::now();
     let paths = TtsPaths::from_hf_cache(&model, &weights)?;
-    let tts = Tts::load(&paths, &device)?;
+    let tts = Tts::load(&paths, &device, precision)?;
     eprintln!("load: {:.1}s (watermark: {})", t0.elapsed().as_secs_f64(), tts.has_watermark());
 
     if warmup {

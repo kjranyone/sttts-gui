@@ -4,6 +4,8 @@
 //! `<親>._weight_qdata`(I8 `[out, in]`)と `<親>._weight_scale`(行ごとの scale `[out, 1]`)に分かれて入っており、
 //! 元の名前(`<親>.weight`)で引くと `qdata * scale` に戻した f32 を返す。int8 のまま使うときは [`Weights::int8`]。
 //! 対応は int8 weight-only(W8A16)のみ。活性も量子化する版や float8 / int4 はエラーにする。
+//!
+//! 全結合層([`crate::nn::Linear`])の重みを GPU にどの精度で置くかも、ここで持つ([`Precision`]。既定は f32)。
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -22,6 +24,15 @@ struct Entry {
     end: usize,
 }
 
+/// GPU に置く全結合層の重みの精度。計算はどちらも f32 で、16 ビットは読み込み時に丸めて置き、行列積の中で f32 に戻す
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Precision {
+    /// IEEE 754 binary16(最近接偶数丸め)。GPU メモリが約半分になる。CPU(flex)では f32 のまま
+    F16,
+    /// チェックポイントの f32 のまま(PyTorch と同じ値)
+    F32,
+}
+
 pub struct Weights {
     mmap: Mmap,
     base: usize,
@@ -29,6 +40,7 @@ pub struct Weights {
     metadata: HashMap<String, String>,
     /// 量子化した重み: 元の名前 → (qdata の名前, scale の名前)
     quantized: HashMap<String, (String, String)>,
+    precision: Precision,
 }
 
 /// int8 weight-only の重み(torchao `Int8Tensor`)。`[out, in]` の値と、行ごとの scale
@@ -88,7 +100,17 @@ impl Weights {
             entries.insert(k.clone(), Entry { dtype, shape, start, end });
         }
         let quantized = quantized_tensors(&metadata, &entries).with_context(|| format!("{}", path.display()))?;
-        Ok(Self { mmap, base: 8 + n, entries, metadata, quantized })
+        Ok(Self { mmap, base: 8 + n, entries, metadata, quantized, precision: Precision::F32 })
+    }
+
+    /// 全結合層の重みを置く精度を変える
+    pub fn with_precision(mut self, precision: Precision) -> Self {
+        self.precision = precision;
+        self
+    }
+
+    pub fn precision(&self) -> Precision {
+        self.precision
     }
 
     /// torchao で量子化したチェックポイントか

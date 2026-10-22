@@ -103,6 +103,13 @@ pub struct Spec {
     pub sampling: Map<String, Value>,
     pub model: String,
     pub num_steps: Value,
+    /// 重みの精度(`fp32` / `fp16`)。記録の無いテイクは精度を選べる前のもので、`fp32`
+    #[serde(default = "fp32")]
+    pub precision: String,
+}
+
+fn fp32() -> String {
+    "fp32".into()
 }
 
 /// テイクの記録(`<stem>.json`)。
@@ -267,6 +274,7 @@ pub fn resolve(cfg: &Value, root: &Path, line: &Line) -> Result<Spec> {
         sampling,
         model: model.alias.to_string(),
         num_steps: get(cfg, "tts", "num_steps").clone(),
+        precision: crate::tts::precision_name(crate::tts::tts_precision(cfg)?).to_string(),
     })
 }
 

@@ -102,6 +102,17 @@ pub fn assert_close(what: &str, got: &[f32], want: &[f32], rtol: f32) {
     eprintln!("{what}: ok (max|diff|={d:.3e}, max|ref|={m:.3e})");
 }
 
+/// 信号対雑音比(`want` を信号、`got - want` を雑音とする)が `min_db` 以上であること。
+/// 16 ビットの重みのように、丸めの分だけ値がずれる経路を確かめる
+pub fn assert_snr(what: &str, got: &[f32], want: &[f32], min_db: f64) {
+    assert_eq!(got.len(), want.len(), "{what}: length");
+    let signal: f64 = want.iter().map(|&v| f64::from(v).powi(2)).sum();
+    let noise: f64 = got.iter().zip(want).map(|(&g, &w)| f64::from(g - w).powi(2)).sum();
+    let snr = 10.0 * (signal / noise.max(1e-30)).log10();
+    assert!(snr >= min_db, "{what}: SNR {snr:.1} dB < {min_db} dB");
+    eprintln!("{what}: ok (SNR {snr:.1} dB)");
+}
+
 /// テストで使うデバイス。既定は純 Rust の CPU(flex)。`IRODORI_DEVICE=gpu`(`gpu` feature 時)で
 /// wgpu(Vulkan の独立 GPU)にして、同じ参照との一致を GPU でも確かめられる。
 pub fn device() -> Device {

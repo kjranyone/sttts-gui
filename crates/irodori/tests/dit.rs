@@ -7,7 +7,7 @@ use irodori::config::ModelConfig;
 use irodori::dit::{Conditions, Dit};
 use irodori::sampler::{find_flattening_point, sample_euler_meanflow, unpatchify_latent};
 use irodori::testing::{self, assert_close, device, to_vec};
-use irodori::weights::Weights;
+use irodori::weights::{Precision, Weights};
 
 struct Ctx {
     refs: Weights,
@@ -106,6 +106,30 @@ fn dit_forward_matches() {
             let el = t0.elapsed();
             let want = to_vec(t3(&c, &format!("{case}.dit.out.{n}")));
             assert_close(&format!("{case} dit.out.{n} ({el:.2?})"), &to_vec(out), &want, 1e-4);
+        }
+    }
+}
+
+/// 16 ビットの重み(GPU の既定)の DiT。1 回ごとのずれは丸めの分だけ(B580 で 53〜69 dB)
+#[test]
+fn dit_forward_f16_weights_close() {
+    let Some(c) = setup() else { return };
+    if c.dev == Device::flex() {
+        eprintln!("skip: 16 ビットの重みは GPU のみ(IRODORI_DEVICE=gpu)");
+        return;
+    }
+    let dir = testing::checkpoint_dir().unwrap();
+    let w = Weights::open(dir.join("model.safetensors")).unwrap().with_precision(Precision::F16);
+    let dit = Dit::load(&w, &c.dit.cfg, &c.dev).unwrap();
+    for case in ["A", "B", "C", "D"] {
+        for n in 0..4 {
+            let cond = dit_conditions(&c, case, n);
+            let x_t = t3(&c, &format!("{case}.dit.in.x_t.{n}"));
+            let t = vec1(&c, &format!("{case}.dit.in.t.{n}"));
+            let dt = vec1(&c, &format!("{case}.dit.in.delta_t.{n}"));
+            let out = dit.forward_with_encoded_conditions(x_t, t, Some(dt), &cond, None).unwrap();
+            let want = to_vec(t3(&c, &format!("{case}.dit.out.{n}")));
+            testing::assert_snr(&format!("{case} dit.out.{n} (f16)"), &to_vec(out), &want, 50.0);
         }
     }
 }

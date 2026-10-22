@@ -267,3 +267,25 @@ fn choosing_a_model_is_recorded_and_retakes_the_lines() {
     assert!(s3.render(&script, None).is_err());
     assert_eq!(loads.get(), 0);
 }
+
+#[test]
+fn precision_is_part_of_the_take_and_old_takes_count_as_fp32() {
+    let root = tempfile::tempdir().unwrap();
+    let script = root.path().join("ep.jsonl");
+    std::fs::write(&script, "{\"id\":\"a\",\"text\":\"おはよう。\",\"seed\":3}\n").unwrap();
+    let (s, _) = studio(root.path(), cfg());
+    assert_eq!(s.render(&script, None).unwrap()["lines"][0]["status"], "rendered");
+
+    // 精度を選べる前のテイク(記録に precision が無い)は fp32 のテイクとして保たれる
+    let take = root.path().join("ep").join("a.json");
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&take).unwrap()).unwrap();
+    assert_eq!(v["spec"]["precision"], "fp32");
+    v["spec"].as_object_mut().unwrap().remove("precision");
+    std::fs::write(&take, v.to_string()).unwrap();
+    assert_eq!(s.render(&script, None).unwrap()["lines"][0]["status"], "unchanged");
+
+    // fp16 にすると撮り直しになる
+    let (s2, _) = studio(root.path(), merge_config(&cfg(), &json!({"tts": {"precision": "fp16"}})));
+    assert_eq!(s2.render(&script, None).unwrap()["lines"][0]["status"], "rendered");
+    assert_eq!(s2.render(&script, None).unwrap()["lines"][0]["status"], "unchanged");
+}

@@ -381,7 +381,7 @@ impl Conditions {
     }
 }
 
-/// 自己注意の q, k, v とゲートの射影(f32 なら 1 つの行列積にまとめる)
+/// 自己注意の q, k, v とゲートの射影(量子化していなければ 1 つの行列積にまとめる)
 enum QkvGate {
     /// 出力 `[q | k | v | gate]`
     Fused(Box<Linear>),
@@ -390,11 +390,16 @@ enum QkvGate {
 }
 
 impl QkvGate {
-    fn new(wq: Linear, wk: Linear, wv: Linear, gate: Linear) -> Self {
-        match Linear::concat_out(vec![wq, wk, wv, gate]) {
-            Ok(l) => Self::Fused(Box::new(l)),
-            Err(v) => Self::Separate(Box::new(v.try_into().unwrap_or_else(|_| unreachable!()))),
-        }
+    fn load(w: &Weights, prefix: &str, dev: &Device) -> Result<Self> {
+        const NAMES: [&str; 4] = ["wq", "wk", "wv", "gate"];
+        let names = NAMES.map(|n| format!("{prefix}.{n}.weight"));
+        Ok(match Linear::load_concat(w, &names, dev)? {
+            Some(l) => Self::Fused(Box::new(l)),
+            None => {
+                let lin = |n: &str| Linear::load(w, &format!("{prefix}.{n}"), false, dev);
+                Self::Separate(Box::new([lin(NAMES[0])?, lin(NAMES[1])?, lin(NAMES[2])?, lin(NAMES[3])?]))
+            }
+        })
     }
 
     /// (q, k, v, gate)、各 `[B, S, dim]`。まとめた射影なら、その出力 `[B*S, 4*dim]` も返す(q, k はその 0 列目・dim 列目から)
@@ -439,7 +444,7 @@ impl JointAttention {
             if w.contains(&format!("{prefix}.{n}.weight")) { Ok(Some(lin(n)?)) } else { Ok(None) }
         };
         Ok(Self {
-            qkvg: QkvGate::new(lin("wq")?, lin("wk")?, lin("wv")?, lin("gate")?),
+            qkvg: QkvGate::load(w, prefix, dev)?,
             wk_text: lin("wk_text")?,
             wv_text: lin("wv_text")?,
             wk_speaker: opt("wk_speaker")?,

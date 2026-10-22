@@ -26,7 +26,7 @@ fn first_voice() -> Option<String> {
 #[test]
 #[ignore = "実 GPU とモデルが要る"]
 fn irodori_wrapper_synthesizes_on_gpu_with_ref_cache_and_sampling() {
-    let tts = IrodoriTts::load("v4.1-small-mf", None, &|m| eprintln!("{m}")).expect("load");
+    let tts = IrodoriTts::load("v4.1-small-mf", None, irodori::pipeline::Precision::F32, &|m| eprintln!("{m}")).expect("load");
     let none = Map::new();
     let req = |text: &'static str, refs: &'static [String], sampling: &Map<String, serde_json::Value>| {
         let t0 = std::time::Instant::now();

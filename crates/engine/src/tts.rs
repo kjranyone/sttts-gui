@@ -14,6 +14,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Map, Value};
 use sttts_i18n::{tr, trf};
 
+pub use irodori::pipeline::Precision;
+
+use crate::config::get;
 use crate::util::lock;
 
 /// アプリが発話ごとに決める SamplingRequest 項目(`tts.sampling` では上書きさせない)
@@ -617,10 +620,37 @@ pub fn tts_model(alias: &str) -> Result<TtsModel> {
     )
 }
 
+/// `tts.precision`: GPU に置く重みの精度。既定(未指定)は `fp32`(チェックポイントの値のまま)、`fp16` で全結合の重みを 16 ビットで置く
+pub fn tts_precision(cfg: &Value) -> Result<Precision> {
+    match get(cfg, "tts", "precision") {
+        Value::Null => Ok(Precision::F32),
+        v => match v.as_str() {
+            Some("fp16") => Ok(Precision::F16),
+            Some("fp32") => Ok(Precision::F32),
+            _ => bail!(
+                "{}",
+                trf!(
+                    "tts.precision must be \"fp16\" or \"fp32\": {v}",
+                    "tts.precision は \"fp16\" か \"fp32\" で指定してください: {v}",
+                    "tts.precision 必须是 \"fp16\" 或 \"fp32\":{v}"
+                )
+            ),
+        },
+    }
+}
+
+/// [`tts_precision`] の表記(`fp16` / `fp32`)
+pub fn precision_name(p: Precision) -> &'static str {
+    match p {
+        Precision::F16 => "fp16",
+        Precision::F32 => "fp32",
+    }
+}
+
 const REF_CACHE_MAX: usize = 8;
 
 impl IrodoriTts {
-    pub fn load(model_id: &str, num_steps: Option<usize>, progress: &dyn Fn(&str)) -> Result<Self> {
+    pub fn load(model_id: &str, num_steps: Option<usize>, precision: Precision, progress: &dyn Fn(&str)) -> Result<Self> {
         let model = tts_model(model_id)?;
         if let Some((name, url)) = model.license {
             progress(&trf!(
@@ -637,7 +667,7 @@ impl IrodoriTts {
             "正在构建 TTS 模型(首次运行需要较长时间准备 GPU 内核)"
         ));
         let _gpu_load = crate::util::gpu_load_guard(); // 重い GPU ロードは直列化する
-        let tts = irodori::pipeline::Tts::load(&paths, &gpu_device()?)?;
+        let tts = irodori::pipeline::Tts::load(&paths, &gpu_device()?, precision)?;
         progress(&trf!("Loaded: {model_id}", "ロード完了: {model_id}", "加载完成:{model_id}"));
         Ok(Self { model_id: model_id.to_string(), tts, num_steps, ref_cache: Mutex::new(HashMap::new()) })
     }
@@ -979,6 +1009,17 @@ mod tests {
 
     fn map(v: Value) -> Map<String, Value> {
         v.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn precision_defaults_to_fp32_and_rejects_unknown_values() {
+        assert_eq!(tts_precision(&json!({})).unwrap(), Precision::F32);
+        assert_eq!(tts_precision(&crate::config::default_config()).unwrap(), Precision::F32);
+        assert_eq!(tts_precision(&json!({"tts": {"precision": "fp16"}})).unwrap(), Precision::F16);
+        assert_eq!(precision_name(tts_precision(&json!({"tts": {"precision": "fp32"}})).unwrap()), "fp32");
+        for bad in [json!("bf16"), json!("FP32"), json!(16)] {
+            assert!(tts_precision(&json!({"tts": {"precision": bad}})).is_err(), "{bad}");
+        }
     }
 
     #[test]

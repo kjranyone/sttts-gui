@@ -2,7 +2,7 @@
 //! 既定はケース A と C。`IRODORI_CASES=A,B,C,D` で変更。CPU(flex)は遅いので `--release` で。
 
 use burn::tensor::{Tensor, TensorData};
-use irodori::pipeline::{SamplingRequest, Trace, Tts, TtsPaths};
+use irodori::pipeline::{Precision, SamplingRequest, Trace, Tts, TtsPaths};
 use irodori::testing::{self, assert_close, device, refs, to_vec};
 
 fn case_request(case: &str) -> SamplingRequest {
@@ -36,6 +36,28 @@ fn case_request(case: &str) -> SamplingRequest {
 
 #[test]
 fn end_to_end_matches_pytorch() {
+    run_cases(Precision::F32, |what, got, want| {
+        let rtol = if what.ends_with("latent") { 2e-3 } else { 5e-3 };
+        assert_close(what, got, want, rtol);
+    });
+}
+
+/// 16 ビットの重み(GPU の既定)。丸めの分だけ PyTorch とずれるので、値の一致ではなく信号対雑音比で見る。
+/// DiT 1 回ごとのずれは小さい(`tests/dit.rs` で 50 dB 以上)が、4 ステップのうちに広がることがあり、ケース A は
+/// 0.5 秒ほどの区間で別の言い方になる(潜在 18 dB、音声 8 dB。他のケースは潜在 48 dB 以上)。ここでは壊れていないことだけを見る
+#[test]
+fn end_to_end_f16_weights_stay_close_to_pytorch() {
+    if testing::device() == burn::tensor::Device::flex() {
+        eprintln!("skip: 16 ビットの重みは GPU のみ(IRODORI_DEVICE=gpu)");
+        return;
+    }
+    run_cases(Precision::F16, |what, got, want| {
+        let min_db = if what.ends_with("latent") { 12.0 } else { 5.0 };
+        testing::assert_snr(what, got, want, min_db);
+    });
+}
+
+fn run_cases(precision: Precision, check: impl Fn(&str, &[f32], &[f32])) {
     let Some(r) = refs() else {
         eprintln!("skip: 参照出力がありません(tools/reference/dump_irodori_ref.py)");
         return;
@@ -45,7 +67,7 @@ fn end_to_end_matches_pytorch() {
         return;
     };
     let dev = device();
-    let tts = Tts::load(&paths, &dev).unwrap();
+    let tts = Tts::load(&paths, &dev, precision).unwrap();
     assert!(tts.has_watermark(), "透かしモデルが必要です");
     let cases = std::env::var("IRODORI_CASES").unwrap_or_else(|_| "A,C".into());
     for case in cases.split(',') {
@@ -64,15 +86,15 @@ fn end_to_end_matches_pytorch() {
 
         // 最終潜在(= codec_decode.in.0)
         let (_, want_z) = r.f32_vec(&format!("{case}.codec_decode.in.0")).unwrap();
-        assert_close(&format!("{case} latent"), &to_vec(trace.latent.clone().unwrap()), &want_z, 2e-3);
+        check(&format!("{case} latent"), &to_vec(trace.latent.clone().unwrap()), &want_z);
 
         // 透かし前の音声(codec_decode.out.0 の先頭)と、最終音声
         let (_, dec) = r.f32_vec(&format!("{case}.codec_decode.out.0")).unwrap();
         let (_, wm_in) = r.f32_vec(&format!("{case}.watermark.in0.0")).unwrap();
         assert_eq!(trace.raw_audio.len(), wm_in.len(), "{case}: trimmed length");
-        assert_close(&format!("{case} decoded"), &trace.raw_audio, &dec[..wm_in.len()], 5e-3);
+        check(&format!("{case} decoded"), &trace.raw_audio, &dec[..wm_in.len()]);
         let (_, want) = r.f32_vec(&format!("{case}.final_audio.0")).unwrap();
         assert_eq!(out.audio.len(), want.len(), "{case}: final length");
-        assert_close(&format!("{case} final audio"), &out.audio, &want, 5e-3);
+        check(&format!("{case} final audio"), &out.audio, &want);
     }
 }

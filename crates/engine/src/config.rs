@@ -22,6 +22,8 @@ pub fn default_config() -> Value {
             "model": crate::tts::DEFAULT_TTS_MODEL,
             // None で checkpoint 既定(MeanFlow: 4)
             "num_steps": null,
+            // GPU に置く重みの精度。"fp32"(チェックポイントの値のまま)か "fp16"(GPU メモリ約 6 割。出力は少し変わる)
+            "precision": "fp32",
             // 起動後(初回 configure 時)にモデルをロードして短文を数回合成しておく
             "warmup": true,
             // Irodori の SamplingRequest 項目を丸ごと上書きできる(duration_scale / seconds /

@@ -6,9 +6,11 @@
 // [M,N] に書く(分割しないときは z = 0 の 1 つだけ)。部分和の合計は reduce.wgsl。
 // バッチ(注意のヘッドごとの行列積など): z = バッチ * splits + 分割。A・B はバッチごとに a_bs・b_bs(vec4 単位)ずつずらし、
 // 出力は [splits, バッチ, M, N]。
+// B が 16 ビットの重み(全結合層、`nn.rs`)のときは、B を [N,K] の binary16(u32 に 2 つずつ)で受け、
+// 共有メモリへ読むときに f32 へ戻す(b の型と B のタイルの読み込みは gemm.rs が差し替える)。
 
 @group(0) @binding(0) var<storage, read_write> a: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> b: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> b: array<{{ b_ty }}>;
 @group(0) @binding(2) var<storage, read_write> c: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> dims: array<u32>;
 
@@ -66,18 +68,7 @@ fn main(
             As[base + 2u * BM] = v.z;
             As[base + 3u * BM] = v.w;
         }
-        // B のタイル(BK x BN/4 個の vec4)
-        for (var l = tid; l < BK * BNV; l += 256u) {
-            let kr = l / BNV;
-            let cv = l % BNV;
-            let gk = k0 + kr;
-            let gc = colv0 + cv;
-            var v = vec4<f32>(0.0);
-            if (gk < k_end && gc < nv) {
-                v = b[b_off + gk * nv + gc];
-            }
-            Bs[kr * BNV + cv] = v;
-        }
+{{ load_b }}
         workgroupBarrier();
 
         for (var kk = 0u; kk < BK; kk++) {

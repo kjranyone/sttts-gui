@@ -20,11 +20,16 @@ PyTorch / Python に依存しない Irodori-TTS(v4.1 Small MF / RF、v4 Large、
   f32 へ戻す(`qdata * scale`。torchao と同じ値)ので、計算は f32 のまま。原典の量子化版は bf16 で計算するが、ここでは合わせない。
   量子化されるのは DiT・話者エンコーダ・テキストのバックボーンの注意と MLP。正規化・射影・長さ予測は bf16 の重みを f32 にして使う。
   int8-dynamic(活性も量子化)・float8・int4 は未対応(読み込み時にエラー)。
+- 重みの精度は `Precision` で選ぶ。既定(アプリの `tts.precision` の既定)は `Precision::F32` で、チェックポイントの値のまま(PyTorch と一致する)。
+  GPU で `Precision::F16` を選ぶと、量子化していない全結合(`nn::Linear`)の重みを 16 ビット(binary16、最近接偶数丸め)にして置く。
+  読み込み時に CPU で丸め、行列積のカーネルが共有メモリへ読むときに f32 へ戻すので、計算は f32 のまま。CPU(flex)は常に f32。
+  ずれの大きさは下の「GPU で分かったこと」の 9。
 
 ## 状態
 
 **実装済み・検証済み**: テキスト → 音声の全工程(正規化、トークナイザ、ModernBERT、条件エンコーダ、長さ予測、DiT と話者エンコーダ、MeanFlow / RF + CFG のサンプラ、DACVAE のデコード/エンコード、SilentCipher 透かし)。
 各段階とエンドツーエンドが、PyTorch(CPU, fp32)の参照と **CPU(flex)でも GPU(wgpu / Vulkan)でも一致**する(`cargo test -p irodori --release`、GPU は `--features gpu` と `IRODORI_DEVICE=gpu`)。
+下の表は f32 の重み(`Precision::F32`、既定)の値。16 ビットの重み(`Precision::F16`)は、丸めの分だけ離れる(「GPU で分かったこと」の 9。`tests/dit.rs` と `tests/pipeline.rs` で信号対雑音比を見る)。
 
 | 段階 | 最大絶対誤差(参照の最大値に対する比) |
 |---|---|
@@ -101,7 +106,7 @@ cargo run -p irodori --release --features gpu --example tts -- --warmup     --te
 
 ```rust
 let paths = irodori::pipeline::TtsPaths::from_hf_cache()?;      // HF キャッシュのモデル
-let tts = irodori::pipeline::Tts::load(&paths, &irodori::gpu_device())?;
+let tts = irodori::pipeline::Tts::load(&paths, &irodori::gpu_device(), Precision::F32)?;  // F16 で GPU メモリを減らす
 tts.warmup()?;                                                    // 任意: カーネルを先にコンパイル
 let out = tts.synthesize(&SamplingRequest { text: "…".into(), no_ref: true, ..Default::default() })?;
 // out.audio: Vec<f32>(モノ)、out.sample_rate: 48000
@@ -133,7 +138,15 @@ let out = tts.synthesize(&SamplingRequest { text: "…".into(), no_ref: true, ..
    (B580 で潜在 256 フレームのバッチ 1 が約 31ms、バッチ 2 が約 51ms)。各サンプルは独立に計算されるので結果は変わらない。
    alternating はステップごとに外す条件が替わるので、2 回に分けて回す。時刻だけで決まる adaLN の変調は全ステップ分をまとめて作り、CFG の各パスで共有する。
    int8 の重みは掛け算の直前に f32 へ戻すので、速度は f32 版とほぼ同じ(減るのは GPU メモリ)。`IRODORI_TRACE=1` でステップごとの時間が出る。
-9. **f16 は使えない**(試して外した)。行列積を f16 にすると潜在が最大 11% ずれる(重みだけを f16 にしても 30% ずれた)うえ、速度も変わらなかった。
+9. **16 ビットは重みを置くときだけ**(計算は f32)。以前、行列積を f16 で計算すると潜在が最大 11% ずれ、速度も変わらなかったので外した。
+   いまは全結合の重みだけを 16 ビットで置き、行列積のカーネルが f32 に戻して計算する(`gemm::matmul_half`。重みは `[N, K]` のまま読み、
+   一時テンソルは作らない)。常駐の GPU メモリが 3.51 → 2.17 GB、30 秒の音声の後に確保されたままの量が 5.6 → 4.1 GB になり、合成もわずかに速い
+   (B580 で 8 秒の音声 0.48 → 0.43 秒、30 秒 1.57 → 1.52 秒。透かしあり)。読み込みは丸めの分 0.4 秒ほど延びる。
+   丸め自体は全テンソルで 72 dB 以上(相対 2.5e-4)、DiT 1 回の出力は参照から 53〜69 dB と小さい。ただし 4 ステップのうちに広がることがあり、
+   ケース A では潜在の 72 フレームのうち 32〜43 フレーム目(約 0.5 秒)が別の言い方になる(潜在 18 dB、音声 8 dB。他のケースは潜在 48〜52 dB、
+   音声 35〜40 dB)。注意・adaLN・MLP・前段のブロックのどれを f32 に残しても A は 17〜25 dB で、層の選び方では避けられない。
+   以前「重みだけを f16 にしても 30% ずれた」としたのも、この広がり方とみられる。このため既定は `Precision::F32` のままにし、
+   16 ビットは GPU メモリが足りないときに選ぶもの(`tts.precision: "fp16"`)とした。
 10. **PyTorch のバージョンは関係ない**。同じ失敗が 2.10 / 2.11 / 2.14.1 のすべてで出た。
 11. **行列積は自前の WGSL カーネル**(`gemm`、`gemm.wgsl`)。burn の既定の行列積(autotune なし)は Arc で FP32 性能の 1 割も出ない形状が多く
     (B580 で 2048 角が 0.8 TFLOPS、コーデックの初段 `[768x5376]x[5376x492]` が 0.5 TFLOPS)、DiT もコーデックもほぼ全時間が行列積だった。

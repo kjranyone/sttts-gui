@@ -20,7 +20,8 @@ impl Platform for RealPlatform {
     fn create_tts(&self, cfg: &Value, progress: TtsProgress) -> Result<Arc<dyn TtsEngine>> {
         let model = get(cfg, "tts", "model").as_str().unwrap_or(crate::tts::DEFAULT_TTS_MODEL);
         let steps = get(cfg, "tts", "num_steps").as_u64().map(|n| n as usize);
-        Ok(Arc::new(IrodoriTts::load(model, steps, progress)?))
+        let precision = crate::tts::tts_precision(cfg)?;
+        Ok(Arc::new(IrodoriTts::load(model, steps, precision, progress)?))
     }
 
     fn create_asr(&self, cfg: &Value, progress: Progress) -> Result<Arc<dyn AsrEngine>> {
