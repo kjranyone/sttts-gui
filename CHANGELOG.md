@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-10-22
+
+### Added
+
+- `tts.precision` in `data/backend.json`. Set it to `"fp16"` to keep the weights of Irodori-TTS's fully connected layers in 16 bits (IEEE half precision) on the GPU, for when GPU memory is short. With the default model, it uses 2.2 GB of resident GPU memory instead of 3.5 GB, and synthesis is slightly faster (8 seconds of audio on an Intel Arc B580: 0.48 s → 0.43 s); loading takes about 0.4 s longer. Computation stays in 32 bits, but the output changes by the rounding of the weights, and in some utterances about half a second of a phrase comes out with a different delivery. The default stays `"fp32"`, so output is unchanged unless you opt in. In `sttts-say`, the precision is part of the incremental-render key, so changing it renders the takes again.
+
 ### Fixed
 
 - Watermarking long utterances no longer runs out of GPU memory. The SilentCipher watermark now runs as one GPU pass with its own kernels and needs about 2.1 GB of temporary memory for 30 seconds of audio instead of 5.5 GB. On a 12 GB Intel Arc B580, watermarking 30 seconds of audio took 10–12 s because memory overflowed into system RAM; it now takes about 0.9 s, and peak GPU memory during synthesis drops from 10.8 GB to 6.5 GB. Short utterances are also watermarked faster (7 seconds of audio: 0.22 s → 0.12 s).
@@ -97,7 +103,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reading aloud while you are still talking no longer stops for the rest of a long utterance when the recognizer revises text it has already read (e.g. Gemini adding spaces); it carries on from the same position.
 - Expression: "pausing as it goes" (間を取りながら) is no longer added to almost every utterance. Only gaps of 320 ms or more between speech count as pauses (ordinary breaks between phrases and the silence before/after the utterance no longer do), and only longer utterances (1.5 s or more of speech) get it.
 
-[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/kjranyone/sttts-gui/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/kjranyone/sttts-gui/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/kjranyone/sttts-gui/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/kjranyone/sttts-gui/compare/v0.1.2...v0.1.3

@@ -5868,7 +5868,7 @@ checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 
 [[package]]
 name = "irodori"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "burn",
@@ -9921,7 +9921,7 @@ dependencies = [
 
 [[package]]
 name = "sttts-audio"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "asio-sys",
@@ -9935,7 +9935,7 @@ dependencies = [
 
 [[package]]
 name = "sttts-engine"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -9957,7 +9957,7 @@ dependencies = [
 
 [[package]]
 name = "sttts-gemini"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -9969,7 +9969,7 @@ dependencies = [
 
 [[package]]
 name = "sttts-gui"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -9988,7 +9988,7 @@ dependencies = [
 
 [[package]]
 name = "sttts-hub"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -9998,14 +9998,14 @@ dependencies = [
 
 [[package]]
 name = "sttts-i18n"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "windows 0.62.2",
 ]
 
 [[package]]
 name = "sttts-nemotron"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "hound",
@@ -10017,7 +10017,7 @@ dependencies = [
 
 [[package]]
 name = "sttts-protocol"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -10025,7 +10025,7 @@ dependencies = [
 
 [[package]]
 name = "sttts-say"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "embed-resource",
@@ -10037,7 +10037,7 @@ dependencies = [
 
 [[package]]
 name = "sttts-whisper"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "burn",
