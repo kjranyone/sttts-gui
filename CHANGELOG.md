@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-10-22
+
+### Added
+
+- `sttts-say version` (also `--version` / `-V`) prints `{"version": "X.Y.Z"}`.
+- Each take in the `sttts-say` results (`speak`, `render`, `audition`) has `synth_ms`, the time spent synthesizing it in that call (`0` for a line `render` left unchanged; model loading is not included).
+
+### Changed
+
+- Paths in `sttts-say` results are always absolute. On Windows they no longer start with `\\?\` (which ffmpeg's concat lists and some other tools reject), and `--out` / `--out-dir` / script paths given as relative paths are reported as absolute paths.
+- `sttts-say render` compares reference audio by content only, so moving the app folder no longer re-renders lines whose voice has reference audio.
+- Irodori-TTS's notes during synthesis (predicted duration, ignored options, trimmed reference audio, missing watermark) follow the display language in the GUI log and on `sttts-say`'s stderr.
+
 ## [0.1.6] - 2026-10-22
 
 ### Added
@@ -103,7 +116,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reading aloud while you are still talking no longer stops for the rest of a long utterance when the recognizer revises text it has already read (e.g. Gemini adding spaces); it carries on from the same position.
 - Expression: "pausing as it goes" (間を取りながら) is no longer added to almost every utterance. Only gaps of 320 ms or more between speech count as pauses (ordinary breaks between phrases and the silence before/after the utterance no longer do), and only longer utterances (1.5 s or more of speech) get it.
 
-[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/kjranyone/sttts-gui/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/kjranyone/sttts-gui/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/kjranyone/sttts-gui/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/kjranyone/sttts-gui/compare/v0.1.3...v0.1.4
