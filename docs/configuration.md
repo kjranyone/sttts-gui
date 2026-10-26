@@ -32,7 +32,7 @@ GUI に UI の無い設定は `data/backend.json`(任意。環境変数 `STTTS_C
 | `pipeline.auto_speak` | `true` | 認識した文を自動で読み上げる(GUI の「自動再生」) |
 | `pipeline.first_chunk_mora_min` / `max` | `8` / `12` | 先頭チャンクを読点または約 8〜12 モーラの文節境界で切る(`max=0` で無効) |
 | `pipeline.chunk_min_chars` | `16` | 2チャンク目以降の最小文字数 |
-| `pipeline.chunk_max_chars` | `80` | これを超える塊は読点 / 文節境界で分割(句読点の無い ASR 出力対策)。話し続けている間の逐次読み上げでも、文末が無いままこの長さを超えたら読点で切る |
+| `pipeline.chunk_max_chars` | `80` | これを超える塊は読点 / 文節境界で、なるべく均等な長さに分割(句読点の無い ASR 出力・長い 1 文の対策)。話し続けている間の逐次読み上げでも、文末が無いままこの長さを超えたら読点で切る |
 | `pipeline.speculative_tts` | `false` | 投機的 TTS(下記) |
 | `pipeline.speculative_stable_partials` | `2` | 同じ先頭チャンクが何回連続したら先行合成するか |
 | `pipeline.performance_enabled` | `true` | 元音声の速さと間を Irodori の発話単位指示へ写す。GUI の「テンポと間を再現」で切替 |

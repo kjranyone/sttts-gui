@@ -7,7 +7,8 @@
 //!    モーラの自然な切れ目(空白 / ひらがな→非ひらがなの境界 = 文節境界の近似)で切る。
 //!    Irodori は1チャンク全体を一括生成するため、初音までの時間は先頭チャンク長に比例する。
 //! 3. 句読点の無いテキスト(kotoba-whisper の出力)や長すぎるチャンクは `max_chars` を超えない
-//!    よう長さベースで分割する(読点 > 自然な切れ目 > 強制)。
+//!    よう長さベースで分割する(読点 > 自然な切れ目 > 強制)。切る位置は、塊を均等に分けたときの長さに近いところを選び、
+//!    後ろに短い切れ端(「ます。」だけ等)を残さない(短いチャンクは長さの予測が伸びて間延びする)。
 //! 4. 末尾の短い余りは直前に連結しない(連結すると最終チャンクが長くなり間が空く)。
 //!    ただし文字(かな・漢字・英数字)を含まない余り(記号のみ等)は直前に連結する。
 //!
@@ -136,24 +137,21 @@ fn cut_first(text: &[char], mora_min: f64, mora_max: f64) -> Option<usize> {
 }
 
 /// `max_chars` を超える塊を 読点 > 自然な切れ目 > 強制 の優先で分割する。
+///
+/// 切る位置は [`min_chars` と `max_chars / 4` の小さい方, `max_chars`] の範囲で、後ろに `その下限 / 2` 文字以上を残す。
+/// 候補が複数あれば、残りを `max_chars` 以下の塊に均等に分けたときの 1 つ目の長さに最も近いものを選ぶ。
 fn split_long(text: &[char], min_chars: usize, max_chars: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest: Vec<char> = text.to_vec();
     while max_chars > 0 && letters(&rest) > max_chars {
-        let lo = 1usize.max(min_chars.min(max_chars.saturating_sub(1)));
-        let hi = (rest.len() - 1).min(max_chars);
-        let mut cut = None;
-        for i in (lo..=hi).rev() {
-            // 読点(直後で切る)
-            if COMMAS.contains(rest[i - 1]) {
-                cut = Some(i);
-                break;
-            }
-        }
-        if cut.is_none() {
-            cut = (lo..=hi).rev().find(|&i| is_natural_boundary(&rest, i));
-        }
-        let cut = cut.unwrap_or(hi);
+        let lo = 1usize.max(min_chars.min(max_chars / 4));
+        let hi = (rest.len() - 1).min(max_chars).min(rest.len() - lo / 2);
+        let target = rest.len().div_ceil(letters(&rest).div_ceil(max_chars));
+        let nearest = |ok: &dyn Fn(usize) -> bool| (lo..=hi).filter(|&i| ok(i)).min_by_key(|&i| i.abs_diff(target));
+        // 読点(直後で切る)
+        let cut = nearest(&|i| COMMAS.contains(rest[i - 1]))
+            .or_else(|| nearest(&|i| is_natural_boundary(&rest, i)))
+            .unwrap_or(target.clamp(lo, hi));
         let head = s(&rest[..cut]).trim().to_string();
         let tail = s(&rest[cut..]).trim().to_string();
         rest = tail.chars().collect();
@@ -441,5 +439,26 @@ mod tests {
         assert!(chunks.len() >= 4);
         assert!(chunks.iter().all(|c| c.chars().count() <= 30));
         assert_eq!(joined(&chunks), text);
+    }
+
+    #[test]
+    fn long_sentence_is_split_near_the_middle_not_inside_a_word() {
+        // sttts-say の分け方(文を max_chars まで束ねる)。以前は max_chars ちょうどで切り、「鳴らしてい」「ます。」になった
+        let say = ChunkOptions { min_chars: 80, first_min_chars: 80, max_chars: 80, first_mora_min: 0.0, first_mora_max: 0.0 };
+        let text = "今回の比較では古い真空管アンプと新しいデジタルアンプを同じ部屋に並べて同じ曲を順番に再生しながら細かな違いを確かめるためにスピーカーをそれぞれ用意してそれを二台直列に同時に鳴らしています。";
+        assert!(letters(&text.chars().collect::<Vec<_>>()) > 80);
+        let chunks = split_chunks(text, &say);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks.concat(), text);
+        assert!(chunks.iter().all(|c| (30..=80).contains(&c.chars().count())), "{chunks:?}");
+        assert!(chunks[1].ends_with("鳴らしています。"));
+        // 読点があれば、真ん中に近い読点で切る
+        let text = "今回の比較では古い真空管アンプと新しいデジタルアンプを同じ部屋に並べて、同じ曲を順番に再生しながら細かな違いを確かめるために、スピーカーを二台直列に同時に鳴らしています。";
+        let chunks = split_chunks(text, &say);
+        assert_eq!(chunks[0], "今回の比較では古い真空管アンプと新しいデジタルアンプを同じ部屋に並べて、");
+        // 少しだけ長い文でも、後ろに短い切れ端を残さない
+        let text = format!("{}ます。", "あ".repeat(80));
+        let chunks = split_chunks(&text, &say);
+        assert!(chunks.iter().all(|c| c.chars().count() >= 20), "{chunks:?}");
     }
 }
