@@ -16,8 +16,10 @@ PyTorch / Python に依存しない Irodori-TTS(v4.1 Small MF / RF、v4 Large、
 - テキストのバックボーンは、v4.1 Small が ModernBERT-ja(`modernbert`)、v4 Large が T5Gemma 2 のテキストエンコーダ(`t5gemma`)。
   `text_encoder_config_json` の `model_type` で選ぶ。v4 Large は話者の潜在を 4 フレームずつまとめ(`speaker_patch_size`)、参照音声は最長 120 秒。
 - torchao で量子化したチェックポイント(`*-Quantized/int8-weight-only`)は、int8 の重み(`_weight_qdata`)と行ごとの scale を
-  `weights` が読み、全結合(`nn::Linear`)が burn の量子化テンソル(Q8S、u32 詰め)として GPU に int8 のまま置く。掛け算の直前に
-  f32 へ戻す(`qdata * scale`。torchao と同じ値)ので、計算は f32 のまま。原典の量子化版は bf16 で計算するが、ここでは合わせない。
+  `weights` が読み、全結合(`nn::Linear`)が GPU に int8 のまま置く(K 方向に 4 つずつ u32 に詰めた `[N, K/4]`)。行列積のカーネル
+  (`gemm::matmul_int8`)が共有メモリへ読むときに f32 へ戻し、結果に行ごとの scale を掛ける(`qdata * scale` と同じ値で、足す順だけが違う)
+  ので、計算は f32 のまま。原典の量子化版は bf16 で計算するが、ここでは合わせない。CPU(パリティテスト)は burn の量子化テンソル
+  (Q8S)で持ち、掛け算の直前に f32 へ戻す。
   量子化されるのは DiT・話者エンコーダ・テキストのバックボーンの注意と MLP。正規化・射影・長さ予測は bf16 の重みを f32 にして使う。
   int8-dynamic(活性も量子化)・float8・int4 は未対応(読み込み時にエラー)。
 - 重みの精度は `Precision` で選ぶ。既定(アプリの `tts.precision` の既定)は `Precision::F32` で、チェックポイントの値のまま(PyTorch と一致する)。
@@ -49,7 +51,8 @@ int8(v4.1 Small、`tests/int8.rs`)は、int8 の重みを fp32 に戻して PyTo
 テキスト条件は相対 1e-6、最終潜在は相対 3e-5 〜 3e-4、最終音声は相対 1e-4 〜 7e-4。v4 Large は `tests/large.rs`(LA / LC と、int8 の QA / QC)。T5Gemma 2 単体は 256 / 512 トークンで相対 4e-7 / 8e-7、
 最終潜在は相対 1e-5 〜 6e-4(int8 は 7e-5 〜 6e-4)、最終音声は相対 4e-5 〜 1.6e-3。
 GPU(Arc B580 / wgpu、12GB)では int8 の重みを量子化テンソルのまま置いて v4.1 Small int8 と v4 Large int8 の一致を確かめた
-(最終潜在は相対 1.3e-3 以内)。短い文(約 2 秒)の 6 ステップのサンプリングは v4.1 Small int8 で 1.2〜2.0 秒、v4 Large int8 で 2.7〜3.6 秒。
+(最終潜在は相対 1.3e-3 以内)。int8 の行列積を自前のカーネル(`gemm::matmul_int8`)に替えたときは、`tests/gemm.rs` で同じ値の f32 の
+行列積と相対 2e-6 以内、v4 Large int8 の音声(16 ステップ)が替える前と 88 dB(16 ビットで最大 1 段の差)で一致した。
 v4 Large(fp32、13GB)は 12GB の GPU に載らないので GPU では未確認。
 
 乱数だけは PyTorch と同じ列にならない(`rand` の標準正規。seed を渡せば再現はする)。参照との比較では初期ノイズを注入している。
@@ -137,7 +140,10 @@ let out = tts.synthesize(&SamplingRequest { text: "…".into(), no_ref: true, ..
    バッチ 1 の 5〜7 倍かかったのでバッチ 1 を本数ぶん回していたが、自前の行列積(11)では行が増えるほど GPU が埋まって効率が上がる
    (B580 で潜在 256 フレームのバッチ 1 が約 31ms、バッチ 2 が約 51ms)。各サンプルは独立に計算されるので結果は変わらない。
    alternating はステップごとに外す条件が替わるので、2 回に分けて回す。時刻だけで決まる adaLN の変調は全ステップ分をまとめて作り、CFG の各パスで共有する。
-   int8 の重みは掛け算の直前に f32 へ戻すので、速度は f32 版とほぼ同じ(減るのは GPU メモリ)。`IRODORI_TRACE=1` でステップごとの時間が出る。
+   int8 の重みも行列積のカーネルが読むときに f32 へ戻す(`gemm::matmul_int8`)。以前は burn で層ごとに f32 の重みを一時テンソルに戻してから
+   burn の行列積で掛けていて、v4 Large int8 の 40 ステップのサンプリングが 1.5 秒の音声で 10.0 秒かかった(いまは 2.6 秒、v4 Large の fp16 と同じ。
+   v4.1 Small int8 は 3.8 秒の音声で 2.95 → 0.94 秒、初回のウォームアップは Large で 55 → 18 秒)。q / k / v / ゲートも f32 と同じく 1 つの
+   行列積にまとめる。`IRODORI_TRACE=1` でステップごとの時間が出る。
 9. **16 ビットは重みを置くときだけ**(計算は f32)。以前、行列積を f16 で計算すると潜在が最大 11% ずれ、速度も変わらなかったので外した。
    いまは全結合の重みだけを 16 ビットで置き、行列積のカーネルが f32 に戻して計算する(`gemm::matmul_half`。重みは `[N, K]` のまま読み、
    一時テンソルは作らない)。常駐の GPU メモリが 3.51 → 2.17 GB、30 秒の音声の後に確保されたままの量が 5.6 → 4.1 GB になり、合成もわずかに速い

@@ -381,11 +381,11 @@ impl Conditions {
     }
 }
 
-/// 自己注意の q, k, v とゲートの射影(量子化していなければ 1 つの行列積にまとめる)
+/// 自己注意の q, k, v とゲートの射影(CPU の int8 でなければ 1 つの行列積にまとめる)
 enum QkvGate {
     /// 出力 `[q | k | v | gate]`
     Fused(Box<Linear>),
-    /// `[wq, wk, wv, gate]`(int8 など、まとめられない重み)
+    /// `[wq, wk, wv, gate]`(CPU の int8 など、まとめられない重み)
     Separate(Box<[Linear; 4]>),
 }
 

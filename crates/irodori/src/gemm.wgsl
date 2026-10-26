@@ -7,7 +7,8 @@
 // バッチ(注意のヘッドごとの行列積など): z = バッチ * splits + 分割。A・B はバッチごとに a_bs・b_bs(vec4 単位)ずつずらし、
 // 出力は [splits, バッチ, M, N]。
 // B が 16 ビットの重み(全結合層、`nn.rs`)のときは、B を [N,K] の binary16(u32 に 2 つずつ)で受け、
-// 共有メモリへ読むときに f32 へ戻す(b の型と B のタイルの読み込みは gemm.rs が差し替える)。
+// 共有メモリへ読むときに f32 へ戻す。int8 の重みは [N,K/4] の u32(int8 を 4 つずつ)で受け、同じく読むときに戻す
+// (b の型と B のタイルの読み込みは gemm.rs が差し替える)。
 
 @group(0) @binding(0) var<storage, read_write> a: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> b: array<{{ b_ty }}>;

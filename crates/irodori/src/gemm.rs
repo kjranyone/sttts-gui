@@ -10,7 +10,8 @@
 //! 1 スレッドが受け持つ大きさ(タイル)は形状ごとに速いものが違うので、形状ごとに初回だけ候補を実測して選ぶ。
 //! どのタイルでも各出力は K 方向に同じ順で足すので、選んだタイルで結果は変わらない(ビット単位で同じ)。
 //! CPU(flex)と、行が 16 未満・K や N が 4 の倍数でない形状は burn の行列積のまま。
-//! 全結合層の 16 ビットの重み([`matmul_half`])は行の数によらず自前のカーネルで、重みを共有メモリへ読むときに f32 へ戻す。
+//! 全結合層の 16 ビットの重み([`matmul_half`])と int8 の重み([`matmul_int8`])は行の数によらず自前のカーネルで、
+//! 重みを共有メモリへ読むときに f32 へ戻す(一時テンソルを作らない)。
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -23,7 +24,8 @@ use burn::tensor::{Device, Tensor};
 #[backend_extension(Cube: cfg(feature = "_gpu"), Flex)]
 pub trait GemmBackend: Backend {
     /// `[M,K] x [K,N]`、またはバッチ付きの `[Bt,M,K] x [Bt,K,N]`。`tile` は 1 スレッドが受け持つ行数・列数(`tm * 16 + tn`)と
-    /// K の分割数(`<< 8`)。[`HALF_B`] が立っていれば `rhs` は `[N,K]` の binary16(GPU のみ)
+    /// K の分割数(`<< 8`)。[`HALF_B`] が立っていれば `rhs` は `[N,K]` の binary16、[`INT8_B`] なら `[N,K/4]` の
+    /// 詰めた int8(GPU のみ)
     fn gemm(lhs: FloatTensor<Self>, rhs: FloatTensor<Self>, tile: u32) -> FloatTensor<Self>;
 }
 
@@ -47,6 +49,9 @@ fn gemm_tile(a: Tensor<2>, b: Tensor<2>, t: (u32, u32), splits: usize) -> Tensor
 
 /// `tile` の符号: B が `[N, K]` の binary16(全結合層の 16 ビットの重み)
 const HALF_B: u32 = 1 << 16;
+
+/// `tile` の符号: B が `[N, K/4]` の u32(int8 を K 方向に 4 つずつ詰めたもの。全結合層の int8 の重み)
+const INT8_B: u32 = 1 << 17;
 
 /// K の分割数。出力のタイル(64 x 64 換算)が少なく GPU が埋まらない形状だけ K を分ける(分割数は形状だけで決まる)。
 /// 部分和を足す順は固定なので、同じ形状なら結果は毎回同じ(分割しない場合とは足す順が違う)。
@@ -109,6 +114,21 @@ pub fn matmul_half(a: Tensor<2>, w: &Tensor<2>) -> Tensor<2> {
     let splits = k_splits(m, n, k);
     tuned(("gemmh", m, n, k), &dev, |t| {
         let code = pack(t) | ((splits as u32) << 8) | HALF_B;
+        Tensor::from_dispatch(<Dispatch as GemmBackend>::gemm(a.clone().into_dispatch(), w.clone().into_dispatch(), code))
+    })
+}
+
+/// `a [M,K]`(f32)に int8 の重み `w` の転置を掛ける(`a w^T`、結果は f32。行ごとの scale は掛けない)。GPU のみ。
+/// `w` は `[N, K/4]` で、各要素は int8 4 つ(K 方向に連続、先頭が下位バイト)を詰めた u32 のビット列を f32 として持つ
+/// (値としては使わない。f32 のテンソルにするのは、burn のテンソルとして GPU に置くため)
+pub fn matmul_int8(a: Tensor<2>, w: &Tensor<2>) -> Tensor<2> {
+    let [m, k] = a.dims();
+    let n = w.dims()[0];
+    assert!(w.dims() == [n, k / 4] && k.is_multiple_of(4) && n.is_multiple_of(4), "matmul_int8: shapes {:?} x {:?}^T", a.dims(), w.dims());
+    let dev = a.device();
+    let splits = k_splits(m, n, k);
+    tuned(("gemmq", m, n, k), &dev, |t| {
+        let code = pack(t) | ((splits as u32) << 8) | INT8_B;
         Tensor::from_dispatch(<Dispatch as GemmBackend>::gemm(a.clone().into_dispatch(), w.clone().into_dispatch(), code))
     })
 }
@@ -499,12 +519,22 @@ mod cube {
         SourceTemplate::new(s)
     }
 
+    /// B の持ち方
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    enum Rhs {
+        /// `[K,N]` の f32
+        F32,
+        /// `[N,K]` の binary16
+        F16,
+        /// `[N,K/4]` の詰めた int8
+        I8,
+    }
+
     #[derive(Debug)]
     struct Gemm {
         tm: u32,
         tn: u32,
-        /// B が `[N,K]` の binary16
-        half: bool,
+        rhs: Rhs,
     }
 
     /// B のタイル(BK x BN/4 個の vec4)を `[K,N]` の f32 から読む
@@ -541,18 +571,42 @@ mod cube {
             Bs[base + 3u * BNV][cn] = v.w;
         }";
 
+    /// B のタイルを `[N,K/4]` の詰めた int8 から読む: 列 n の k 4 つ分(u32)を符号付きで取り出して f32 にし、Bs[k][n] に置く
+    const LOAD_B_I8: &str = "\
+        for (var l = tid; l < BNV * BK; l += 256u) {
+            let nl = l / (BK / 4u);
+            let kq = l % (BK / 4u);
+            let gn = colv0 * 4u + nl;
+            let gk = k0 + kq * 4u;
+            var v = vec4<f32>(0.0);
+            if (gn < n_dim && gk < k_end) {
+                let p = bitcast<i32>(b[b_off + gn * kv + gk / 4u]);
+                v = vec4<f32>(vec4<i32>(p << 24u, p << 16u, p << 8u, p) >> vec4<u32>(24u));
+            }
+            let base = kq * 4u * BNV + nl / 4u;
+            let cn = nl % 4u;
+            Bs[base][cn] = v.x;
+            Bs[base + BNV][cn] = v.y;
+            Bs[base + 2u * BNV][cn] = v.z;
+            Bs[base + 3u * BNV][cn] = v.w;
+        }";
+
     impl KernelSource for Gemm {
         fn source(&self) -> SourceTemplate {
             let (tm, tnv) = (self.tm as usize, self.tn as usize / 4);
             let code = unrolled(tm, tnv, |i, j, row, colv| {
                 format!("    if ({row} < m_dim && {colv} < nv) {{ c[out_base + {row} * nv + {colv}] = c{i}_{j}; }}\n")
             });
-            let (b_ty, load_b) = if self.half { ("vec2<u32>", LOAD_B_F16) } else { ("vec4<f32>", LOAD_B_F32) };
+            let (b_ty, load_b) = match self.rhs {
+                Rhs::F32 => ("vec4<f32>", LOAD_B_F32),
+                Rhs::F16 => ("vec2<u32>", LOAD_B_F16),
+                Rhs::I8 => ("u32", LOAD_B_I8),
+            };
             fill(include_str!("gemm.wgsl"), tm, tnv, &[("b_ty", b_ty.into()), ("load_b", load_b.into())], code)
         }
 
         fn id(&self) -> KernelId {
-            KernelId::new::<Self>().info((self.tm, self.tn, self.half))
+            KernelId::new::<Self>().info((self.tm, self.tn, self.rhs))
         }
 
         fn lang(&self) -> &'static str {
@@ -642,16 +696,27 @@ mod cube {
         fn gemm(lhs: FloatTensor<Self>, rhs: FloatTensor<Self>, tile: u32) -> FloatTensor<Self> {
             let (tm, tn) = unpack(tile & 0xff);
             let splits = ((tile >> 8) & 0xff).max(1) as usize;
-            let half = tile & super::HALF_B != 0;
+            let kind = if tile & super::HALF_B != 0 {
+                Rhs::F16
+            } else if tile & super::INT8_B != 0 {
+                Rhs::I8
+            } else {
+                Rhs::F32
+            };
             let ls = lhs.meta.shape().clone();
             let rs = rhs.meta.shape().clone();
             let nd = ls.num_dims();
             assert!(nd == rs.num_dims() && (nd == 2 || nd == 3), "gemm: shapes {ls:?} x {rs:?}");
-            assert!(!half || (nd == 2 && rhs.dtype == DType::F16), "gemm: half weights must be a 2-D binary16 tensor");
+            assert!(kind != Rhs::F16 || (nd == 2 && rhs.dtype == DType::F16), "gemm: half weights must be a 2-D binary16 tensor");
+            assert!(kind != Rhs::I8 || (nd == 2 && rhs.dtype == DType::F32), "gemm: int8 weights must be a 2-D tensor of packed u32 (as f32 bits)");
             let bt = if nd == 3 { ls[0] } else { 1 };
-            // 16 ビットの重みは [N,K]
-            let (m, k, n) = (ls[nd - 2], ls[nd - 1], if half { rs[0] } else { rs[nd - 1] });
-            let rk = if half { rs[1] } else { rs[nd - 2] };
+            // 16 ビットの重みは [N,K]、int8 は [N,K/4]
+            let (m, k) = (ls[nd - 2], ls[nd - 1]);
+            let (n, rk) = match kind {
+                Rhs::F32 => (rs[nd - 1], rs[nd - 2]),
+                Rhs::F16 => (rs[0], rs[1]),
+                Rhs::I8 => (rs[0], rs[1] * 4),
+            };
             assert!(rk == k && (nd == 2 || rs[0] == bt), "gemm: inner dims {ls:?} x {rs:?}");
             assert!(k % 4 == 0 && n % 4 == 0, "gemm: K and N must be multiples of 4 ({ls:?} x {rs:?})");
             let lhs = into_contiguous(lhs);
@@ -669,7 +734,7 @@ mod cube {
             let dims = upload_u32(&lhs, &[m as u32, n as u32, k as u32, kchunk as u32, splits as u32, (m * k / 4) as u32, (k * n / 4) as u32]);
             let (bm, bn) = (16 * tm as usize, 16 * tn as usize);
             client.launch(
-                Box::new(SourceKernel::new(Gemm { tm, tn, half }, CubeDim::new_2d(16, 16))),
+                Box::new(SourceKernel::new(Gemm { tm, tn, rhs: kind }, CubeDim::new_2d(16, 16))),
                 CubeCount::new_3d(n.div_ceil(bn) as u32, m.div_ceil(bm) as u32, (splits * bt) as u32),
                 KernelArguments::new()
                     .with_buffer(lhs.handle.clone().binding())

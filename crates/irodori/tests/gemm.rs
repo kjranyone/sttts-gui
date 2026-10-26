@@ -1,4 +1,4 @@
-//! 16 ビットの重みの行列積([`irodori::gemm::matmul_half`])を、同じ値の f32 の行列積(burn)と突き合わせる。
+//! 16 ビット・int8 の重みの行列積([`irodori::gemm::matmul_half`] / [`irodori::gemm::matmul_int8`])を、同じ値の f32 の行列積(burn)と突き合わせる。
 //! GPU のみ(`IRODORI_DEVICE=gpu`)。行が少ない形(adaLN の `[1, dim]`)と K の分割も含める。
 
 use burn::tensor::{DType, Device, Tensor, TensorCreationOptions, TensorData};
@@ -34,5 +34,26 @@ fn half_weights_matmul_matches_f32() {
         let got = to_vec(irodori::gemm::matmul_half(at.clone(), &wh));
         let want = to_vec(at.matmul(Tensor::<2>::from_data(TensorData::new(wf, [n, k]), &dev).transpose()));
         assert_close(&format!("[{m},{k}] x [{n},{k}]^T"), &got, &want, 1e-5);
+    }
+}
+
+#[test]
+fn int8_weights_matmul_matches_f32() {
+    let dev = device();
+    if dev == Device::flex() {
+        eprintln!("skip: int8 の自前の行列積は GPU のみ(IRODORI_DEVICE=gpu)");
+        return;
+    }
+    for (m, k, n) in [(1, 1024, 3072), (5, 640, 1024), (16, 1024, 1024), (37, 2816, 1024), (200, 1024, 4096), (3, 4096, 64)] {
+        let a = values(m * k, 3);
+        // -128..=127 を全部含む
+        let w: Vec<i8> = values(n * k, 4).into_iter().enumerate().map(|(i, v)| if i < 256 { (i as i32 - 128) as i8 } else { (v * 127.0).round() as i8 }).collect();
+        let packed: Vec<f32> = w.as_chunks::<4>().0.iter().map(|c| f32::from_bits(u32::from_le_bytes(c.map(|v| v as u8)))).collect();
+        let wf: Vec<f32> = w.iter().map(|&v| f32::from(v)).collect();
+        let at = Tensor::<2>::from_data(TensorData::new(a, [m, k]), &dev);
+        let wq = Tensor::<2>::from_data(TensorData::new(packed, [n, k / 4]), &dev);
+        let got = to_vec(irodori::gemm::matmul_int8(at.clone(), &wq));
+        let want = to_vec(at.matmul(Tensor::<2>::from_data(TensorData::new(wf, [n, k]), &dev).transpose()));
+        assert_close(&format!("[{m},{k}] x int8 [{n},{k}]^T"), &got, &want, 1e-5);
     }
 }

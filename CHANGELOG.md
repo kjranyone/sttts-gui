@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The int8 models (`v4.1-small-int8`, `v4.1-anime-int8`, `v4-large-int8`) synthesize about 3-4x faster on the GPU: their int8 weights are now read directly by the matrix-multiply kernel instead of being converted to a temporary f32 copy for every layer. On an Arc B580, 40-step sampling of a 1.5-second line with `v4-large-int8` went from 10.0 to 2.6 seconds, and the first warm-up from 55 to 18 seconds. The audio is the same as before (within one 16-bit step).
+
 ## [0.1.7] - 2026-10-22
 
 ### Added
