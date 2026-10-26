@@ -7,13 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- A sentence longer than `pipeline.chunk_max_chars` (80 by default) is split at a comma or a word boundary near the middle. `sttts-say` used to cut it at exactly 80 characters, often inside a word, leaving a short tail such as `ます。` that was synthesized on its own and drawn out.
+## [0.1.8] - 2026-10-26
 
 ### Changed
 
 - The int8 models (`v4.1-small-int8`, `v4.1-anime-int8`, `v4-large-int8`) synthesize about 3-4x faster on the GPU: their int8 weights are now read directly by the matrix-multiply kernel instead of being converted to a temporary f32 copy for every layer. On an Arc B580, 40-step sampling of a 1.5-second line with `v4-large-int8` went from 10.0 to 2.6 seconds, and the first warm-up from 55 to 18 seconds. The audio is the same as before (within one 16-bit step).
+
+### Fixed
+
+- A sentence longer than `pipeline.chunk_max_chars` (80 by default) is split at a comma or a word boundary near the middle. `sttts-say` used to cut it at exactly 80 characters, often inside a word, leaving a short tail such as `ます。` that was synthesized on its own and drawn out.
 
 ## [0.1.7] - 2026-10-22
 
@@ -124,7 +126,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reading aloud while you are still talking no longer stops for the rest of a long utterance when the recognizer revises text it has already read (e.g. Gemini adding spaces); it carries on from the same position.
 - Expression: "pausing as it goes" (間を取りながら) is no longer added to almost every utterance. Only gaps of 320 ms or more between speech count as pauses (ordinary breaks between phrases and the silence before/after the utterance no longer do), and only longer utterances (1.5 s or more of speech) get it.
 
-[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/kjranyone/sttts-gui/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/kjranyone/sttts-gui/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/kjranyone/sttts-gui/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/kjranyone/sttts-gui/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/kjranyone/sttts-gui/compare/v0.1.4...v0.1.5
